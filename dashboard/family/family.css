@@ -203,6 +203,8 @@ fieldset { min-width: 0; }
 .auth-card .form-stack { margin-top: 30px; }
 .auth-card .form-stack .button { width: 100%; }
 .form-switch { color: var(--muted); font-size: 12px; margin-top: 15px; }
+.verification-tabs { margin-top: 22px; }
+.verification-tabs .segment { flex: 1; }
 .pair-entry { border-top: 1px solid var(--line); margin-top: 32px; padding-top: 23px; }
 .pair-entry summary { cursor: pointer; font-size: 13px; font-weight: 600; padding: 5px 0; }
 .pair-entry > p { color: var(--muted); font-size: 12px; line-height: 1.6; margin-top: 15px; }

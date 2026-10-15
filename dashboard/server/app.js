@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { ApiError, json, readJson, requireValue, textField, timezoneField, uuidField, versionField } from './errors.js';
 import { createPool, one, transaction } from './database.js';
-import { authenticate, assertSameOrigin, authGateway, cookieValue, FRAME_COOKIE, requireAdmin, requireHousehold } from './auth.js';
+import { authenticate, assertSameOrigin, cookieValue, FRAME_COOKIE, requireAdmin, requireHousehold } from './auth.js';
+import { authGateway, createAuthContext } from './supabase-auth.js';
 import { digest } from './credentials.js';
 import { enforcePairRateLimit } from './pair-rate-limit.js';
 import { claimHousehold, createChore, createFramePair, createInvite, createPerson, changeChore, changePerson, householdSnapshot, joinHousehold, redeemFramePair, sessionData, setCompletion } from './household.js';
@@ -95,12 +96,13 @@ export async function handleRequest(request, options = {}) {
   const requestId = randomUUID();
   let db;
   let route;
+  let authContext;
   try {
     route = apiPath(request);
-    if (route.startsWith('auth/')) return await authGateway(request, route.slice(5), options);
     if (!['GET', 'HEAD'].includes(request.method)) assertSameOrigin(request);
     if (route === 'health' && request.method === 'GET') return json({ ok: true });
     db = options.db || createPool(options.env);
+    if (route.startsWith('auth/')) return await authGateway(request, route.slice(5), db, options);
     if (route === 'frame-pairs/redeem' && request.method === 'POST') {
       const body = await readJson(request);
       await enforcePairRateLimit(db, request, options.env);
@@ -112,15 +114,18 @@ export async function handleRequest(request, options = {}) {
       if (token) await db.query('UPDATE family_devices SET revoked_at=now() WHERE token_hash=$1', [digest(token)]);
       return json({ deleted: true }, 200, { 'Set-Cookie': `${FRAME_COOKIE}=; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` });
     }
-    const principal = await (options.authenticate || authenticate)(request, db, options);
-    return await dispatch(request, db, principal, route, options);
+    if (!options.authenticate && request.headers.has('authorization') && !['GET', 'HEAD'].includes(request.method)) authContext = (options.createAuthContext || createAuthContext)(request, options);
+    const principal = await (options.authenticate || authenticate)(request, db, { ...options, authContext });
+    const response = await dispatch(request, db, principal, route, options);
+    return authContext ? authContext.finish(response) : response;
   } catch (error) {
     const known = error instanceof ApiError;
     const status = known ? error.status : 500;
     const code = known ? error.code : 'internal_error';
     // Log only a stable code and correlation ID, never error objects, bodies or query strings.
     if (status >= 500) console.error(JSON.stringify({ requestId, code, route, method: request.method }));
-    return Response.json({ error: { code, message: known ? error.message : 'Something went wrong. Please try again.', ...(known && error.details ? { details: error.details } : {}) }, requestId }, { status, headers: { 'Cache-Control': 'no-store' } });
+    const response = Response.json({ error: { code, message: known ? error.message : 'Something went wrong. Please try again.', ...(known && error.details ? { details: error.details } : {}) }, requestId }, { status, headers: { 'Cache-Control': 'no-store' } });
+    return authContext ? authContext.finish(response) : response;
   } finally {
     if (db && !options.db) await db.end().catch(() => {});
   }

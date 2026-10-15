@@ -1,12 +1,12 @@
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
-import { Pool } from '@neondatabase/serverless';
+import { createPool } from './database.js';
 
 export async function migrate(env = process.env) {
   // The parent setup workflow verifies this dedicated project's environment before invocation.
   if (!env.DATABASE_URL_UNPOOLED) throw new Error('DATABASE_URL_UNPOOLED is required for this migration.');
   const schema = await readFile(new URL('./schema.sql', import.meta.url), 'utf8');
-  const pool = new Pool({ connectionString: env.DATABASE_URL_UNPOOLED, max: 1, connectionTimeoutMillis: 10_000 });
+  const pool = createPool(env, { migration: true, max: 1 });
   try {
     const client = await pool.connect();
     try {

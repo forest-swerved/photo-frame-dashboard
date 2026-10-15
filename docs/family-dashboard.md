@@ -12,13 +12,22 @@ separate checkpoints; this guide does not establish that a public deployment is 
 After the dashboard's HTTPS address is deployed and verified:
 
 1. Open that address on your phone and choose **Create an account**.
-2. Enter your name, email, and a password for this dashboard, then sign in.
+2. Enter your name, email, and a password of at least 12 characters for this dashboard. If confirmation is required,
+   the app shows **Confirm your email**. Enter the code from the confirmation email, or choose
+   **Paste link** and paste its full confirmation link. The app submits that link to its own
+   server for verification; it does not navigate to it. **Resend confirmation email** requests
+   another message. If you already followed the email link, return to **Back to sign in**.
 3. Under **Set up your household**, enter a household name and the private setup code supplied
    separately by the person configuring the app. Submit **Create household**.
 
 The setup code can claim the household only once. Creating a sign-in account alone does not
 grant access to family data. Keep the setup code out of chat, screenshots, source files, and
 shared links.
+
+Account passwords, email confirmation codes, and confirmation links belong only in the app's
+forms. The browser does not save them or authentication tokens in local/session storage.
+Phone sign-in uses server-managed first-party HttpOnly cookies; signing in does not require
+opening a provider's page or connecting the browser directly to Supabase.
 
 In **Setup → Your household**, confirm the household name and timezone. The initial timezone
 is `America/Denver`; calendar display times and recurring chore dates use this setting.
@@ -117,4 +126,9 @@ test fixtures; those checks do not establish live Apple or multi-device behavior
 Completion still needs separate evidence for the deployed HTTPS app, the owner's account and
 household claim, private Apple discovery and event accuracy, phone-to-frame chore updates,
 and the PF1007L's actual rendering, cookies, networking, and unattended reboot behavior.
-Email verification and password-reset screens are not configured in this build.
+Supabase’s built-in sender delivers only to project team members. Configure a custom SMTP
+service before inviting family accounts outside that team. See [Supabase’s SMTP guide](https://supabase.com/docs/guides/auth/auth-smtp).
+
+Email confirmation and resend screens are implemented, but email delivery and successful
+owner confirmation still need live verification. Password-reset screens are not configured
+in this build.

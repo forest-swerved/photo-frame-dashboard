@@ -2,8 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
-import { NEON_AUTH_SESSION_COOKIE_NAME } from '@neondatabase/auth/server';
-import { authenticate, authGateway, firstPartyCookie, providerCookies, verifyFreshSession, verifyUserJwt } from './auth.js';
+import pg from 'pg';
+import { combineChunks, createChunks, parseCookieHeader, stringFromBase64URL, stringToBase64URL } from '@supabase/ssr';
+import { authenticate, verifySessionRow, verifyUserJwt } from './auth.js';
+import { AUTH_COOKIE, authGateway, confirmationCredentials, createAuthContext } from './supabase-auth.js';
+import { poolConfig } from './database.js';
 import { handleRequest } from './app.js';
 import { decryptCredentials, encryptCredentials } from './credentials.js';
 import { changePerson, completionDecision } from './household.js';
@@ -22,61 +25,186 @@ const req = (path, method = 'GET', body, headers = {}) => new Request(`${origin}
   ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
 const neverDb = { query: async () => { throw new Error('Unexpected database access'); } };
 
-test('JWT verification requires the configured issuer, audience, expiry and signature', async t => {
-  const { privateKey, publicKey } = await generateKeyPair('EdDSA');
-  const jwk = { ...await exportJWK(publicKey), kid: 'fixture', alg: 'EdDSA', use: 'sig' };
+test('Supabase JWTs require issuer, audience, asymmetric signature and UUID session identity', async t => {
+  const { privateKey, publicKey } = await generateKeyPair('ES256');
+  const jwk = { ...await exportJWK(publicKey), kid: 'fixture', alg: 'ES256', use: 'sig' };
   t.mock.method(globalThis, 'fetch', async () => Response.json({ keys: [jwk] }));
-  const env = { NEON_AUTH_BASE_URL: `https://auth-${randomUUID()}.example/neondb/auth` };
-  const issuer = new URL(env.NEON_AUTH_BASE_URL).origin;
-  const sign = overrides => new SignJWT({ sub: 'member', ...overrides }).setProtectedHeader({ alg: 'EdDSA', kid: 'fixture' })
-    .setIssuedAt().setIssuer(overrides?.iss || issuer).setAudience(overrides?.aud || issuer).setExpirationTime(overrides?.exp ?? '15m').sign(privateKey);
-  assert.equal((await verifyUserJwt(await sign(), env)).sub, 'member');
-  for (const overrides of [{ iss: 'https://attacker.example' }, { aud: 'other' }, { exp: 1 }]) {
+  const env = { SUPABASE_URL: `https://auth-${randomUUID()}.example` };
+  const issuer = `${env.SUPABASE_URL}/auth/v1`;
+  const subject = randomUUID();
+  const sign = overrides => new SignJWT({ sub: subject, session_id: randomUUID(), role: 'authenticated', ...overrides }).setProtectedHeader({ alg: 'ES256', kid: 'fixture' })
+    .setIssuedAt().setIssuer(overrides?.iss || issuer).setAudience(overrides?.aud || 'authenticated').setExpirationTime(overrides?.exp ?? '15m').sign(privateKey);
+  assert.equal((await verifyUserJwt(await sign(), env)).sub, subject);
+  for (const overrides of [{ iss: 'https://attacker.example' }, { aud: 'other' }, { exp: 1 }, { session_id: 'not-a-session' }, { sub: 'not-a-uuid' }, { role: 'service_role' }, { is_anonymous: true }]) {
     await assert.rejects(verifyUserJwt(await sign(overrides), env), error => error.status === 401);
   }
   const valid = await sign();
   await assert.rejects(verifyUserJwt(`${valid.slice(0, -5)}wrong`, env), error => error.status === 401);
+  const hs = await new SignJWT({ sub: subject, session_id: randomUUID(), role: 'authenticated' }).setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt().setIssuer(issuer).setAudience('authenticated').setExpirationTime('15m').sign(Buffer.alloc(32, 1));
+  await assert.rejects(verifyUserJwt(hs, env), error => error.status === 401);
 });
 
-test('managed session proof bypasses cache and binds the real cookie to JWT subject', async () => {
-  const request = req('people', 'POST', {}, { cookie: `${NEON_AUTH_SESSION_COOKIE_NAME}=opaque; family_frame_session=not-provider` });
-  const env = { NEON_AUTH_BASE_URL: 'https://auth.example/neondb/auth' };
-  let seen;
-  const response = userId => Response.json({ user: { id: userId }, session: { userId, expiresAt: new Date(Date.now() + 60_000).toISOString() } });
-  await verifyFreshSession(request, 'member', env, async (url, options) => { seen = { url, options }; return response('member'); });
-  assert.ok(seen.url.endsWith('/get-session?disableCookieCache=true'));
-  assert.equal(seen.options.headers.cookie, `${NEON_AUTH_SESSION_COOKIE_NAME}=opaque`);
-  await assert.rejects(verifyFreshSession(request, 'member', env, async () => response('someone-else')), error => error.status === 401);
-  await assert.rejects(verifyFreshSession(request, 'member', env, async () => Response.json(null)), error => error.status === 401);
+test('every phone read checks provider session revocation and mutations bind cookie session', async () => {
+  const claims = { sub: randomUUID(), session_id: randomUUID(), email: 'fixture@example.test' };
+  let active = true;
+  const calls = [];
+  const db = { query: async (sql, values) => { calls.push({ sql, values }); return { rows: sql.includes('family_internal.auth_sessions') && active ? [{ id: claims.session_id }] : [] }; } };
+  const options = { verifyJwt: async () => claims };
+  const read = req('session', 'GET', undefined, { authorization: 'Bearer fixture' });
+  assert.equal((await authenticate(read, db, options)).household, null);
+  assert.deepEqual(calls.find(call => call.sql.includes('family_internal.auth_sessions')).values, [claims.session_id, claims.sub]);
+  assert.match(calls[0].sql, /not_after>now\(\)/);
+  active = false;
+  await assert.rejects(authenticate(read, db, options), error => error.code === 'session_required');
+  active = true;
+  const mutation = req('people', 'POST', {}, { authorization: 'Bearer fixture' });
+  await assert.rejects(authenticate(mutation, db, { ...options, authContext: { sessionClaims: async () => ({ ...claims, session_id: randomUUID() }) } }), error => error.status === 401);
+  assert.equal((await authenticate(mutation, db, { ...options, authContext: { sessionClaims: async () => claims } })).user.id, claims.sub);
 });
 
-test('actual pinned SDK cookie namespace remains first-party, private and deletable', () => {
-  assert.equal(NEON_AUTH_SESSION_COOKIE_NAME, '__Secure-neon-auth.session_token');
-  const request = req('session', 'GET', undefined, { cookie: `${NEON_AUTH_SESSION_COOKIE_NAME}=opaque; unrelated=secret` });
-  assert.equal(providerCookies(request), `${NEON_AUTH_SESSION_COOKIE_NAME}=opaque`);
-  const rewritten = firstPartyCookie(`${NEON_AUTH_SESSION_COOKIE_NAME}=opaque; Domain=auth.example; Path=/neondb/auth; Secure; HttpOnly; SameSite=None; Max-Age=900`);
-  assert.ok(!rewritten.includes('Domain='));
-  assert.match(rewritten, /Path=\//);
-  assert.match(rewritten, /HttpOnly/);
-  assert.match(rewritten, /Secure/);
-  assert.match(firstPartyCookie(`${NEON_AUTH_SESSION_COOKIE_NAME}=; Max-Age=0; Secure; HttpOnly`), /Max-Age=0/i);
-  assert.throws(() => firstPartyCookie('unrelated=credential; HttpOnly; Secure'));
-});
-
-test('gateway forwards only proven Vercel routing keys and rejects redirects or open paths', async () => {
-  const env = { NEON_AUTH_BASE_URL: 'https://auth.example/neondb/auth' };
-  let seen;
-  const fetchImpl = async (url, options) => { seen = { url: String(url), options }; return Response.json(null); };
-  const response = await authGateway(req('auth/get-session?__route=auth/get-session&path=auth/get-session'), 'get-session', { env, fetchImpl });
-  assert.equal(response.status, 200);
-  assert.equal(seen.url, `${env.NEON_AUTH_BASE_URL}/get-session`);
-  assert.equal(seen.options.redirect, 'manual');
-  for (const query of ['path=sign-up/email', 'redirect=https://attacker.example', '__route=wrong']) {
-    await assert.rejects(authGateway(req(`auth/get-session?${query}`), 'get-session', { env, fetchImpl }), error => error.status === 422);
+test('SSR cookie adapter keeps chunks private, host-only and copied to error responses', async () => {
+  let sdk;
+  const context = createAuthContext(req('session', 'GET', undefined, { cookie: `${AUTH_COOKIE}.0=old; unrelated=private` }), {
+    env: { SUPABASE_URL: 'https://auth.example', SUPABASE_PUBLISHABLE_KEY: 'publishable-fixture' },
+    createClient: (url, key, options) => { sdk = options; return { auth: {} }; },
+  });
+  assert.deepEqual(sdk.cookies.getAll(), [{ name: `${AUTH_COOKIE}.0`, value: 'old' }]);
+  await sdk.cookies.setAll([
+    { name: `${AUTH_COOKIE}.0`, value: 'new', options: { domain: 'bad.example', path: '/bad', httpOnly: false, secure: false } },
+    { name: `${AUTH_COOKIE}.1`, value: 'chunk', options: {} },
+  ], { Expires: '0', Pragma: 'no-cache' });
+  const result = context.finish(Response.json({ error: 'fixture' }, { status: 409 }));
+  assert.equal(result.status, 409);
+  assert.equal(result.headers.getSetCookie().length, 2);
+  for (const cookie of result.headers.getSetCookie()) {
+    assert.ok(!cookie.includes('Domain=')); assert.match(cookie, /Path=\//); assert.match(cookie, /HttpOnly/); assert.match(cookie, /Secure/); assert.match(cookie, /SameSite=Lax/);
   }
-  await assert.rejects(authGateway(req('auth/unknown'), 'unknown', { env, fetchImpl }), error => error.status === 404);
-  await assert.rejects(authGateway(req('auth/get-session'), 'get-session', { env, fetchImpl: async () => new Response(null, { status: 302, headers: { Location: 'https://attacker.example' } }) }), error => error.status === 502);
-  await assert.rejects(authGateway(req('auth/sign-in/email', 'POST', { email: 'test@example.com', password: 'fixture', callbackURL: 'https://attacker.example' }), 'sign-in/email', { env, fetchImpl }), error => error.status === 422);
+  assert.match(result.headers.get('Cache-Control'), /private.*no-store/);
+  context.clearCookies();
+  assert.ok(context.finish(Response.json({})).headers.getSetCookie().every(value => /Max-Age=0/.test(value)));
+});
+
+test('BFF allows only proven routing keys and fixed auth operations', async () => {
+  const options = { createAuthContext: () => ({ client: { auth: {} }, sessionClaims: async () => null, finish: response => response }) };
+  const response = await authGateway(req('auth/get-session?__route=auth/get-session&path=auth/get-session'), 'get-session', neverDb, options);
+  assert.equal(response.status, 200);
+  assert.equal(await response.json(), null);
+  for (const query of ['path=sign-up/email', 'redirect=https://attacker.example', '__route=wrong']) {
+    assert.equal((await authGateway(req(`auth/get-session?${query}`), 'get-session', neverDb, options)).status, 422);
+  }
+  assert.equal((await authGateway(req('auth/unknown'), 'unknown', neverDb, options)).status, 404);
+  assert.equal((await authGateway(req('auth/sign-in/email', 'POST', { email: 'test@example.com', password: 'fixture', callbackURL: 'https://attacker.example' }), 'sign-in/email', neverDb, options)).status, 422);
+});
+
+test('confirmation links are parsed locally for the exact project without redirects', () => {
+  const env = { SUPABASE_URL: 'https://auth.example' };
+  const hash = 'a'.repeat(64);
+  assert.deepEqual(confirmationCredentials({ confirmationLink: `https://auth.example/auth/v1/verify?token=${hash}&type=signup&redirect_to=https://attacker.example` }, env), { token_hash: hash, type: 'email' });
+  assert.deepEqual(confirmationCredentials({ email: 'test@example.com', token: '123456' }, env), { email: 'test@example.com', token: '123456', type: 'email' });
+  for (const link of [`https://attacker.example/auth/v1/verify?token=${hash}&type=signup`, `https://auth.example/auth/v1/verify?token=${hash}&type=recovery`, `https://auth.example/auth/v1/verify?token=${hash}&token=${hash}&type=email`]) {
+    assert.throws(() => confirmationCredentials({ confirmationLink: link }, env), error => error.status === 422);
+  }
+});
+
+test('node-postgres effective SSL cannot be overridden by URL parameters', () => {
+  for (const suffix of ['ssl=0', 'sslmode=require', 'sslnegotiation=direct', 'sslrootcert=bad', 'sslcert=bad&sslkey=bad']) {
+    const client = new pg.Client(poolConfig({ DATABASE_URL: `postgresql://fixture:fixture@db.example.invalid/postgres?${suffix}`, SUPABASE_DB_CA_CERT: 'fixture-ca' }));
+    assert.deepEqual(client.connectionParameters.ssl, { rejectUnauthorized: true, ca: 'fixture-ca' });
+  }
+});
+
+test('pinned SSR SDK chunks, refreshes and clears real sessions without exposing refresh tokens', async () => {
+  const env = { SUPABASE_URL: 'https://ssr-fixture.example', SUPABASE_PUBLISHABLE_KEY: 'publishable-fixture' };
+  const claims = { sub: randomUUID(), session_id: randomUUID(), role: 'authenticated', exp: Math.floor(Date.now() / 1000) + 3600,
+    email: 'fixture@example.test', user_metadata: { name: 'N'.repeat(7000) } };
+  const { privateKey } = await generateKeyPair('ES256');
+  const access = await new SignJWT(claims).setProtectedHeader({ alg: 'ES256', kid: 'fixture' }).setIssuedAt().sign(privateKey);
+  const refresh = 'private-refresh-fixture';
+  let loggedOut = false;
+  let refreshed = false;
+  const fetches = [];
+  const fetchImpl = async (url, options) => {
+    fetches.push({ url: String(url), options });
+    if (String(url).includes('/logout')) { loggedOut = true; return new Response(null, { status: 204 }); }
+    if (String(url).includes('grant_type=refresh_token')) refreshed = true;
+    return Response.json({ access_token: access, refresh_token: refresh, token_type: 'bearer', expires_in: 3600,
+      expires_at: claims.exp, user: { id: claims.sub, email: claims.email, user_metadata: claims.user_metadata } });
+  };
+  const db = { query: async () => ({ rows: [{ id: claims.session_id }] }) };
+  const options = { env, fetchImpl, verifyJwt: async token => { assert.equal(token, access); return claims; } };
+  const signedIn = await authGateway(req('auth/sign-in/email', 'POST', { email: claims.email, password: 'password-fixture' }), 'sign-in/email', db, options);
+  assert.equal(signedIn.status, 200);
+  const result = await signedIn.clone().json();
+  assert.equal(result.user.id, claims.sub);
+  assert.ok(!JSON.stringify(result).includes(refresh));
+  assert.ok(!JSON.stringify(result).includes(access));
+  const cookieWrites = signedIn.headers.getSetCookie();
+  assert.ok(cookieWrites.length >= 2, 'Large sessions must preserve all SDK chunks.');
+  let cookie = cookieWrites.map(value => value.split(';')[0]).join('; ');
+  const jar = new Map(parseCookieHeader(cookie).map(item => [item.name, item.value]));
+  const encoded = await combineChunks(AUTH_COOKIE, async name => jar.get(name));
+  const expiredSession = JSON.parse(stringFromBase64URL(encoded.slice('base64-'.length)));
+  expiredSession.expires_at = Math.floor(Date.now() / 1000) - 60;
+  cookie = createChunks(AUTH_COOKIE, `base64-${stringToBase64URL(JSON.stringify(expiredSession))}`).map(item => `${item.name}=${item.value}`).join('; ');
+  const session = await authGateway(req('auth/get-session', 'GET', undefined, { cookie }), 'get-session', db, options);
+  assert.equal((await session.json()).user.id, claims.sub);
+  assert.equal(refreshed, true);
+  assert.ok(session.headers.getSetCookie().length > 0, 'Updated refresh chunks must reach the response.');
+  const refreshedJar = new Map(parseCookieHeader(cookie).map(item => [item.name, item.value]));
+  for (const value of session.headers.getSetCookie()) {
+    const item = parseCookieHeader(value.split(';')[0])[0];
+    if (/Max-Age=0/.test(value)) refreshedJar.delete(item.name); else refreshedJar.set(item.name, item.value);
+  }
+  cookie = [...refreshedJar].map(([name, value]) => `${name}=${value}`).join('; ');
+  const token = await authGateway(req('auth/token', 'GET', undefined, { cookie }), 'token', db, options);
+  assert.deepEqual(await token.json(), { token: access });
+  const signOut = await authGateway(req('auth/sign-out', 'POST', {}, { cookie }), 'sign-out', db, options);
+  assert.equal(signOut.status, 200);
+  assert.equal(loggedOut, true);
+  assert.ok(signOut.headers.getSetCookie().length >= 2);
+  assert.ok(signOut.headers.getSetCookie().every(value => /Max-Age=0/.test(value)));
+  assert.ok(fetches.every(call => call.options.redirect === 'manual'));
+});
+
+test('BFF confirmation, revoked-session cookies and provider errors remain sanitized', async () => {
+  let received;
+  const context = {
+    client: { auth: { signUp: async body => { received = body; return { data: { session: null }, error: null }; },
+      signInWithPassword: async () => ({ error: { code: 'email_not_confirmed', status: 400, message: 'private details' } }),
+      verifyOtp: async body => { received = body; return { error: { code: 'otp_expired', status: 403, message: 'private token' } }; } } },
+    sessionClaims: async () => { throw Object.assign(new Error('Private user'), { code: 'session_required' }); },
+    clearCookies() {}, finish: response => response,
+  };
+  const options = { createAuthContext: () => context, env: { SUPABASE_URL: 'https://auth.example' } };
+  const signup = await authGateway(req('auth/sign-up/email', 'POST', { email: 'test@example.com', password: 'password-fixture', name: 'Owner' }), 'sign-up/email', neverDb, options);
+  assert.deepEqual(await signup.json(), { session: null, user: null, confirmationRequired: true });
+  assert.deepEqual(received.options.data, { name: 'Owner' });
+  const unconfirmed = await authGateway(req('auth/sign-in/email', 'POST', { email: 'test@example.com', password: 'password-fixture' }), 'sign-in/email', neverDb, options);
+  assert.equal(unconfirmed.status, 403);
+  const unconfirmedBody = await unconfirmed.json();
+  assert.equal(unconfirmedBody.error.code, 'email_not_confirmed');
+  assert.ok(!JSON.stringify(unconfirmedBody).includes('private details'));
+  const verify = await authGateway(req('auth/verify-email', 'POST', { email: 'test@example.com', token: '123456' }), 'verify-email', neverDb, options);
+  assert.equal(verify.status, 422);
+  assert.equal((await verify.json()).error.code, 'verification_expired');
+  assert.deepEqual(received, { email: 'test@example.com', token: '123456', type: 'email' });
+});
+
+test('API validation errors preserve cookie refresh writes from the same request', async () => {
+  const claims = { sub: randomUUID(), session_id: randomUUID() };
+  const db = { query: async sql => ({ rows: sql.includes('family_internal.auth_sessions') ? [{ id: claims.session_id }]
+    : [{ role: 'admin', household_id: household.id, title: household.title, timezone: household.timezone }] }) };
+  const response = await handleRequest(req('people', 'POST', {}, { authorization: 'Bearer fixture' }), {
+    db, verifyJwt: async () => claims,
+    createAuthContext: () => ({ sessionClaims: async () => claims, finish: response => {
+      const headers = new Headers(response.headers);
+      headers.append('Set-Cookie', `${AUTH_COOKIE}.0=refreshed; Path=/; HttpOnly; Secure; SameSite=Lax`);
+      return new Response(response.body, { status: response.status, headers });
+    } }),
+  });
+  assert.equal(response.status, 422);
+  assert.equal(response.headers.getSetCookie().length, 1);
 });
 
 test('frames and members cannot change setup, identities, chore definitions or credentials', async () => {

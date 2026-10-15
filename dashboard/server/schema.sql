@@ -128,3 +128,24 @@ REVOKE ALL ON TABLE family_households, family_members, family_people,
   family_chores, family_completions, family_mutations, family_invites,
   family_frame_pairs, family_devices, family_calendar_connections,
   family_calendar_cache, family_rate_limits FROM PUBLIC;
+
+-- Supabase API roles must have no table privileges even if project defaults
+-- grant privileges to new public tables. This does not modify auth schemas.
+DO $block$
+DECLARE
+  role_name text;
+  table_name text;
+BEGIN
+  FOREACH role_name IN ARRAY ARRAY['anon','authenticated','service_role'] LOOP
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname=role_name) THEN
+      FOREACH table_name IN ARRAY ARRAY[
+        'family_households','family_members','family_people','family_chores',
+        'family_completions','family_mutations','family_invites','family_frame_pairs',
+        'family_devices','family_calendar_connections','family_calendar_cache','family_rate_limits'
+      ] LOOP
+        EXECUTE format('REVOKE ALL ON TABLE %I FROM %I', table_name, role_name);
+      END LOOP;
+    END IF;
+  END LOOP;
+END
+$block$;

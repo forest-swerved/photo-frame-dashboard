@@ -1,8 +1,8 @@
 # Family dashboard backend
 
-This backend serves `family.html` on Vercel Node 24. It uses the dedicated Neon database and managed Neon Auth. Household data is available only through this API; browser sign-up alone does not create membership.
+This backend serves `family.html` on Vercel Node 24. It uses a dedicated Supabase project in Swerved for Postgres and Auth. Household data is available only through this API; browser sign-up alone does not create membership.
 
-Required server environment variables are `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `NEON_AUTH_BASE_URL`, `FAMILY_ENCRYPTION_KEY` (standard base64, 32 random bytes), and `FAMILY_BOOTSTRAP_HASH` (SHA-256 hex of a private random claim code). Keep them out of `VITE_*` variables and source control. `VITE_NEON_AUTH_URL` is public provider configuration; the browser client uses the same-origin `/api/auth` gateway.
+Required server environment variables are `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `FAMILY_ENCRYPTION_KEY` (standard base64, 32 random bytes), and `FAMILY_BOOTSTRAP_HASH` (SHA-256 hex of a private random claim code). `SUPABASE_DB_CA_CERT` provides the project CA PEM when needed. Keep these settings out of `VITE_*` variables and source control. The browser uses only the same-origin `/api/auth` backend; it has no Supabase client, project key, or refresh token.
 
 ## Initialize and verify
 
@@ -14,9 +14,11 @@ node --env-file=.env.local server/verify-schema.js
 node --test server/backend.test.js server/calendar-normalize.test.js server/calendar-normalize-bounded.test.js server/icloud-caldav.test.js
 ```
 
-The migration changes only twelve `family_*` tables. Each has RLS enabled, no browser policies, and no PUBLIC privileges. The owning server role retains access; managed `neon_auth` tables are not modified.
+The migration changes only twelve `family_*` tables. Each has RLS enabled, no browser policies, and no PUBLIC/anon/authenticated/service_role privileges. The server role `family_frame_server` owns only these tables and retains owner access. It has no superuser, role/database creation, replication, BYPASSRLS, or inherited role privileges. Provision table creation separately, then revoke its schema CREATE privilege. Database connections use node-postgres with verified TLS; URL flags cannot disable certificate verification or replace the explicit CA configuration.
 
-Database race tests require a separate database named **`family_frame_tests`** and an ignored `.env.test.local`. They refuse any other database before DDL. Each run creates and removes only its own random schema:
+The privileged setup process also provisions a non-exposed `family_internal.auth_sessions` view, owned by `postgres`, with exactly `id`, `user_id`, and `not_after` from managed `auth.sessions`. Only the server role receives schema USAGE and view SELECT. PUBLIC and API roles receive neither. This intentional private definer view gives the application a narrow revocation lookup without auth-schema USAGE, direct auth-table grants, auth DDL, or broad RLS bypass. `verify-schema.js` verifies both the household tables and this boundary.
+
+Database race tests use the existing separate test database named **`family_frame_tests`** and an ignored `.env.test.local`. They refuse any other database before DDL. Each run creates and removes only its own random schema; managed Supabase tables are never fixture targets:
 
 ```sh
 FAMILY_RUN_DB_TESTS=1 node --env-file=.env.test.local --test server/backend.integration.test.js
@@ -24,17 +26,13 @@ FAMILY_RUN_DB_TESTS=1 node --env-file=.env.test.local --test server/backend.inte
 
 ## Sign-in and household access
 
-The pinned `@neondatabase/auth@0.6.0-beta` client uses the current origin:
+The browser's small fetch helper preserves `auth.signIn.email()`, `auth.signUp.email()`, `auth.getSession()`, `auth.token()`, and `auth.signOut()` for the UI. It receives only transient access JWTs and safe identity data; it never copies credentials into localStorage or URLs. Keep fetch credentials `same-origin`.
 
-```js
-const auth = createAuthClient(`${location.origin}/api/auth`);
-```
+The server uses pinned `@supabase/ssr@0.12.7` and `@supabase/supabase-js@2.118.0`, creating a separate server client for each request. Its official getAll/setAll adapter preserves SDK cookie chunking and refreshes in first-party `__Host-family_auth` cookies, always Secure, HttpOnly, SameSite=Lax, Path=/, and host-only. Cookie writes and cache prevention headers are copied to successful and error responses. Browser JavaScript cannot read refresh tokens. The gateway allows only fixed email sign-up/sign-in, sign-out, confirmation/resend, get-session, and token operations. It rejects unknown body/query fields, cross-origin requests, and upstream redirects.
 
-Sign-in/up use `auth.signIn.email()` / `auth.signUp.email()`. Obtain a transient bearer with `const { data, error } = await auth.token()` and `data.token`; do not save copies in browser storage. Keep fetch credentials `same-origin`.
+Every phone API request verifies the JWT signature using only ES256/RS256, its project `/auth/v1` issuer, `authenticated` audience/role, expiry, UUID subject, and UUID `session_id`. It then checks that exact session/user in the private view with a future or null `not_after`, and reads current household membership. Mutations additionally match the current cookie session's subject and session ID to the bearer. Current session/membership revocation therefore applies to reads as well as writes; a remaining cryptographically valid JWT does not bypass a removed provider session. User metadata is display data only and never grants roles.
 
-The gateway allows only email sign-up/sign-in, sign-out, get-session, and token endpoints. It preserves the actual application origin for Neon trusted-origin checks. Configure the deployed application origin in Neon Auth before live sign-in. It rewrites only the official Neon cookie namespace to first-party Secure HttpOnly cookies using the pinned SDK cookie utilities, and rejects upstream redirects.
-
-Every phone API request verifies the signed JWT issuer, audience, expiry and signature, then reads current household membership. Every phone mutation also validates the opaque provider cookie through fresh `get-session?disableCookieCache=true` and matches its user to the JWT subject. Membership revocation takes effect on subsequent requests. A signed-out JWT may remain valid for reads until its provider expiry (normally 15 minutes); it cannot authorize mutations without the fresh session cookie. The backend does not invent a JWT session ID.
+Email confirmation stays enabled. `POST /api/auth/verify-email` accepts either `{email,token}` (6–10 numeric digits) or `{confirmationLink}`. Link mode accepts only this exact project's HTTPS `/auth/v1/verify` URL with signup/email type; it extracts the hash for `verifyOtp` and never follows, redirects, logs, or returns the link. `redirect_to` is ignored. Configure the provider confirmation template to include an OTP where supported, and verify actual email delivery separately. The resend endpoint accepts `{email}`. These provider auth responses use raw `{session,user}`/`null`, `{token}`, or `{success:true}`; the phone helper wraps them for the UI. Signup without a session returns `{session:null,user:null,confirmationRequired:true}`.
 
 The private bootstrap code can claim the single household exactly once and creates its administrator atomically. Admins create single-use invitations for manual sharing. No invitation emails are sent by this application. People profiles are display names and are separate from authenticated accounts.
 

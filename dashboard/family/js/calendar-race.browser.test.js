@@ -8,22 +8,24 @@ import { dateInZone, addDays } from './model.js';
 
 const baseUrl = process.env.FAMILY_UI_TEST_URL;
 
-test('the pinned SDK retrieves a JWT after its getSession cache is populated', { skip: !baseUrl }, async () => {
+test('the BFF retrieves a transient JWT using only same-origin requests', { skip: !baseUrl }, async () => {
   const origin = new URL(baseUrl);
   assert.ok(['localhost', '127.0.0.1'].includes(origin.hostname), 'UI fixtures may run only against localhost.');
   const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
   const browser = await chromium.launch({ headless: true });
   try {
     const page = await browser.newPage();
-    let tokenRequests = 0;
+    const tokenRequests = [];
+    const externalRequests = [];
+    page.on('request', request => { if (new URL(request.url()).origin !== origin.origin) externalRequests.push(request.url()); });
     await page.route('**/api/**', async route => {
       const path = new URL(route.request().url()).pathname;
       if (path === '/api/session') {
         await route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: { code: 'test_signed_out', message: 'Test session only.' } }) });
         return;
       }
-      const data = path === '/api/auth/get-session' ? { session: { id: 'test-session', token: 'opaque-test-session', expiresAt: new Date(Date.now() + 3600000).toISOString() }, user: { id: 'test-user', name: 'UI TEST USER', email: 'test@example.invalid' } } : { token: 'test.fixture.only' };
-      if (path === '/api/auth/token') tokenRequests++;
+      const data = path === '/api/auth/get-session' ? { session: { expiresAt: new Date(Date.now() + 3600000).toISOString() }, user: { id: 'test-user', name: 'UI TEST USER', email: 'test@example.invalid' } } : { token: 'test.fixture.only' };
+      if (path === '/api/auth/token') tokenRequests.push(route.request().headers());
       await route.fulfill({ contentType: 'application/json', body: JSON.stringify(data) });
     });
     await page.goto(new URL('/family.html', origin).href);
@@ -32,12 +34,14 @@ test('the pinned SDK retrieves a JWT after its getSession cache is populated', {
       const { authClient, tokenForClient } = await import('/family/js/auth.js');
       const auth = await authClient();
       await auth.getSession();
-      const ordinary = await auth.token();
-      return { ordinaryToken: ordinary.data?.token || null, jwt: await tokenForClient(auth) };
+      return { jwt: await tokenForClient(auth), localKeys: Object.keys(localStorage), sessionKeys: Object.keys(sessionStorage) };
     });
-    assert.equal(result.ordinaryToken, null, 'Reproduce the pinned SDK session/token cache collision.');
     assert.equal(result.jwt, 'test.fixture.only');
-    assert.ok(tokenRequests >= 1, 'The helper must actually request the JWT endpoint.');
+    assert.ok(tokenRequests.length >= 1, 'The helper must actually request the JWT endpoint.');
+    assert.ok(tokenRequests.every(headers => !headers['x-force-fetch']), 'No former SDK cache-workaround header remains.');
+    assert.deepEqual(result.localKeys, []);
+    assert.deepEqual(result.sessionKeys, []);
+    assert.deepEqual(externalRequests, []);
   } finally { await browser.close(); }
 });
 
@@ -62,7 +66,7 @@ for (const obsoleteResponse of ['success', 'unauthorized']) {
         const url = new URL(route.request().url());
         apiRequests.push(url.pathname);
         let data;
-        if (url.pathname === '/api/auth/get-session') data = { session: { id: 'test-session', token: 'opaque-test-session', expiresAt: new Date(Date.now() + 3600000).toISOString() }, user };
+        if (url.pathname === '/api/auth/get-session') data = { session: { expiresAt: new Date(Date.now() + 3600000).toISOString() }, user };
         else if (url.pathname === '/api/auth/token') data = { token: 'test.fixture.only' };
         else if (url.pathname === '/api/session') data = { authenticated: true, authType: 'user', role: 'admin', user, household };
         else if (url.pathname === '/api/household') data = { household, role: 'admin', date, people: [], chores: [] };

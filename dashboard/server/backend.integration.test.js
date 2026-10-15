@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { Pool } from '@neondatabase/serverless';
+import { createPool } from './database.js';
 import { authenticate } from './auth.js';
 import { handleRequest } from './app.js';
 import { digest, encryptCredentials } from './credentials.js';
@@ -22,7 +22,7 @@ const request = (path, method = 'GET', body, headers = {}) => new Request(`${ori
 const user = id => ({ authType: 'user', actor: `user:${id}`, user: { id, name: id, email: `${id}@example.test` }, role: null, household: null });
 
 test('isolated Postgres authorization and concurrency boundaries', { skip: !enabled, timeout: 180_000 }, async t => {
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL, max: 10, connectionTimeoutMillis: 10_000 });
+  const pool = createPool(process.env, { migration: true, max: 10 });
   const schema = `family_test_${randomUUID().replaceAll('-', '')}`;
   let created = false;
   const env = { FAMILY_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString('base64'), FAMILY_BOOTSTRAP_HASH: digest('integration-claim'), VERCEL: '1' };

@@ -17,6 +17,7 @@ const S = {
   booting: true, session: null, snapshot: null, calendar: null, connection: null, devices: [], members: [],
   view: views.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'today',
   calendarMode: 'week', selectedDate: dateInZone(), authMode: 'sign-in',
+  verificationEmail: '', verificationMethod: 'code',
   entryPair: new URLSearchParams(location.search).get('display') === 'frame',
   inviteToken: '', generatedInvite: null, pairing: null, message: '', error: '', loading: false,
   pending: new Map(), conflicts: new Map(), failures: new Map(), attempts: new Map(), calendarBusy: false, setupBusy: false,
@@ -184,7 +185,14 @@ function setupView() {
 }
 
 function entryView() {
-  const authForm = S.authMode === 'sign-up' ? `<p class="eyebrow">A place for your people</p><h2>Create your account</h2><form data-form="sign-up" class="form-stack">${field('Your name', 'name', '', { autocomplete: 'name', max: 100 })}${field('Email', 'email', '', { type: 'email', autocomplete: 'email' })}${field('Password', 'password', '', { type: 'password', autocomplete: 'new-password', max: 128, extra: 'minlength="8"' })}${formError()}<button class="button" type="submit">Create account</button></form><p class="form-switch">Already have an account? ${button('Sign in', 'auth-mode', 'text-button', 'data-mode="sign-in"')}</p>` : `<p class="eyebrow">Welcome home</p><h2>Your family, together.</h2><p class="supporting">A shared calendar. A little teamwork. More room for the good stuff.</p><form data-form="sign-in" class="form-stack">${field('Email', 'email', '', { type: 'email', autocomplete: 'email' })}${field('Password', 'password', '', { type: 'password', autocomplete: 'current-password', max: 128 })}${formError()}<button class="button" type="submit">Sign in</button></form><p class="form-switch">New here? ${button('Create an account', 'auth-mode', 'text-button', 'data-mode="sign-up"')}</p>`;
+  let authForm;
+  if (S.authMode === 'verify') {
+    authForm = `<p class="eyebrow">One more step</p><h2>Confirm your email.</h2><p class="supporting">Check the confirmation email for your account. Enter its code, or paste the full confirmation link below. Your account gains family access only after you join or claim a household.</p><div class="segmented verification-tabs" role="group" aria-label="Email confirmation method">${button('Enter code', 'verification-method', `segment ${S.verificationMethod === 'code' ? 'selected' : ''}`, `data-method="code" aria-pressed="${S.verificationMethod === 'code'}"`)}${button('Paste link', 'verification-method', `segment ${S.verificationMethod === 'link' ? 'selected' : ''}`, `data-method="link" aria-pressed="${S.verificationMethod === 'link'}"`)}</div><form data-form="verify-email" class="form-stack">${field('Email', 'email', S.verificationEmail, { type: 'email', autocomplete: 'email' })}${S.verificationMethod === 'code' ? field('Email confirmation code', 'token', '', { max: 10, autocomplete: 'one-time-code', extra: 'inputmode="numeric" pattern="[0-9]{6,10}"' }) : field('Full confirmation link from the email', 'confirmationLink', '', { type: 'url', autocomplete: 'off', max: 3000 })}<p class="field-help">${S.verificationMethod === 'code' ? 'Use the code from the confirmation email. If it contains a link instead, choose Paste link.' : 'The link is checked by our server. This page does not open or follow it.'}</p>${formError()}<button class="button" type="submit">Confirm email</button>${button('Resend confirmation email', 'resend-verification', 'text-button')}</form><p class="form-switch">Already confirmed? ${button('Back to sign in', 'auth-mode', 'text-button', 'data-mode="sign-in"')}</p>`;
+  } else if (S.authMode === 'sign-up') {
+    authForm = `<p class="eyebrow">A place for your people</p><h2>Create your account</h2><form data-form="sign-up" class="form-stack">${field('Your name', 'name', '', { autocomplete: 'name', max: 100 })}${field('Email', 'email', S.verificationEmail, { type: 'email', autocomplete: 'email' })}${field('Password', 'password', '', { type: 'password', autocomplete: 'new-password', max: 128, extra: 'minlength="12"' })}${formError()}<button class="button" type="submit">Create account</button></form><p class="form-switch">Already have an account? ${button('Sign in', 'auth-mode', 'text-button', 'data-mode="sign-in"')}</p>`;
+  } else {
+    authForm = `<p class="eyebrow">Welcome home</p><h2>Your family, together.</h2><p class="supporting">A shared calendar. A little teamwork. More room for the good stuff.</p><form data-form="sign-in" class="form-stack">${field('Email', 'email', S.verificationEmail, { type: 'email', autocomplete: 'email' })}${field('Password', 'password', '', { type: 'password', autocomplete: 'current-password', max: 128 })}${formError()}<button class="button" type="submit">Sign in</button></form><p class="form-switch">New here? ${button('Create an account', 'auth-mode', 'text-button', 'data-mode="sign-up"')}</p><p class="form-switch">Waiting to confirm your email? ${button('Confirm email', 'auth-mode', 'text-button', 'data-mode="verify"')}</p>`;
+  }
   const pairForm = `<p class="supporting">On an administrator's phone, open Setup and create a pairing code. Enter that code here to connect this display.</p><form data-form="redeem-pair" class="form-stack">${field('Six-digit pairing code', 'code', '', { max: 6, extra: 'inputmode="numeric" pattern="[0-9]{6}"' })}${formError()}<button class="button" type="submit">Pair this frame</button></form>`;
   const content = S.entryPair ? `<div class="auth-card"><p class="eyebrow">A place on your wall</p><h2>Bring your<br>family home.</h2>${pairForm}<p class="form-switch">Using your phone? ${button('Sign in to your account', 'show-account-entry', 'text-button')}</p></div>` : `<div class="auth-card">${authForm}</div><details class="pair-entry"><summary>Setting up your photo frame?</summary>${pairForm}</details>`;
   return `<main id="main-content" class="entry-layout"><section class="entry-story"><a class="entry-brand" href="/family.html">Family Frame<span>A little more together.</span></a><div class="entry-clock">${clockMarkup()}</div><div class="entry-art" aria-hidden="true"><span></span><span></span><span></span></div><p class="entry-tagline">The everyday,<br><em>shared.</em></p><p class="entry-footnote">Your calendar stays private.<br>Your family stays connected.</p></section><section class="entry-content">${S.error ? `<div class="banner banner-error" role="alert">${h(S.error)}</div>` : ''}${S.message ? `<div class="banner" role="status">${h(S.message)}</div>` : ''}${content}</section></main>`;
@@ -398,20 +406,41 @@ async function submitForm(event, run) {
 }
 
 const forms = {
-  'sign-in': async form => {
+  'sign-in': async (form, element) => {
     setFrameMode(false);
     const auth = await authClient();
-    const result = await auth.signIn.email({ email: form.get('email').trim(), password: form.get('password') });
+    S.verificationEmail = form.get('email').trim();
+    const password = form.get('password');
+    element.querySelector('[name="password"]').value = ''; form.delete('password');
+    const result = await auth.signIn.email({ email: S.verificationEmail, password });
+    if (result.error?.code === 'email_not_confirmed') { S.authMode = 'verify'; S.message = 'Confirm your email to finish signing in.'; render(true); return; }
     if (result.error) throw new Error(result.error.message || 'Could not sign in.');
     S.error = ''; S.message = ''; await boot();
   },
-  'sign-up': async form => {
+  'sign-up': async (form, element) => {
     setFrameMode(false);
     const auth = await authClient();
-    const result = await auth.signUp.email({ name: form.get('name').trim(), email: form.get('email').trim(), password: form.get('password') });
+    S.verificationEmail = form.get('email').trim();
+    const password = form.get('password');
+    element.querySelector('[name="password"]').value = ''; form.delete('password');
+    const result = await auth.signUp.email({ name: form.get('name').trim(), email: S.verificationEmail, password });
     if (result.error) throw new Error(result.error.message || 'Could not create your account.');
-    S.message = 'Account created. If email verification is required, follow the message from your sign-in provider, then sign in here.';
-    S.authMode = 'sign-in'; await boot();
+    if (result.data?.confirmationRequired) { S.authMode = 'verify'; S.message = 'Email confirmation is required before you can sign in. Check your inbox.'; render(true); return; }
+    S.authMode = 'sign-in'; S.message = ''; await boot();
+  },
+  'verify-email': async (form, element) => {
+    const auth = await authClient();
+    S.verificationEmail = form.get('email').trim();
+    const payload = S.verificationMethod === 'link' ? { confirmationLink: form.get('confirmationLink').trim() } : { email: S.verificationEmail, token: form.get('token').trim() };
+    let result;
+    try { result = await auth.verifyEmail(payload); }
+    finally {
+      const secret = element.querySelector('[name="token"], [name="confirmationLink"]');
+      if (secret) secret.value = '';
+      form.delete('token'); form.delete('confirmationLink');
+    }
+    if (result.error) throw new Error(result.error.message || 'Could not confirm your email.');
+    S.message = ''; S.authMode = 'sign-in'; S.error = ''; await boot();
   },
   claim: async form => { S.session = await request('/api/claim', { method: 'POST', body: { bootstrapCode: form.get('bootstrapCode'), title: form.get('title').trim() } }); await boot(); },
   join: async form => {
@@ -445,7 +474,24 @@ async function action(name, element) {
   const id = element.dataset.id;
   if (name === 'refresh') return refresh();
   if (name === 'show-account-entry') { S.entryPair = false; render(true); return; }
-  if (name === 'auth-mode') { S.authMode = element.dataset.mode; S.error = ''; return render(true); }
+  if (name === 'auth-mode') { const email = app.querySelector('[name="email"]'); if (email) S.verificationEmail = email.value.trim(); S.authMode = element.dataset.mode; S.error = ''; S.message = ''; return render(true); }
+  if (name === 'verification-method') { const email = app.querySelector('[name="email"]'); if (email) S.verificationEmail = email.value.trim(); S.verificationMethod = element.dataset.method; render(true); return; }
+  if (name === 'resend-verification') {
+    const form = element.closest('form');
+    const email = form.querySelector('[name="email"]');
+    if (!email.reportValidity()) return;
+    const errorBox = form.querySelector('[data-form-error]');
+    element.disabled = true;
+    try {
+      const auth = await authClient();
+      const result = await auth.resendVerification({ email: email.value.trim() });
+      if (result.error) throw new Error(result.error.message || 'Could not resend confirmation.');
+      errorBox.hidden = true;
+      toast('Confirmation requested. Check your email; delivery can take a moment.');
+    } catch (error) { errorBox.textContent = errorMessage(error); errorBox.hidden = false; }
+    finally { if (element.isConnected) element.disabled = false; }
+    return;
+  }
   if (name === 'add-person') return editPerson();
   if (name === 'edit-person') return editPerson(person(id));
   if (name === 'add-chore') return editChore();
@@ -480,7 +526,7 @@ async function action(name, element) {
     const auth = await authClient();
     const result = await auth.signOut();
     if (result.error) throw new Error(result.error.message || 'Could not sign out. Try again.');
-    S.session = null; S.snapshot = null; S.calendar = null; S.connection = null; S.devices = []; S.members = []; S.generatedInvite = null; S.pairing = null; S.error = ''; S.message = ''; S.pending.clear(); S.conflicts.clear(); S.failures.clear(); S.attempts.clear();
+    S.session = null; S.snapshot = null; S.calendar = null; S.connection = null; S.devices = []; S.members = []; S.generatedInvite = null; S.pairing = null; S.verificationEmail = ''; S.authMode = 'sign-in'; S.error = ''; S.message = ''; S.pending.clear(); S.conflicts.clear(); S.failures.clear(); S.attempts.clear();
     render(true); return;
   }
   if (name === 'refresh-calendar') return loadCalendar(true);
