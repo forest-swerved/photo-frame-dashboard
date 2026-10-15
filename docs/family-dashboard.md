@@ -123,8 +123,12 @@ the real signed-out API flow at **390 × 844** and **1280 × 800**, with no Java
 external font/photo requests. Shared-state UI behavior was also exercised with clearly labeled
 test fixtures; those checks do not establish live Apple or multi-device behavior.
 
-Completion still needs separate evidence for the deployed HTTPS app, the owner's account and
-household claim, private Apple discovery and event accuracy, phone-to-frame chore updates,
+The deployed HTTPS app also passed a real Supabase test-account flow: confirmation, browser
+acceptance of private cookies, rejection of household access before membership, and logout
+revocation. The temporary account was removed without claiming the household or sending email.
+
+Completion still needs separate evidence for the owner's account and household claim,
+private Apple discovery and event accuracy, phone-to-frame chore updates,
 and the PF1007L's actual rendering, cookies, networking, and unattended reboot behavior.
 Supabase’s built-in sender delivers only to project team members. Configure a custom SMTP
 service before inviting family accounts outside that team. See [Supabase’s SMTP guide](https://supabase.com/docs/guides/auth/auth-smtp).
