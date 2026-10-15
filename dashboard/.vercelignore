@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+.vercel
+node_modules
+dist
+*.local.log
+**/*.test.js
+server/README.md
+server/schema.sql
+server/migrate.js
+server/verify-schema.js

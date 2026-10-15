@@ -65,6 +65,10 @@ Settings → About before you follow any guide:
 
 ## The dashboard
 
+This fork also includes a private iCloud calendar and shared chores app for phones
+and a paired frame. Start with [the family dashboard setup guide](docs/family-dashboard.md).
+Its entry point is `dashboard/family.html`; the original demo remains below.
+
 [`dashboard/`](dashboard) is the family dashboard we run on the BIUFRAME (it uses mock data): a Vite
 web app deployed to Cloudflare Workers. `dashboard/kiosk/` is a small full-screen WebView Android app,
 built without Gradle, that shows it. Hold two fingers still for 1.5 s to open a menu for the
