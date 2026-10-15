@@ -11,9 +11,11 @@
       "includeFiles": "{server/calendar-normalize.js,server/calendar-normalize-bounded.js,server/calendar-normalize-worker.js,node_modules/ical.js/**,node_modules/@js-temporal/polyfill/**,node_modules/jsbi/**}"
     }
   },
+  "redirects": [
+    { "source": "/", "destination": "/family.html", "permanent": false }
+  ],
   "rewrites": [
-    { "source": "/api/:path*", "destination": "/api/index?__route=:path" },
-    { "source": "/", "destination": "/family.html" }
+    { "source": "/api/:path*", "destination": "/api/index?__route=:path" }
   ],
   "headers": [
     {
