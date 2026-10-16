@@ -4,8 +4,10 @@ import { ApiError, readJson, requireValue, textField } from './errors.js';
 import { assertSameOrigin, authUrl, userDto, verifySessionRow, verifyUserJwt } from './auth.js';
 
 export const AUTH_COOKIE = '__Host-family_auth';
-const cookieName = name => name === AUTH_COOKIE || new RegExp(`^${AUTH_COOKIE}\\.\\d+$`).test(name)
-  || name === `${AUTH_COOKIE}-code-verifier` || name === `${AUTH_COOKIE}-user`;
+// The pinned SDK persists both an individual PKCE verifier and its flow index
+// before signup reaches the provider. Every supported storage key may be chunked.
+const authCookiePattern = new RegExp(`^${AUTH_COOKIE}(?:-user|-code-verifier|-flows-code-verifier|-flow-[A-Za-z0-9_-]{8,64}-code-verifier)?(?:\\.(?:0|[1-9]\\d*))?$`);
+const cookieName = name => authCookiePattern.test(name);
 const routes = new Map([
   ['sign-in/email', 'POST'], ['sign-up/email', 'POST'], ['sign-out', 'POST'],
   ['verify-email', 'POST'], ['resend-verification', 'POST'], ['get-session', 'GET'], ['token', 'GET'],

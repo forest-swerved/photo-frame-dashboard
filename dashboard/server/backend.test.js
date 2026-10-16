@@ -85,6 +85,73 @@ test('SSR cookie adapter keeps chunks private, host-only and copied to error res
   assert.ok(context.finish(Response.json({})).headers.getSetCookie().every(value => /Max-Age=0/.test(value)));
 });
 
+test('pinned SSR SDK signup persists PKCE flow cookies before requesting confirmation', async () => {
+  const env = { SUPABASE_URL: 'https://signup-fixture.example', SUPABASE_PUBLISHABLE_KEY: 'publishable-fixture' };
+  const email = 'signup@example.test';
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url: new URL(url), options, body: JSON.parse(options.body) });
+    return Response.json({ id: randomUUID(), email, identities: [] });
+  };
+  const options = { env, fetchImpl };
+  const response = await authGateway(req('auth/sign-up/email', 'POST', { email, name: 'Owner', password: 'password-fixture' }), 'sign-up/email', neverDb, options);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { session: null, user: null, confirmationRequired: true });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url.pathname, '/auth/v1/signup');
+  assert.equal(calls[0].body.code_challenge_method, 's256');
+  assert.match(calls[0].body.code_challenge, /^[A-Za-z0-9_-]{43}$/);
+  const writes = response.headers.getSetCookie();
+  const jar = new Map(writes.map(value => {
+    assert.match(value, /HttpOnly/); assert.match(value, /Secure/); assert.match(value, /SameSite=Lax/); assert.match(value, /Path=\//);
+    assert.ok(!value.includes('Domain='));
+    const cookie = parseCookieHeader(value.split(';')[0])[0]; return [cookie.name, cookie.value];
+  }));
+  const indexName = `${AUTH_COOKIE}-flows-code-verifier`;
+  const [flowId] = JSON.parse(stringFromBase64URL(jar.get(indexName).slice('base64-'.length)));
+  assert.match(flowId, /^[A-Za-z0-9_-]{8,64}$/);
+  assert.equal(jar.get(`${AUTH_COOKIE}-flow-${flowId}-code-verifier`), jar.get(`${AUTH_COOKIE}-code-verifier`));
+  assert.equal(jar.size, 3);
+  const cookie = [...jar].map(([name, value]) => `${name}=${value}`).join('; ');
+  const signedOut = await authGateway(req('auth/sign-out', 'POST', {}, { cookie }), 'sign-out', neverDb, options);
+  assert.equal(signedOut.status, 200);
+  const removals = signedOut.headers.getSetCookie();
+  assert.deepEqual(new Set(removals.map(value => value.split('=')[0])), new Set(jar.keys()));
+  assert.ok(removals.every(value => /Max-Age=0/.test(value)));
+});
+
+test('SSR cookie boundary accepts only app session and bounded PKCE cookie families', () => {
+  const slot = `${AUTH_COOKIE}-flow-${'a'.repeat(32)}-code-verifier`;
+  const allowed = [AUTH_COOKIE, `${AUTH_COOKIE}.0`, `${AUTH_COOKIE}-user.1`, `${AUTH_COOKIE}-code-verifier`,
+    `${AUTH_COOKIE}-flows-code-verifier.0`, slot, `${slot}.1`];
+  const rejected = ['unrelated', `other${AUTH_COOKIE}`, `${AUTH_COOKIE}-unknown`, `${AUTH_COOKIE}.00`, `${AUTH_COOKIE}.x`,
+    `${AUTH_COOKIE}-flow-short-code-verifier`, `${AUTH_COOKIE}-flow-${'a'.repeat(65)}-code-verifier`, `${slot}.extra`, `${slot}.0.extra`];
+  let sdk;
+  const context = createAuthContext(req('session', 'GET', undefined, { cookie: [...allowed, ...rejected].map(name => `${name}=fixture`).join('; ') }), {
+    env: { SUPABASE_URL: 'https://cookie-fixture.example', SUPABASE_PUBLISHABLE_KEY: 'publishable-fixture' },
+    createClient: (url, key, options) => { sdk = options; return { auth: {} }; },
+  });
+  assert.deepEqual(sdk.cookies.getAll().map(cookie => cookie.name), allowed);
+  for (const name of rejected) assert.throws(() => sdk.cookies.setAll([{ name, value: 'fixture' }]), error => error.code === 'auth_unavailable');
+  context.clearCookies();
+  assert.equal(context.finish(Response.json({})).headers.getSetCookie().length, allowed.length);
+});
+
+test('pinned SSR SDK signup failure clears per-flow cookies and sanitizes provider errors', async () => {
+  const response = await authGateway(req('auth/sign-up/email', 'POST', { email: 'failed@example.test', name: 'Owner', password: 'password-fixture' }), 'sign-up/email', neverDb, {
+    env: { SUPABASE_URL: 'https://signup-failure.example', SUPABASE_PUBLISHABLE_KEY: 'publishable-fixture' },
+    fetchImpl: async () => Response.json({ code: 'weak_password', msg: 'private provider details', weak_password: { reasons: ['length'] } },
+      { status: 422, headers: { 'x-supabase-api-version': '2024-01-01' } }),
+  });
+  assert.equal(response.status, 422);
+  const body = await response.json();
+  assert.equal(body.error.code, 'weak_password');
+  assert.ok(!JSON.stringify(body).includes('private provider details'));
+  const perFlow = response.headers.getSetCookie().filter(cookie => cookie.startsWith(`${AUTH_COOKIE}-flow`));
+  assert.equal(perFlow.length, 2);
+  assert.ok(perFlow.every(cookie => /Max-Age=0/.test(cookie) && /HttpOnly/.test(cookie) && /Secure/.test(cookie)));
+});
+
 test('BFF allows only proven routing keys and fixed auth operations', async () => {
   const options = { createAuthContext: () => ({ client: { auth: {} }, sessionClaims: async () => null, finish: response => response }) };
   const response = await authGateway(req('auth/get-session?__route=auth/get-session&path=auth/get-session'), 'get-session', neverDb, options);
