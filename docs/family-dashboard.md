@@ -130,8 +130,10 @@ revocation. The temporary account was removed without claiming the household or 
 Completion still needs separate evidence for the owner's account and household claim,
 private Apple discovery and event accuracy, phone-to-frame chore updates,
 and the PF1007L's actual rendering, cookies, networking, and unattended reboot behavior.
-Supabase’s built-in sender delivers only to project team members. Configure a custom SMTP
-service before inviting family accounts outside that team. See [Supabase’s SMTP guide](https://supabase.com/docs/guides/auth/auth-smtp).
+The deployed app has custom SMTP configured through Swerved's existing Resend account,
+using a dedicated sending key restricted to the verified sender domain. Configuration
+readback and a certificate-verified SMTP login passed; these checks do not prove inbox
+delivery. See [Supabase’s SMTP guide](https://supabase.com/docs/guides/auth/auth-smtp).
 
 Email confirmation and resend screens are implemented, but email delivery and successful
 owner confirmation still need live verification. Password-reset screens are not configured
