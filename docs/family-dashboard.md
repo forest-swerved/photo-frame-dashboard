@@ -24,6 +24,11 @@ The setup code can claim the household only once. Creating a sign-in account alo
 grant access to family data. Keep the setup code out of chat, screenshots, source files, and
 shared links.
 
+The setup code can be a short PIN configured by the person setting up the dashboard.
+For a short PIN, bind setup to the intended confirmed account with the server-only
+`FAMILY_BOOTSTRAP_USER_ID` setting. The account password and emailed confirmation code
+remain separate from this one-use household setup code.
+
 Account passwords, email confirmation codes, and confirmation links belong only in the app's
 forms. The browser does not save them or authentication tokens in local/session storage.
 Phone sign-in uses server-managed first-party HttpOnly cookies; signing in does not require

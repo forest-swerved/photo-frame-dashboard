@@ -25,7 +25,8 @@ test('isolated Postgres authorization and concurrency boundaries', { skip: !enab
   const pool = createPool(process.env, { migration: true, max: 10 });
   const schema = `family_test_${randomUUID().replaceAll('-', '')}`;
   let created = false;
-  const env = { FAMILY_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString('base64'), FAMILY_BOOTSTRAP_HASH: digest('integration-claim'), VERCEL: '1' };
+  const ownerId = randomUUID();
+  const env = { FAMILY_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString('base64'), FAMILY_BOOTSTRAP_HASH: digest('4826'), FAMILY_BOOTSTRAP_USER_ID: ownerId, VERCEL: '1' };
   const db = {
     async connect() {
       const client = await pool.connect();
@@ -48,8 +49,14 @@ test('isolated Postgres authorization and concurrency boundaries', { skip: !enab
       assert.equal(await verifySchema(db, schema), 12);
     });
 
-    await t.test('two simultaneous valid bootstrap claims create one owner', async () => {
-      const results = await Promise.allSettled(['owner-a', 'owner-b'].map(id => claimHousehold(db, user(id), { bootstrapCode: 'integration-claim' }, env)));
+    await t.test('a short setup code cannot be claimed by a different signed-in account', async () => {
+      await assert.rejects(claimHousehold(db, user('owner-b'), { bootstrapCode: '4826' }, env), error => error.code === 'invalid_claim');
+      assert.equal((await db.query('SELECT * FROM family_households')).rowCount, 0);
+      assert.equal((await db.query('SELECT * FROM family_members')).rowCount, 0);
+    });
+
+    await t.test('two simultaneous valid short-code claims create one owner', async () => {
+      const results = await Promise.allSettled([0, 1].map(() => claimHousehold(db, user(ownerId), { bootstrapCode: '4826' }, env)));
       assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
       assert.equal(results.find(result => result.status === 'rejected').reason.code, 'already_claimed');
       const session = results.find(result => result.status === 'fulfilled').value;

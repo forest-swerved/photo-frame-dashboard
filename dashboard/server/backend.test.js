@@ -8,8 +8,8 @@ import { authenticate, verifySessionRow, verifyUserJwt } from './auth.js';
 import { AUTH_COOKIE, authGateway, confirmationCredentials, createAuthContext } from './supabase-auth.js';
 import { poolConfig } from './database.js';
 import { handleRequest } from './app.js';
-import { decryptCredentials, encryptCredentials } from './credentials.js';
-import { changePerson, completionDecision } from './household.js';
+import { decryptCredentials, digest, encryptCredentials } from './credentials.js';
+import { changePerson, claimHousehold, completionDecision } from './household.js';
 import { calendarSnapshot, connectCalendar, selectCalendars } from './calendar-service.js';
 import { CalendarSyncError } from './icloud-caldav.js';
 import { dateField, readJson } from './errors.js';
@@ -291,6 +291,16 @@ test('sign-up alone grants neither household data nor owner membership', async (
   assert.equal(data.claimRequired, false);
   const blocked = await handleRequest(req('household'), { db: neverDb, authenticate: async () => principal });
   assert.equal(blocked.status, 403);
+});
+
+test('a short household setup code remains restricted to its configured signed-in owner', async () => {
+  const owner = { ...member, user: { id: randomUUID() } };
+  const env = { FAMILY_BOOTSTRAP_USER_ID: owner.user.id, FAMILY_BOOTSTRAP_HASH: digest('4826') };
+  const body = { bootstrapCode: '4826' };
+  await assert.rejects(claimHousehold(neverDb, frame, body, env), error => error.code === 'user_required');
+  await assert.rejects(claimHousehold(neverDb, member, body, env), error => error.code === 'invalid_claim');
+  await assert.rejects(claimHousehold(neverDb, owner, { bootstrapCode: 'wrong' }, env), error => error.code === 'invalid_claim');
+  await assert.rejects(claimHousehold(neverDb, owner, body, { ...env, FAMILY_BOOTSTRAP_USER_ID: 'not-a-user-id' }), error => error.status === 503);
 });
 
 test('paired frame authentication consults current revocation and expiry row on each request', async () => {

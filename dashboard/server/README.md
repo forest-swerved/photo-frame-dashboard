@@ -2,7 +2,7 @@
 
 This backend serves `family.html` on Vercel Node 24. It uses a dedicated Supabase project in Swerved for Postgres and Auth. Household data is available only through this API; browser sign-up alone does not create membership.
 
-Required server environment variables are `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `FAMILY_ENCRYPTION_KEY` (standard base64, 32 random bytes), and `FAMILY_BOOTSTRAP_HASH` (SHA-256 hex of a private random claim code). `SUPABASE_DB_CA_CERT` provides the project CA PEM when needed. Keep these settings out of `VITE_*` variables and source control. The browser uses only the same-origin `/api/auth` backend; it has no Supabase client, project key, or refresh token.
+Required server environment variables are `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `FAMILY_ENCRYPTION_KEY` (standard base64, 32 random bytes), and `FAMILY_BOOTSTRAP_HASH` (SHA-256 hex of the configured private claim code). `SUPABASE_DB_CA_CERT` provides the project CA PEM when needed. Keep these settings out of `VITE_*` variables and source control. The browser uses only the same-origin `/api/auth` backend; it has no Supabase client, project key, or refresh token.
 
 ## Initialize and verify
 
@@ -34,7 +34,7 @@ Every phone API request verifies the JWT signature using only ES256/RS256, its p
 
 Email confirmation stays enabled. `POST /api/auth/verify-email` accepts either `{email,token}` (6–10 numeric digits) or `{confirmationLink}`. Link mode accepts only this exact project's HTTPS `/auth/v1/verify` URL with signup/email type; it extracts the hash for `verifyOtp` and never follows, redirects, logs, or returns the link. `redirect_to` is ignored. Configure the provider confirmation template to include an OTP where supported, and verify actual email delivery separately. The resend endpoint accepts `{email}`. These provider auth responses use raw `{session,user}`/`null`, `{token}`, or `{success:true}`; the phone helper wraps them for the UI. Signup without a session returns `{session:null,user:null,confirmationRequired:true}`.
 
-The private bootstrap code can claim the single household exactly once and creates its administrator atomically. Admins create single-use invitations for manual sharing. No invitation emails are sent by this application. People profiles are display names and are separate from authenticated accounts.
+The private bootstrap code can claim the single household exactly once and creates its administrator atomically. It may be a short PIN; set `FAMILY_BOOTSTRAP_USER_ID` to the intended confirmed account UUID so only that signed-in account can use it. Store only its digest in `FAMILY_BOOTSTRAP_HASH`. Admins create single-use invitations for manual sharing. No invitation emails are sent by this application. People profiles are display names and are separate from authenticated accounts.
 
 Frame pairing uses a six-digit code valid for ten minutes. Creating a new code invalidates older active codes. Redemption has database-backed limits of five attempts per IP per minute and thirty globally per minute. A successful redemption sets only a Secure HttpOnly SameSite=Strict `family_frame_session` cookie. Its random secret is stored as a hash in the database, expires after one year, and is checked for expiry/revocation on every request. Frames can read the household/calendar and complete chores; they cannot change Setup, credentials, membership, or chore definitions.
 

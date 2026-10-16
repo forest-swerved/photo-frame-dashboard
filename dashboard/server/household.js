@@ -18,6 +18,12 @@ export async function sessionData(db, principal) {
 
 export async function claimHousehold(db, principal, body, env = process.env) {
   requireValue(principal.authType === 'user', 403, 'user_required', 'Sign in to claim the household.');
+  if (env.FAMILY_BOOTSTRAP_USER_ID) {
+    let ownerId;
+    try { ownerId = uuidField(env.FAMILY_BOOTSTRAP_USER_ID).toLowerCase(); }
+    catch { throw new ApiError(503, 'configuration_missing', 'Household setup is not configured.'); }
+    requireValue(principal.user.id === ownerId, 403, 'invalid_claim', 'That claim code is invalid.');
+  }
   requireValue(matchesDigest(textField(body.bootstrapCode, 'Claim code', 200), env.FAMILY_BOOTSTRAP_HASH),
     403, 'invalid_claim', 'That claim code is invalid.');
   return transaction(db, async client => {
