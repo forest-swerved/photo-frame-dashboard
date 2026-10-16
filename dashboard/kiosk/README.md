@@ -11,7 +11,8 @@ Hold two fingers still on the dashboard for 1.5 seconds to open the native contr
 
 ## Dashboard URL
 
-The kiosk opens the hosted demo dashboard by default. To show your own, save its URL once:
+This fork opens `https://forest-family-frame.vercel.app/?display=frame` by default. To use a
+different dashboard, save its URL once:
 
 ```sh
 adb shell am start -n com.wesbos.homehq/.MainActivity --es url https://your-dashboard/
@@ -22,6 +23,7 @@ URL when run without one.
 
 Every later launch, including after a reboot, opens the saved URL. Links that other apps open
 in the kiosk, such as a sign-in page, are shown but not saved.
+An existing saved URL also takes precedence after an APK update; use the command above to change it.
 
 ## Start at boot
 

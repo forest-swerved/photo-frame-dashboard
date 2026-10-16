@@ -49,7 +49,7 @@ import android.widget.TextView;
  */
 public class MainActivity extends Activity {
   static final String TAG = "HomeHQ";
-  static final String DEFAULT_URL = "https://home-dashboard.wesbos.workers.dev/";
+  static final String DEFAULT_URL = "https://forest-family-frame.vercel.app/?display=frame";
   static final String PREFS = "kiosk";
   static final String PREF_URL = "url";
   static final long EXIT_HOLD_MS = 1500;
