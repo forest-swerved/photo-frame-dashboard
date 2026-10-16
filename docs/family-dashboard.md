@@ -127,6 +127,12 @@ The deployed HTTPS app also passed a real Supabase test-account flow: confirmati
 acceptance of private cookies, rejection of household access before membership, and logout
 revocation. The temporary account was removed without claiming the household or sending email.
 
+Signup itself also passed against the pinned SSR SDK and a staged production build,
+including its per-flow PKCE cookies, an eight-digit confirmation sent through Resend's
+simulated recipient, verification, membership restrictions, and sign-out revocation.
+The temporary signup account was removed. Simulated delivery does not establish delivery
+to the owner's inbox.
+
 Completion still needs separate evidence for the owner's account and household claim,
 private Apple discovery and event accuracy, phone-to-frame chore updates,
 and the PF1007L's actual rendering, cookies, networking, and unattended reboot behavior.
