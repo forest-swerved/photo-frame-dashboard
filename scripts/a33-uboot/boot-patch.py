@@ -83,14 +83,18 @@ def partitions(image):
 
 
 def parse_boot(boot):
+    if len(boot) < 2048 or len(boot) % SECTOR:
+        fail("boot partition is truncated or not sector-aligned")
     magic, kernel_size, _, ramdisk_size, _, second_size, _, _, page = struct.unpack_from("<8s8I", boot, 0)
     if magic != b"ANDROID!":
         fail("not an Android boot image at that sector")
     if page != 2048 or second_size != 0 or boot[40:44] != bytes(4):
         fail("unexpected page size, second stage or header version")
     pad = lambda n: (n + page - 1) // page * page
-    kernel = boot[page:page + kernel_size]
     ramdisk_offset = page + pad(kernel_size)
+    if not kernel_size or not ramdisk_size or ramdisk_offset + pad(ramdisk_size) > len(boot):
+        fail("kernel or padded ramdisk slot is outside the boot partition")
+    kernel = boot[page:page + kernel_size]
     ramdisk = boot[ramdisk_offset:ramdisk_offset + ramdisk_size]
     digest = hashlib.sha1()
     for part in (kernel, ramdisk, b""):
@@ -156,6 +160,8 @@ def build(boot):
 
 def verify(old, new, ramdisk_offset, slot):
     """Independent re-parse: one rc file changed, nothing outside header + slot."""
+    if len(old) != len(new):
+        fail("boot partition length changed")
     _, _, _, old_cpio = parse_boot(old)
     _, _, _, new_cpio = parse_boot(new)
     old_records, _ = cpio_records(old_cpio)
@@ -183,6 +189,81 @@ def script_image(text):
     return bytes(header) + body
 
 
+def guarded_script(title, expect, write, *, header_sector, header_sectors,
+                   ramdisk_sector, ramdisk_sectors, crc, allow_partial=False):
+    """Fail closed on selection, reads, payloads, source bytes and both readbacks.
+
+    Restore may accept a mixture of exact original/patched ranges, as an
+    interrupted forward write can leave the ramdisk new and the header original.
+    Unknown/torn bytes never qualify. This is not an atomic write or repair for
+    torn sectors: retain the backup and verify the whole eMMC before Android.
+    """
+    if expect not in ("orig", "new") or write not in ("orig", "new") or expect == write:
+        fail("invalid boot patch direction")
+    numbers = (header_sector, header_sectors, ramdisk_sector, ramdisk_sectors)
+    if any(type(value) is not int or value <= 0 for value in numbers):
+        fail("invalid boot patch range")
+    if header_sectors * SECTOR > 0x1000000 or ramdisk_sectors * SECTOR > 0x1000000:
+        fail("boot patch payload exceeds its reserved RAM slot")
+    if header_sector + header_sectors > ramdisk_sector:
+        fail("boot patch ranges overlap or are out of order")
+    parts = (("header", header_sector, header_sectors),
+             ("ramdisk", ramdisk_sector, ramdisk_sectors))
+    for kind in ("orig", "new"):
+        for part, _, _ in parts:
+            value = crc.get(f"{kind}_{part}")
+            if not isinstance(value, str) or len(value) != 8 or any(c not in "0123456789abcdef" for c in value):
+                fail("invalid boot payload CRC")
+
+    def payload_checks():
+        return " && ".join(
+            f"crc32 -v {ADDR[f'{kind}_{part}']:#x} {sectors * SECTOR:#x} {crc[f'{kind}_{part}']}"
+            for kind in ("orig", "new") for part, _, sectors in parts)
+
+    def read(part, sector, sectors):
+        return f"mmc read {ADDR[f'read_{part}']:#x} {sector:#x} {sectors:#x}"
+
+    def compare(kind, part, sectors):
+        return f"cmp.b {ADDR[f'{kind}_{part}']:#x} {ADDR[f'read_{part}']:#x} {sectors * SECTOR:#x}"
+
+    lines = [f"# {title}. Load all four original/new payloads with sunxi-fel first.",
+             "# Every source range is checked before the first write. Header is committed last.",
+             "# Failed select/read/CRC/compare stops the write path, even if scratch RAM is stale.",
+             "if mmc dev 1 0; then",
+             f"  if {payload_checks()} && " + " && ".join(read(*part) for part in parts) + "; then",
+             "    setenv boot_source_ok 1"]
+    for part, _, sectors in parts:
+        lines.append(f"    if {compare(expect, part, sectors)}; then echo {part} holds expected source")
+        if allow_partial:
+            lines.append(f"    elif {compare(write, part, sectors)}; then echo {part} is already restored")
+        lines.append(f"    else echo {part} source FAILED; setenv boot_source_ok 0; fi")
+    lines += ['    if test "${boot_source_ok}" = 1; then',
+              "      setenv boot_range_ok 1"]
+    for part, sector, sectors in reversed(parts):
+        lines += ['      if test "${boot_range_ok}" = 1; then',
+                  "        setenv boot_range_ok 0",
+                  f"        if {read(part, sector, sectors)} && {payload_checks()}; then"]
+        if allow_partial:
+            lines += [f"          if {compare(write, part, sectors)}; then",
+                      f"            echo {part} already restored; setenv boot_range_ok 1",
+                      f"          elif {compare(expect, part, sectors)}; then"]
+        else:
+            lines.append(f"          if {compare(expect, part, sectors)}; then")
+        lines += [f"            if mmc write {ADDR[f'{write}_{part}']:#x} {sector:#x} {sectors:#x} && "
+                  f"{read(part, sector, sectors)} && {compare(write, part, sectors)}; then",
+                  f"              echo {part} written and read back; setenv boot_range_ok 1",
+                  f"            else echo {part} write or readback FAILED; fi",
+                  f"          else echo {part} source changed: nothing further written; fi",
+                  f"        else echo {part} read or payload CRC FAILED; fi",
+                  "      fi"]
+    lines += ['      if test "${boot_range_ok}" = 1; then echo boot patch complete and read back; fi',
+              "    else echo source bytes FAILED: nothing written; fi",
+              "  else echo preflight read or payload CRC FAILED: nothing written; fi",
+              "else echo eMMC select FAILED: nothing written; fi",
+              "ums 0 mmc 1"]
+    return "\n".join(lines) + "\n"
+
+
 def main():
     if len(sys.argv) != 3:
         sys.exit(__doc__)
@@ -193,6 +274,8 @@ def main():
             fail("that sector is not the start of a partition in this image")
         image.seek(boot_sector * SECTOR)
         old = image.read(sizes[boot_sector] * SECTOR)
+        if len(old) != sizes[boot_sector] * SECTOR:
+            fail("boot partition extends beyond the backup image")
 
     new, ramdisk_offset, slot = build(old)
     header_sectors = verify(old, new, ramdisk_offset, slot)
@@ -200,7 +283,9 @@ def main():
     if old[header_bytes:ramdisk_offset] != new[header_bytes:ramdisk_offset]:
         fail("bytes between the header write and the ramdisk slot changed")
 
-    OUT.mkdir(parents=True, exist_ok=True)
+    if OUT.exists():
+        fail(f"{OUT} already exists; preserve its plan and payloads before preparing another")
+    OUT.mkdir(parents=True)
     payloads = {
         "orig_header": old[:header_bytes], "new_header": new[:header_bytes],
         "orig_ramdisk": old[ramdisk_offset:ramdisk_offset + slot],
@@ -213,33 +298,12 @@ def main():
     header_sector, ramdisk_sector = boot_sector, boot_sector + ramdisk_offset // SECTOR
     ramdisk_sectors = slot // SECTOR
 
-    def guarded_script(title, expect, write):
-        """Write `write` payloads only if all CRCs match and the flash holds `expect`."""
-        checks = [f"crc32 -v {ADDR[f'{kind}_{part}']:#x} {size:#x} {crc[f'{kind}_{part}']}"
-                  for kind in ("orig", "new") for part, size in (("header", header_bytes), ("ramdisk", slot))]
-        checks += [f"cmp.b {ADDR[f'{expect}_header']:#x} {ADDR['read_header']:#x} {header_bytes:#x}",
-                   f"cmp.b {ADDR[f'{expect}_ramdisk']:#x} {ADDR['read_ramdisk']:#x} {slot:#x}"]
-        return f"""# {title}. Load the payloads with sunxi-fel first:
-#   {ADDR['orig_header']:#x} orig-header.bin    {ADDR['orig_ramdisk']:#x} orig-ramdisk.bin
-#   {ADDR['new_header']:#x} new-header.bin     {ADDR['new_ramdisk']:#x} new-ramdisk.bin
-# Writes only if every payload matches its CRC-32 AND the eMMC holds the {expect} bytes.
-mmc dev 1
-mmc read {ADDR['read_header']:#x} {header_sector:#x} {header_sectors:#x}
-mmc read {ADDR['read_ramdisk']:#x} {ramdisk_sector:#x} {ramdisk_sectors:#x}
-# Stop at the first failure: the header is written last, and only if the ramdisk write
-# succeeded and reads back byte-for-byte. The host's verify step then shows exactly which
-# range is wrong. A failed write still needs the restore procedure.
-if {' && '.join(checks)}; then
-  if mmc write {ADDR[f'{write}_ramdisk']:#x} {ramdisk_sector:#x} {ramdisk_sectors:#x} && mmc read {ADDR['read_ramdisk']:#x} {ramdisk_sector:#x} {ramdisk_sectors:#x} && cmp.b {ADDR[f'{write}_ramdisk']:#x} {ADDR['read_ramdisk']:#x} {slot:#x}; then
-    mmc write {ADDR[f'{write}_header']:#x} {header_sector:#x} {header_sectors:#x}
-  fi
-fi
-ums 0 mmc 1
-"""
-
     for name, title, expect, write in (("write-boot", "PF1007L boot patch", "orig", "new"),
                                        ("restore-boot", "Undo the PF1007L boot patch", "new", "orig")):
-        script = guarded_script(title, expect, write)
+        script = guarded_script(title, expect, write, header_sector=header_sector,
+                                header_sectors=header_sectors, ramdisk_sector=ramdisk_sector,
+                                ramdisk_sectors=ramdisk_sectors, crc=crc,
+                                allow_partial=name == "restore-boot")
         (OUT / f"{name}.cmd").write_text(script)
         (OUT / f"{name}.scr").write_bytes(script_image(script.encode()))
     plan = {
