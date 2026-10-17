@@ -4,6 +4,12 @@ The family app has **Today**, **Calendar**, **Chores**, and **Setup** screens. I
 household's actual data, with no sample family, events, weather, or home-security status.
 The same app adapts to a phone and a 1280 × 800 frame.
 
+The dashboard uses Swerved Stack's light palette: white surfaces, dark text, red actions,
+and bright cyan, lime and magenta accents. It keeps that appearance at every hour, with no
+automatic night dimming.
+Screen brightness is controlled separately in Android Settings; choose manual brightness
+and set it to 100% to keep the frame at full brightness.
+
 Verification snapshot: **2026-10-16**. The family app is deployed on Vercel with a dedicated
 Swerved Supabase project for its database and sign-in. The checks below distinguish hosted
 application results from the remaining physical-frame checks.
@@ -152,16 +158,27 @@ and page rendering passed.
 The owner selected **Home HQ → Always** and physically tested the two-finger menu,
 **Android settings → Apps**, and floating **Back / Dashboard** controls. The three identified
 vendor apps were disabled, with their stopped and saved disabled states checked again after
-restart; Home HQ started automatically. The owner connected Wi-Fi and reached the production
-pairing-code form on the actual frame.
+restart; Home HQ started automatically. Home HQ 1.2 is installed; an actual Android keyboard
+test verified that the focused field stays visible, with keyboard dismissal, reopening and
+full-height restoration.
 
-Completion still needs these checks on the paired frame:
+The frame is now paired. Network access failures on the earlier network cleared after the
+owner moved it to an IoT network, and the owner reported it working. Fresh device connectivity,
+a nonrevoked frame record and a successful calendar-cache refresh were verified. No additional
+proxy or firmware change was needed to resolve the network problem.
 
-- Redeem a private pairing code and confirm the intended calendar renders correctly.
-- Complete and reopen a chore across the frame and a phone, checking that both show the saved
-  state.
-- Power-cycle with the microSD removed and confirm automatic dashboard startup, Wi-Fi
-  reconnection, retained pairing, and working navigation.
+The owner confirmed the intended calendar is visible and a real chore updated on both
+devices after creating it on the phone and completing it on the frame.
+
+The owner also completed a full power cycle with all USB / power disconnected, the microSD
+removed, and the usual power adapter. Automatic dashboard startup, Wi-Fi reconnection,
+retained pairing, calendar / saved chore state, and the two-finger menu all returned.
+
+Android manual maximum brightness passed Settings, PowerManager and actual display-controller
+readbacks. A further Android restart retained brightness 255 / 255, automatic brightness off,
+and automatic Home HQ startup. The brighter Swerved light theme and removal of automatic web
+dimming passed the production build and fixture-based browser checks across four views at
+frame and phone sizes. Deployment and actual-frame appearance checks are still pending.
 
 ## Keep for recovery
 

@@ -562,8 +562,6 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden && S.
 setInterval(() => {
   paintClock();
   if (S.session?.household && S.snapshot && S.snapshot.date !== today() && !pollBusy) { pollBusy = true; refresh().finally(() => { pollBusy = false; }); }
-  const hour = Number(new Intl.DateTimeFormat('en-US', { timeZone: zone(), hour: 'numeric', hourCycle: 'h23' }).format(new Date()));
-  document.body.classList.toggle('night-hours', frame() && (hour >= 22 || hour < 6));
 }, 1000);
 setInterval(async () => {
   if (document.hidden || !S.session?.household || pollBusy || dialog.open) return;
