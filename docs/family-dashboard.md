@@ -176,9 +176,15 @@ retained pairing, calendar / saved chore state, and the two-finger menu all retu
 
 Android manual maximum brightness passed Settings, PowerManager and actual display-controller
 readbacks. A further Android restart retained brightness 255 / 255, automatic brightness off,
-and automatic Home HQ startup. The brighter Swerved light theme and removal of automatic web
-dimming passed the production build and fixture-based browser checks across four views at
-frame and phone sizes. Deployment and actual-frame appearance checks are still pending.
+and automatic Home HQ startup. The Swerved light theme and removal of automatic web dimming
+are deployed at the same production address. Production build and eight fixture views across
+phone and frame sizes passed without overflow or JavaScript errors; deployed JavaScript and
+CSS matched the staged files exactly.
+
+On the actual paired frame, the live page returned healthy responses at 1280 × 800 and had no
+brightness filter or overnight dimming class. Its white panels and cyan / lime borders match
+the Swerved light theme, with magenta in the palette. Temporary debugging was disabled and
+its forwarding rule removed.
 
 ## Keep for recovery
 
