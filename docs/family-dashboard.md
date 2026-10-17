@@ -4,8 +4,9 @@ The family app has **Today**, **Calendar**, **Chores**, and **Setup** screens. I
 household's actual data, with no sample family, events, weather, or home-security status.
 The same app adapts to a phone and a 1280 × 800 frame.
 
-Implementation snapshot: **2026-10-15**. Build, local browser, and deployment verification are
-separate checkpoints; this guide does not establish that a public deployment is live.
+Verification snapshot: **2026-10-16**. The family app is deployed on Vercel with a dedicated
+Swerved Supabase project for its database and sign-in. The checks below distinguish hosted
+application results from the remaining physical-frame checks.
 
 ## 1. Create your administrator account
 
@@ -126,26 +127,50 @@ The implementation has passed its production build and regression checks for sig
 calendar coverage, date boundaries, and concurrent chore updates. Local browser checks covered
 the real signed-out API flow at **390 × 844** and **1280 × 800**, with no JavaScript errors or
 external font/photo requests. Shared-state UI behavior was also exercised with clearly labeled
-test fixtures; those checks do not establish live Apple or multi-device behavior.
+test fixtures; those checks alone do not establish multi-device behavior.
 
 The deployed HTTPS app also passed a real Supabase test-account flow: confirmation, browser
 acceptance of private cookies, rejection of household access before membership, and logout
-revocation. The temporary account was removed without claiming the household or sending email.
+revocation. Temporary test accounts were removed. Signup's per-flow PKCE cookies and the
+confirmation/resend flow were checked separately. The owner then confirmed their actual
+account, claimed the household with an account-bound short setup code, and connected a private
+Apple Calendar. Live discovery, selected-calendar events, and complete sync coverage were
+verified without adding calendar contents or account identifiers to this repository.
 
-Signup itself also passed against the pinned SSR SDK and a staged production build,
-including its per-flow PKCE cookies, an eight-digit confirmation sent through Resend's
-simulated recipient, verification, membership restrictions, and sign-out revocation.
-The temporary signup account was removed. Simulated delivery does not establish delivery
-to the owner's inbox.
+Email confirmation uses Swerved's existing Resend account with a dedicated sending key
+restricted to the verified sender domain. Configuration readback, certificate-verified SMTP
+login, and the owner's actual confirmation succeeded. Password-reset screens are not
+configured in this build.
 
-Completion still needs separate evidence for the owner's account and household claim,
-private Apple discovery and event accuracy, phone-to-frame chore updates,
-and the PF1007L's actual rendering, cookies, networking, and unattended reboot behavior.
-The deployed app has custom SMTP configured through Swerved's existing Resend account,
-using a dedicated sending key restricted to the verified sender domain. Configuration
-readback and a certificate-verified SMTP login passed; these checks do not prove inbox
-delivery. See [Supabase’s SMTP guide](https://supabase.com/docs/guides/auth/auth-smtp).
+On one PF1007L, the full exposed eMMC user-area backup passed its independent host audit. All 15
+segments matched before the guarded boot patch; a full comparison after the write matched
+the original backup plus exactly the validated patch plan. Root USB access survived Android
+restarts. The complete stock WebView tree was preserved before replacing it with WebView 106;
+file readbacks, the new provider after boot, native library loading, JavaScript execution,
+and page rendering passed.
 
-Email confirmation and resend screens are implemented, but email delivery and successful
-owner confirmation still need live verification. Password-reset screens are not configured
-in this build.
+The owner selected **Home HQ → Always** and physically tested the two-finger menu,
+**Android settings → Apps**, and floating **Back / Dashboard** controls. The three identified
+vendor apps were disabled, with their stopped and saved disabled states checked again after
+restart; Home HQ started automatically. The owner connected Wi-Fi and reached the production
+pairing-code form on the actual frame.
+
+Completion still needs these checks on the paired frame:
+
+- Redeem a private pairing code and confirm the intended calendar renders correctly.
+- Complete and reopen a chore across the frame and a phone, checking that both show the saved
+  state.
+- Power-cycle with the microSD removed and confirm automatic dashboard startup, Wi-Fi
+  reconnection, retained pairing, and working navigation.
+
+## Keep for recovery
+
+Keep the verified backups, the prepared recovery microSD, the complete original WebView tree,
+and the recorded undo procedure private. Preserve the fallback launcher and working USB
+access. The hardware guides explain the recovery routes; this single frame's results do not
+establish compatibility with another firmware build.
+
+Normal dashboard use needs the frame's usual power supply and an Internet connection. The
+Mac and its USB data cable are only needed for installation or diagnostics. Manage calendar
+connections, profiles, invitations, recurring chores, and paired-frame access from an
+administrator's phone; edit calendar events in Apple Calendar.
