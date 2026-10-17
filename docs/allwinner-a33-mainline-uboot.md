@@ -68,13 +68,44 @@ The guide's card commands are for Linux. `fel-card-macos.py` is a port with the 
 checks (MBR only, no partition before sector 8192, independent re-read, refuses to
 overwrite a backup) plus a guard on the exact disk size:
 
-**Use an external USB card reader with this macOS script.** It requires
-`Internal=false` and `BusProtocol=USB`. A card in a MacBook's built-in SDXC reader
-can be removable but marked internal, and will not appear in `diskutil list
-external physical`. Use `diskutil list` and `diskutil info diskN` to diagnose a
-missing card, not to bypass the script's target checks. The Windows script's
-built-in-reader support does not apply to this macOS port. See the
-[additional May-unit observations](pf1007l-macos-20260529-report.md#second-unit-larger-emmc-2026-10-13-access-only-no-backup).
+By default, this macOS script accepts only an **external USB card reader**
+(`Internal=false`, `BusProtocol=USB`). For a MacBook's built-in SDXC reader, add
+`--built-in-sd` to explicitly allow physical, removable Secure Digital media.
+That mode still rejects the Mac's startup disk, requires 512-byte sectors and
+the card's exact byte count, and preserves the backup, layout and readback checks.
+It does not permit other internal disks.
+
+Built-in-reader metadata comes from the structured physical disk inventory and
+the matching whole `IOMedia` object under its `IOBlockStorageDevice` transport.
+The two records must agree on size and partition content; the transport must
+report `Secure Digital` and `Internal`. This avoids a detailed `diskutil info`
+query that stalled on one Mac while preserving the checks on the actual device.
+The startup disk is still resolved separately with `diskutil info -plist /`.
+Apple's [Disk Arbitration source](https://github.com/apple-oss-distributions/DiskArbitration/blob/main/diskarbitrationd/DADisk.c)
+uses these media properties and transport characteristics for disk descriptions.
+
+Metadata checks do not grant access to the card's contents. On one Mac, a pending
+macOS removable-storage permission prompt left both `diskutil info` and the raw
+card's `open()` waiting. After the owner allowed that prompt, the detailed query
+returned immediately and both 4 MiB backup reads plus gzip readback succeeded.
+If backup stops at `Opening raw card read-only`, check for a Terminal/Python access
+prompt before retrying; keep the disk guards and do not start a second reader.
+
+A card in the built-in reader may be marked internal and omitted from
+`diskutil list external physical`; use `diskutil list` and `diskutil info diskN`
+to identify it. Before any backup or write, use the metadata-only `check` action:
+
+```sh
+python3 -I scripts/a33-uboot/fel-card-macos.py check diskN <exact-bytes> --built-in-sd
+```
+
+Append the same flag to the `backup`, `write` and `restore` commands below when
+using that reader. Stop if a check fails; do not remove a guard. The built-in-reader
+branch has mocked guard tests and completed a metadata check, verified 4 MiB
+prefix backup, and an 8192-byte stub write with full-prefix readback on one Mac
+with a 32 GB card. The frame then entered FEL and reported the A33 chip identity.
+Undo has not been exercised on that card. A [previous built-in-reader report](pf1007l-macos-20260529-report.md#built-in-sdxc-reader-versus-an-external-usb-reader)
+used a separate local script and does not validate this implementation.
 
 ```sh
 diskutil list external physical          # before and after inserting the card
@@ -147,6 +178,15 @@ storage.
 U-Boot runs `ums 0 mmc 0,1`: the SD card and the eMMC appear as two disks. Identify the
 eMMC by size. Here it was "UMS disk 1", 15,634,268,160 bytes, **Media Read-Only: Yes**.
 If macOS offers to initialize a disk, choose **Ignore**.
+
+An Apple silicon MacBook may also show a separate **Allow accessory to connect**
+prompt for the new U-Boot USB device; unlock the Mac and allow that accessory.
+On one Mac, `1f3a:1010` "USB download gadget" appeared in the USB tree with no
+storage interface or disks while that prompt was pending. After Allow, the same
+SD-only read-only UMS session acquired the mass-storage driver and exposed the
+card. A later combined session exposed the eMMC too. Check this prompt before
+changing the recovery build. Apple documents the [USB accessory approval](https://support.apple.com/en-us/102282)
+separately from application access to removable storage.
 
 Enumeration need not be immediate. On an
 [additional May unit](pf1007l-macos-20260529-report.md#second-unit-larger-emmc-2026-10-13-access-only-no-backup),

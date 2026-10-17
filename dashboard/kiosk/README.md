@@ -11,7 +11,8 @@ Hold two fingers still on the dashboard for 1.5 seconds to open the native contr
 
 ## Dashboard URL
 
-The kiosk opens the hosted demo dashboard by default. To show your own, save its URL once:
+This fork opens `https://forest-family-frame.vercel.app/?display=frame` by default. To use a
+different dashboard, save its URL once:
 
 ```sh
 adb shell am start -n com.wesbos.homehq/.MainActivity --es url https://your-dashboard/
@@ -22,6 +23,7 @@ URL when run without one.
 
 Every later launch, including after a reboot, opens the saved URL. Links that other apps open
 in the kiosk, such as a sign-in page, are shown but not saved.
+An existing saved URL also takes precedence after an APK update; use the command above to change it.
 
 ## Start at boot
 
@@ -114,6 +116,19 @@ To build your own dashboard for a PF1007L frame, see
 [building-for-the-frame.md](../../docs/building-for-the-frame.md): what WebView 106 supports,
 what to avoid, and how to test on the frame.
 
+## Typing on the frame
+
+Home HQ 1.2 keeps the dashboard above the on-screen keyboard. Android 6 does not honor
+the usual `adjustResize` setting in a fullscreen window, so the kiosk measures the visible
+window and temporarily shortens the WebView while a bottom keyboard is open. The page can
+then scroll the focused field into view. Dismissing the keyboard restores the full display;
+briefly showing Android's navigation/status bars does not resize the dashboard. This affects
+Home HQ only; Android's Wi-Fi password screen uses Android's own keyboard layout.
+
+After updating, test a field near the bottom of the page, dismiss and reopen the keyboard,
+then confirm the two-finger menu and floating navigation still work. Host checks cover the
+viewport geometry, while the actual keyboard position and field scrolling require a frame.
+
 ## When the dashboard can't load
 
 If the dashboard fails to load, Home HQ covers WebView's error page with its own
@@ -132,14 +147,15 @@ On frames without a navigation bar (most PF1007L units), set up the navigation s
 
 ## Build and install
 
-Host-only navigation regression checks need Python 3 and a JDK on `PATH`:
+Host-only navigation and keyboard geometry checks need Python 3 and a JDK on `PATH`:
 
 ```sh
 python3 kiosk/test-navigation.py
 ```
 
 Run from `dashboard/`. The test compiles the actual repair method with settings and
-permission fakes; it does not prove service binding or reboot behavior on Android.
+permission fakes and the keyboard viewport helper. It does not prove service binding,
+keyboard visibility/focused-field scrolling, or reboot behavior on Android.
 
 Use JDK 17, Android build-tools 34.0.0, and platform 34. From `dashboard/`:
 

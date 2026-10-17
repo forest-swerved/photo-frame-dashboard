@@ -101,36 +101,43 @@ def restore_script(writes):
     anything else means the eMMC is not in a state this plan made, so nothing is written.
     Phase 2: ranges that already hold the original bytes are left alone; the others get the
     original bytes back, each read back and compared, stopping at the first failure."""
-    lines = ["# Undo the userdata patch. Load each range's orig/new payload with sunxi-fel first.",
-             "# Phase 1: every range must hold the new or the original bytes, or nothing is written.",
-             "# Phase 2: ranges holding the new bytes get the original bytes back.",
-             "mmc dev 1",
-             "setenv all_ok 1"]
+    if not writes:
+        raise ValueError("a restore script needs at least one changed range")
+    comments = ["# Undo the userdata patch. Load each range's orig/new payload with sunxi-fel first.",
+                "# Phase 1: every range must hold the new or the original bytes, or nothing is written.",
+                "# Phase 2: ranges holding the new bytes get the original bytes back."]
+    lines = ["setenv all_ok 1"]
     for w in writes:
-        lines.append(f"mmc read {w['read_addr']:#x} {w['sector']:#x} {w['sectors']:#x}")
-        lines.append(f"if crc32 -v {w['orig_addr']:#x} {w['length']:#x} {w['orig_crc32']} && "
+        lines.append(f"if mmc read {w['read_addr']:#x} {w['sector']:#x} {w['sectors']:#x} && "
+                     f"crc32 -v {w['orig_addr']:#x} {w['length']:#x} {w['orig_crc32']} && "
                      f"crc32 -v {w['new_addr']:#x} {w['length']:#x} {w['new_crc32']}; then")
         lines.append(f"  if cmp.b {w['new_addr']:#x} {w['read_addr']:#x} {w['length']:#x}; then echo range {w['range']} holds the new bytes")
         lines.append(f"  elif cmp.b {w['orig_addr']:#x} {w['read_addr']:#x} {w['length']:#x}; then echo range {w['range']} is already original")
         lines.append(f"  else echo range {w['range']} holds unexpected bytes; setenv all_ok 0; fi")
-        lines.append(f"else echo range {w['range']} payload CRC FAILED; setenv all_ok 0; fi")
+        lines.append(f"else echo range {w['range']} source read or payload CRC FAILED; setenv all_ok 0; fi")
     lines.append('if test "${all_ok}" = 1; then')
     lines.append("  setenv go 1")
     for w in writes:
         lines.append('  if test "${go}" = 1; then')
-        lines.append(f"    mmc read {w['read_addr']:#x} {w['sector']:#x} {w['sectors']:#x}")
-        lines.append(f"    if cmp.b {w['new_addr']:#x} {w['read_addr']:#x} {w['length']:#x}; then")
-        lines.append(f"      if mmc write {w['orig_addr']:#x} {w['sector']:#x} {w['sectors']:#x} && "
+        lines.append(f"    if mmc read {w['read_addr']:#x} {w['sector']:#x} {w['sectors']:#x} && "
+                     f"crc32 -v {w['orig_addr']:#x} {w['length']:#x} {w['orig_crc32']} && "
+                     f"crc32 -v {w['new_addr']:#x} {w['length']:#x} {w['new_crc32']}; then")
+        lines.append(f"      if cmp.b {w['new_addr']:#x} {w['read_addr']:#x} {w['length']:#x}; then")
+        lines.append(f"        if mmc write {w['orig_addr']:#x} {w['sector']:#x} {w['sectors']:#x} && "
                      f"mmc read {w['read_addr']:#x} {w['sector']:#x} {w['sectors']:#x} && "
                      f"cmp.b {w['orig_addr']:#x} {w['read_addr']:#x} {w['length']:#x}; then")
-        lines.append(f"        echo range {w['range']} restored")
-        lines.append(f"      else echo range {w['range']} restore FAILED; setenv go 0; fi")
-        lines.append("    fi")
+        lines.append(f"          echo range {w['range']} restored")
+        lines.append(f"        else echo range {w['range']} restore FAILED; setenv go 0; fi")
+        lines.append(f"      elif cmp.b {w['orig_addr']:#x} {w['read_addr']:#x} {w['length']:#x}; then")
+        lines.append(f"        echo range {w['range']} is already original")
+        lines.append(f"      else echo range {w['range']} holds unexpected bytes; setenv go 0; fi")
+        lines.append(f"    else echo range {w['range']} source read or payload CRC FAILED; setenv go 0; fi")
         lines.append("  fi")
     lines.append("fi")
     lines.append('if test "${all_ok}" != 1; then echo nothing written: the eMMC is not in a state this plan made; fi')
-    lines.append("ums 0 mmc 1")
-    return "\n".join(lines) + "\n"
+    return "\n".join(comments + ["if mmc dev 1; then"] +
+                     ["  " + line for line in lines] +
+                     ["else", "  echo eMMC select FAILED: nothing written", "fi", "ums 0 mmc 1"]) + "\n"
 
 
 def script_image(text):
@@ -148,14 +155,15 @@ def guarded_script(writes, title, expect, write):
     half-edited by a range that was already wrong. Then a nested, fail-stop chain: range i's
     write only runs if its checks pass again, and range i+1 only runs if range i's write
     happened and read back correctly."""
-    lines = [f"# {title}. Load each range's orig/new payload with sunxi-fel first.",
-             f"# Phase 1 checks every range; nothing is written unless all hold the {expect} bytes.",
-             "# Phase 2 writes the ranges in order and stops at the first check or write that fails.",
-             "mmc dev 1",
-             "setenv all_ok 1"]
+    if not writes:
+        raise ValueError("a write script needs at least one changed range")
+    comments = [f"# {title}. Load each range's orig/new payload with sunxi-fel first.",
+                f"# Phase 1 checks every range; nothing is written unless all hold the {expect} bytes.",
+                "# Phase 2 writes the ranges in order and stops at the first check or write that fails."]
+    lines = ["setenv all_ok 1"]
     for w in writes:
-        lines.append(f"mmc read {w['read_addr']:#x} {w['sector']:#x} {w['sectors']:#x}")
-        lines.append(f"if crc32 -v {w['orig_addr']:#x} {w['length']:#x} {w['orig_crc32']} && "
+        lines.append(f"if mmc read {w['read_addr']:#x} {w['sector']:#x} {w['sectors']:#x} && "
+                     f"crc32 -v {w['orig_addr']:#x} {w['length']:#x} {w['orig_crc32']} && "
                      f"crc32 -v {w['new_addr']:#x} {w['length']:#x} {w['new_crc32']} && "
                      f"cmp.b {w[f'{expect}_addr']:#x} {w['read_addr']:#x} {w['length']:#x}; then")
         lines.append(f"  echo range {w['range']} checked")
@@ -166,8 +174,8 @@ def guarded_script(writes, title, expect, write):
     closers = ["fi"]
     for w in writes:
         pad = "  " * len(closers)
-        lines.append(f"{pad}mmc read {w['read_addr']:#x} {w['sector']:#x} {w['sectors']:#x}")
-        checks = (f"crc32 -v {w['orig_addr']:#x} {w['length']:#x} {w['orig_crc32']} && "
+        checks = (f"mmc read {w['read_addr']:#x} {w['sector']:#x} {w['sectors']:#x} && "
+                  f"crc32 -v {w['orig_addr']:#x} {w['length']:#x} {w['orig_crc32']} && "
                   f"crc32 -v {w['new_addr']:#x} {w['length']:#x} {w['new_crc32']} && "
                   f"cmp.b {w[f'{expect}_addr']:#x} {w['read_addr']:#x} {w['length']:#x}")
         lines.append(f"{pad}if {checks}; then")
@@ -182,8 +190,9 @@ def guarded_script(writes, title, expect, write):
     lines.append(f"{pad2}  echo all ranges written")
     lines += reversed(closers)
     lines.append('if test "${all_ok}" != 1; then echo nothing written: a range did not hold the expected bytes; fi')
-    lines.append("ums 0 mmc 1")
-    return "\n".join(lines) + "\n"
+    return "\n".join(comments + ["if mmc dev 1; then"] +
+                     ["  " + line for line in lines] +
+                     ["else", "  echo eMMC select FAILED: nothing written", "fi", "ums 0 mmc 1"]) + "\n"
 
 
 def main():

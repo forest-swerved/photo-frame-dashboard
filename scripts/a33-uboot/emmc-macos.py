@@ -8,6 +8,8 @@ Usage (run from the repository root, with sudo):
   sudo python3 -I scripts/a33-uboot/emmc-macos.py backup-resume diskN <exact-bytes>
   sudo python3 -I scripts/a33-uboot/emmc-macos.py verify-resume diskN <exact-bytes>
   sudo python3 -I scripts/a33-uboot/emmc-macos.py verify-original-resume diskN <exact-bytes>
+  sudo python3 -I scripts/a33-uboot/emmc-macos.py verify diskN <exact-bytes> --plan <plan.json>
+  sudo python3 -I scripts/a33-uboot/emmc-macos.py verify-resume diskN <exact-bytes> --plan <plan.json>
 
 <exact-bytes> is the eMMC size from `diskutil info diskN` (Disk Size, in bytes); on Linux
 pass the whole disk (e.g. sdb) and its size from `lsblk -b`. It
@@ -16,8 +18,9 @@ that macOS reports as writable: only the read-only U-Boot build should be runnin
 
 backup  reads the whole disk to backups/a33-emmc-full.img, re-reads it independently,
         rejects 0xCC filler, gzips it and verifies the gzip readback.
-verify  after the boot write: every byte must equal that backup, except the ranges in
-        diagnostics/a33-boot-patch/plan.json, which must equal the patched payloads.
+verify  every byte must equal that backup, except the exact ranges in the plan,
+        which must equal its validated patched payloads. The default plan is
+        diagnostics/a33-boot-patch/plan.json; --plan also accepts data-patch plans.
 verify-original
         after restore-boot: every byte must equal the backup.
 backup-resume, verify-resume, verify-original-resume
@@ -28,7 +31,8 @@ backup-resume, verify-resume, verify-original-resume
         must match. On resume, the disk must have the same fingerprint (first 4 MiB plus the
         start of the first partition, which is unique per unit) as when the run started.
         On Linux the page cache is dropped around every read, so re-reads come from the eMMC.
-        verify-resume refuses to continue a saved run made with a different plan.json.
+        verify-resume binds progress to the exact plan/payloads, verified backup,
+        and expected frame fingerprint. It refuses old or different saved runs.
 """
 
 import gzip
@@ -38,10 +42,12 @@ import os
 import plistlib
 import re
 import shutil
+import stat
 import struct
 import subprocess
 import sys
 import time
+import zlib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -172,33 +178,180 @@ def verify_original(raw_path, size):
     verify(raw_path, size, patched=False)
 
 
-def verify(raw_path, size, patched=True):
-    plan = json.loads(PLAN.read_text()) if patched else {"writes": []}
-    patches = []
-    for write in plan["writes"]:
-        data = (PLAN.parent / write["file"]).read_bytes()
-        if len(data) != write["sectors"] * SECTOR:
-            fail(f"{write['file']} has the wrong size")
-        patches.append((write["sector"] * SECTOR, data))
-    if IMAGE.stat().st_size != size:
+def verified_backup(size):
+    """Verify the finished host backup before allowing it to define expected bytes."""
+    before = IMAGE.stat()
+    if before.st_size != size:
         fail("backup image size differs from the disk")
+    if not stat.S_ISREG(before.st_mode):
+        fail("backup is not a regular host file")
+    expected = backup_hash()
+    digest = hashlib.sha256()
+    with open(IMAGE, "rb") as source:
+        if backup_file_identity(os.fstat(source.fileno())) != backup_file_identity(before):
+            fail("backup path changed before hashing")
+        for block in iter(lambda: source.read(CHUNK), b""):
+            digest.update(block)
+        descriptor_after = os.fstat(source.fileno())
+    after = IMAGE.stat()
+    if (backup_file_identity(before) != backup_file_identity(after)
+            or backup_file_identity(before) != backup_file_identity(descriptor_after)
+            or digest.hexdigest() != expected):
+        fail("finished backup differs from its recorded SHA-256 or changed while being read")
+    return {"sha256": expected, "size": size, "file_identity": backup_file_identity(after)}
+
+
+def backup_file_identity(info):
+    return {"device": info.st_dev, "inode": info.st_ino, "size": info.st_size,
+            "mtime_ns": info.st_mtime_ns, "ctime_ns": info.st_ctime_ns}
+
+
+def require_unchanged_backup(identity, descriptor=None):
+    """Keep comparisons bound to the same hashed file through final publication."""
+    try:
+        if backup_file_identity(IMAGE.stat()) != identity["file_identity"]:
+            fail("backup changed after SHA-256 validation")
+        if descriptor is not None and backup_file_identity(os.fstat(descriptor.fileno())) != identity["file_identity"]:
+            fail("open backup file differs from the validated source")
+    except OSError:
+        fail("validated backup is no longer available")
+
+
+def load_verification_plan(plan_path, size):
+    """Validate either repository plan schema, including its original backup bytes.
+
+    Payloads must be regular files directly beside the plan, never symlinks or
+    traversal paths. Plan identity binds exact JSON metadata plus payload SHA-256,
+    so changing ranges/files with unchanged CRC metadata cannot reuse progress.
+    """
+    plan_path = Path(plan_path)
+    try:
+        if not plan_path.is_file() or plan_path.stat().st_size > 1024 * 1024:
+            fail("plan must be a regular JSON file of at most 1 MiB")
+        plan = json.loads(plan_path.read_text())
+    except (OSError, ValueError):
+        fail("could not read a valid patch plan")
+    writes = plan.get("writes") if isinstance(plan, dict) else None
+    if not isinstance(writes, list) or not 1 <= len(writes) <= 64:
+        fail("plan needs between 1 and 64 patch ranges")
+    root = plan_path.resolve().parent
+    patches, hashes = [], []
+    total = 0
+
+    def payload(name, length):
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", name):
+            fail("payload name must be a plain filename beside the plan")
+        path = root / name
+        try:
+            # Nonblocking open lets fstat reject FIFOs/devices without waiting
+            # for a writer before the regular-file guard can run.
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+            with os.fdopen(fd, "rb") as source:
+                info = os.fstat(source.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_size != length:
+                    fail("payload is not a regular file of the exact planned size")
+                data = source.read(length + 1)
+        except OSError:
+            fail("payload could not be opened safely")
+        if len(data) != length:
+            fail("payload changed size while being read")
+        return data
+
+    def digest_match(data, supplied, algorithm):
+        if algorithm == "sha256":
+            actual = hashlib.sha256(data).hexdigest()
+            expression = r"[0-9a-f]{64}"
+        else:
+            actual = f"{zlib.crc32(data):08x}"
+            expression = r"[0-9a-f]{8}"
+        if not isinstance(supplied, str) or not re.fullmatch(expression, supplied) or supplied != actual:
+            fail(f"payload {algorithm} does not match the plan")
+
+    with open(IMAGE, "rb") as backup_file:
+        for write in writes:
+            if not isinstance(write, dict):
+                fail("invalid patch range")
+            sector, sectors = write.get("sector"), write.get("sectors")
+            if type(sector) is not int or type(sectors) is not int or sector < 0 or sectors <= 0:
+                fail("patch range needs nonnegative integer sector and positive sector count")
+            start, length = sector * SECTOR, sectors * SECTOR
+            if start + length > size or length > 16 * 1024 * 1024:
+                fail("patch range is outside the disk or exceeds its 16 MiB payload limit")
+            total += length
+            if total > 32 * 1024 * 1024:
+                fail("planned payloads exceed 32 MiB")
+            if "new_file" in write:
+                if "file" in write or write.get("length") != length:
+                    fail("ambiguous data-patch schema or incorrect byte length")
+                original = payload(write.get("orig_file"), length)
+                new = payload(write.get("new_file"), length)
+                for kind, data in (("orig", original), ("new", new)):
+                    digest_match(data, write.get(f"{kind}_sha256"), "sha256")
+                    digest_match(data, write.get(f"{kind}_crc32"), "crc32")
+                relative = write.get("partition_relative_byte")
+                partition_start = plan.get("partition_start_sector")
+                if (type(relative) is not int or relative < 0 or relative % SECTOR
+                        or type(partition_start) is not int or partition_start < 0
+                        or partition_start * SECTOR + relative != start):
+                    fail("data-patch partition-relative range does not match its absolute sector")
+            else:
+                name = write.get("file")
+                if name not in ("new-header.bin", "new-ramdisk.bin") or not isinstance(plan.get("crc32"), dict):
+                    fail("unsupported boot-patch payload schema")
+                part = name[4:-4]
+                original = payload(f"orig-{part}.bin", length)
+                new = payload(name, length)
+                digest_match(original, plan["crc32"].get(f"orig_{part}"), "crc32")
+                digest_match(new, plan["crc32"].get(f"new_{part}"), "crc32")
+            if new == original:
+                fail("patch range does not change any bytes")
+            backup_file.seek(start)
+            if backup_file.read(length) != original:
+                fail("original payload differs from the same range of the verified backup")
+            patches.append((start, new))
+            hashes.append({"sector": sector, "sectors": sectors,
+                           "original_sha256": hashlib.sha256(original).hexdigest(),
+                           "new_sha256": hashlib.sha256(new).hexdigest()})
+    patches.sort(key=lambda patch: patch[0])
+    if any(a + len(data) > b for (a, data), (b, _) in zip(patches, patches[1:])):
+        fail("patch ranges overlap")
+    identity = hashlib.sha256(json.dumps({"plan": plan, "payloads": hashes},
+                                       sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return patches, identity
+
+
+def apply_patches(original, offset, patches):
+    want = bytearray(original)
+    for start, data in patches:
+        lo, hi = max(start, offset), min(start + len(data), offset + len(want))
+        if lo < hi:
+            want[lo - offset:hi - offset] = data[lo - start:hi - start]
+    return want
+
+
+def verify(raw_path, size, patched=True, plan_path=None):
+    backup_identity = verified_backup(size)
+    patches, _ = load_verification_plan(plan_path or PLAN, size) if patched else ([], None)
 
     mismatches = []
     with open(IMAGE, "rb") as backup_file:
+        require_unchanged_backup(backup_identity, backup_file)
         for offset, got in chunks(raw_path, size, "verify"):
-            want = bytearray(backup_file.read(len(got)))
-            for start, data in patches:
-                lo, hi = max(start, offset), min(start + len(data), offset + len(got))
-                if lo < hi:
-                    want[lo - offset:hi - offset] = data[lo - start:hi - start]
+            require_unchanged_backup(backup_identity, backup_file)
+            original = backup_file.read(len(got))
+            require_unchanged_backup(backup_identity, backup_file)
+            if len(original) != len(got):
+                fail("backup file became truncated during verification")
+            want = apply_patches(original, offset, patches)
             if got != want:
                 mismatches.append(offset)
                 if len(mismatches) > 10:
                     break
     if mismatches:
         fail(f"mismatch in 4 MiB chunks at byte offsets {mismatches}")
+    require_unchanged_backup(backup_identity)
     if patched:
-        print("Verified: the eMMC equals the backup plus exactly the planned boot patch.")
+        print("Verified: the eMMC equals the backup plus exactly the validated patch plan.")
     else:
         print("Verified: the eMMC equals the original backup.")
 
@@ -240,6 +393,8 @@ def fingerprint(raw_path):
             fail("the first MBR partition is empty")
         disk.seek(first * SECTOR)
         part = disk.read(64 * 1024)
+        if len(part) != 64 * 1024:
+            fail("short read of the first partition fingerprint")
     return hashlib.sha256(head + part).hexdigest()
 
 
@@ -247,7 +402,10 @@ def backup_hash():
     path = BACKUPS / "a33-emmc-full.sha256"
     if not path.exists():
         fail(f"{path.name} is missing; verify needs the finished backup")
-    return path.read_text().split()[0]
+    values = path.read_text().split()
+    if not values or not re.fullmatch(r"[0-9a-f]{64}", values[0]):
+        fail("finished backup SHA-256 file is invalid")
+    return values[0]
 
 
 def run_segments(state_path, state, size, work, label):
@@ -335,40 +493,64 @@ def backup_resume(raw_path, size):
     print(f"  {len(segments(size))} segments, each read twice from the disk and once from the file.")
 
 
-def verify_resume(raw_path, size, patched=True):
-    plan = json.loads(PLAN.read_text()) if patched else {"writes": [], "crc32": None}
+def expected_fingerprint(patches):
+    """Expected prefix/partition fingerprint after applying only the explicit plan."""
+    with open(IMAGE, "rb") as image:
+        head = image.read(CHUNK)
+        if len(head) != CHUNK or head[510:512] != b"\x55\xaa":
+            fail("backup has no complete MBR fingerprint")
+        first = struct.unpack_from("<I", head, 446 + 8)[0]
+        if not head[446 + 4] or not first:
+            fail("the backup's first MBR partition is empty")
+        image.seek(first * SECTOR)
+        part = image.read(64 * 1024)
+        if len(part) != 64 * 1024:
+            fail("backup's first partition fingerprint is truncated")
+    return hashlib.sha256(apply_patches(head, 0, patches)
+                          + apply_patches(part, first * SECTOR, patches)).hexdigest()
+
+
+def verify_resume(raw_path, size, patched=True, plan_path=None):
+    backup_identity = verified_backup(size)
+    patches, plan_identity = load_verification_plan(plan_path or PLAN, size) if patched else ([], None)
     state_path, kind = (VERIFY_STATE, "verify") if patched else (ORIGINAL_VERIFY_STATE, "verify-original")
-    patches = []
-    for write in plan["writes"]:
-        data = (PLAN.parent / write["file"]).read_bytes()
-        if len(data) != write["sectors"] * SECTOR:
-            fail(f"{write['file']} has the wrong size")
-        patches.append((write["sector"] * SECTOR, data))
-    if IMAGE.stat().st_size != size:
-        fail("backup image size differs from the disk")
+    disk_identity = fingerprint(raw_path)
+    if disk_identity != expected_fingerprint(patches):
+        fail("disk fingerprint differs from the verified backup plus plan (different frame or unexpected changes)")
+    existed = state_path.exists()
     state = load_state(state_path, size, kind)
-    if state.setdefault("plan", plan["crc32"]) != plan["crc32"]:
-        fail(f"{state_path.name} was saved with a different plan.json; move it aside to start over")
-    if state.setdefault("backup", backup_hash()) != backup_hash():
-        fail(f"{state_path.name} was saved against a different backup; move it aside to start over")
+    required = {"verification_version": 2, "plan_identity": plan_identity,
+                "backup_identity": backup_identity, "fingerprint": disk_identity}
+    for key, value in required.items():
+        if existed and state.get(key) != value:
+            fail(f"{state_path.name} belongs to an old/different plan, backup or frame; move it aside to start over")
+        state[key] = value
+    valid_segments = {str(index) for index, _, _ in segments(size)}
+    if not isinstance(state.get("done"), dict) or any(
+            key not in valid_segments or value != "ok" for key, value in state["done"].items()):
+        fail("verification resume state has invalid completed segments")
 
     def work(index, start, length):
         with open(IMAGE, "rb") as backup_file:
+            require_unchanged_backup(backup_identity, backup_file)
             backup_file.seek(start)
             for offset, got in chunks(raw_path, length, f"verify segment {index + 1}/{len(segments(size))}", start):
-                want = bytearray(backup_file.read(len(got)))
-                for pstart, data in patches:
-                    lo, hi = max(pstart, offset), min(pstart + len(data), offset + len(got))
-                    if lo < hi:
-                        want[lo - offset:hi - offset] = data[lo - pstart:hi - pstart]
+                require_unchanged_backup(backup_identity, backup_file)
+                original = backup_file.read(len(got))
+                require_unchanged_backup(backup_identity, backup_file)
+                if len(original) != len(got):
+                    fail("backup file became truncated during verification")
+                want = apply_patches(original, offset, patches)
                 if got != want:
                     fail(f"mismatch in the 4 MiB chunk at byte offset {offset}")
+            require_unchanged_backup(backup_identity, backup_file)
         return "ok"
 
     run_segments(state_path, state, size, work, kind)
+    require_unchanged_backup(backup_identity)
     state_path.rename(state_path.with_suffix(".done.json"))
     if patched:
-        print("Verified: the eMMC equals the backup plus exactly the planned boot patch.")
+        print("Verified: the eMMC equals the backup plus exactly the validated patch plan.")
     else:
         print("Verified: the eMMC equals the original backup.")
 
@@ -383,13 +565,27 @@ ACTIONS = {"backup": backup, "verify": verify, "verify-original": verify_origina
 
 
 def main():
-    if len(sys.argv) != 4 or sys.argv[1] not in ACTIONS:
+    if len(sys.argv) not in (4, 6) or sys.argv[1] not in ACTIONS:
         sys.exit(__doc__)
+    action, identifier = sys.argv[1], sys.argv[2]
+    plan_path = None
+    if len(sys.argv) == 6:
+        if action not in ("verify", "verify-resume") or sys.argv[4] != "--plan":
+            fail("--plan is supported only for verify and verify-resume")
+        plan_path = Path(sys.argv[5])
     if os.geteuid() != 0:
         fail("run with sudo")
-    action, identifier, size = sys.argv[1], sys.argv[2], int(sys.argv[3])
+    try:
+        size = int(sys.argv[3])
+    except ValueError:
+        fail("exact byte size must be an integer")
+    if size <= 0 or size % SECTOR:
+        fail("exact byte size must be positive and sector-aligned")
     raw_path = open_disk(identifier, size)
-    ACTIONS[action](raw_path, size)
+    if plan_path is not None:
+        ACTIONS[action](raw_path, size, plan_path=plan_path)
+    else:
+        ACTIONS[action](raw_path, size)
 
 
 if __name__ == "__main__":
