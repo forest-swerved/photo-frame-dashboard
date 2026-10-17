@@ -46,7 +46,7 @@ test('isolated Postgres authorization and concurrency boundaries', { skip: !enab
     await db.query(await readFile(new URL('./schema.sql', import.meta.url), 'utf8'));
 
     await t.test('all server-only tables have RLS, owner access, and no PUBLIC policies', async () => {
-      assert.equal(await verifySchema(db, schema), 12);
+      assert.equal(await verifySchema(db, schema, 12), 12);
     });
 
     await t.test('a short setup code cannot be claimed by a different signed-in account', async () => {

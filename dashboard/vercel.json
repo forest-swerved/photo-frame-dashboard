@@ -34,5 +34,8 @@
         { "key": "Cache-Control", "value": "private, no-store" }
       ]
     }
+  ],
+  "crons": [
+    { "path": "/api/mobile/jobs/notifications", "schedule": "* * * * *" }
   ]
 }

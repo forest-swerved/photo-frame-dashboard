@@ -70,3 +70,68 @@ Use an Apple app-specific password. Username and password are encrypted together
 Requests use household local `from` / exclusive `to` dates and an IANA timezone. Windows are capped at 60 calendar days and 400 expanded events. Five-minute successful caches are marked ready. Provider, parse, timeout or coverage failures retain a previous matching good snapshot as stale and do not advance its success timestamp. Selection/disconnection/reconnection invalidates the old connection's results, including in-flight successes and failures. No partial snapshot is marked ready.
 
 The adapter validates every Apple DAV destination and redirect before credentials are attached, limits transport and object sizes, and bounds recurrence normalization in a worker. Known IANA TZIDs work without embedded timezone definitions; custom TZIDs need valid calendar definitions. Unsupported RDATE PERIOD or EXRULE data fails explicitly. Fixture tests do not prove real-account connectivity or deployed browser cookie acceptance; those require live sign-in and the owner's calendar connection.
+
+## Native iOS and notification service
+
+`ios/FamilyFrame.xcodeproj` contains the native iPhone/iPad app. It shares this API and
+household with the frame; see [the iOS guide](../../ios/README.md) for build, signing,
+and Apple push configuration.
+
+Parent login uses the existing first-party auth gateway and exchanges the verified
+browser session at `POST /api/mobile/sessions` for a revocable, hashed mobile token.
+Subsequent native requests use `Authorization: FamilyMobile <opaque token>` and the
+canonical HTTPS Origin. Each request checks the parent's current membership and live
+provider session. A parent administrator creates a ten-minute, single-use child code
+at `POST /api/mobile/pairings`. Redeeming it binds that installation to one profile.
+Children can read and complete their own chores; they cannot manage Setup or edit a
+sibling's chores. Mobile tokens expire after 90 days and can be revoked in the app.
+
+Chores accept optional `dueTime` (`HH:mm`, household timezone) and `reminderMinutes`
+(0–1440). Profiles keep a section even when no chores are scheduled. No household
+names or children's names are built into the application.
+
+Completion/reopening events are inserted transactionally by an invoker trigger.
+A production Vercel Cron calls `/api/mobile/jobs/notifications` every minute using
+`CRON_SECRET`. The worker maintains a durable inbox and per-installation delivery
+leases, suppresses obsolete reminders after completion/reassignment, respects quiet
+hours, retries transient APNs failures and disables rejected tokens. Push acceptance
+and inbox read status are different states. Lock-screen payloads are generic; event
+details are available only through the authenticated inbox.
+
+Supported categories are completed/reopened chores, due-soon/overdue chores, upcoming
+timed calendar events, calendar sync-health transitions and frame connection status.
+Calendar reminders use fresh, complete cached coverage and a ten-minute lead time;
+provider calendar refresh remains driven by dashboard/app reads. Frame offline alerts
+use a fifteen-minute grace above the five-minute heartbeat write interval. Initial
+scans establish a baseline rather than flooding users with historical overdue alerts.
+
+Configure the server-only `FAMILY_APNS_TEAM_ID`, `FAMILY_APNS_KEY_ID`,
+`FAMILY_APNS_PRIVATE_KEY` and `FAMILY_APNS_TOPIC` from the actual Apple Developer
+team. Never put the `.p8` key in source or the app. Debug installs use sandbox APNs;
+TestFlight/Release uses production. `/api/mobile/status` reports missing Apple setup
+separately from iOS permission or token registration. Without Apple credentials, the
+inbox/scheduler still work but no push delivery is claimed.
+
+### Additive schema upgrade
+
+There are now twenty server-owned tables. `schema.sql`, `mobile-schema.sql` and
+`notifications-schema.sql` are applied together by `npm run db:migrate`. Existing
+households, calendars, chores, sessions and history are retained. The app login's
+normal schema-CREATE permission remains revoked. For an upgrade, an authorized
+administrator temporarily grants CREATE on `public` to the existing
+`family_frame_server` table owner, runs the owner migration, then revokes CREATE even
+if migration fails. Run `npm run db:verify` afterward; it checks ownership, RLS,
+absence of browser/PUBLIC grants, and the private managed-session boundary. Do not
+replace the runtime login with the administrative login or grant it broad role
+membership. The versioned mobile migration records the owner SQL, not an instruction
+to run it as Supabase's temporary CLI administrator.
+
+### Qualification
+
+`npm test` includes native-auth and notification unit tests. `npm run test:db` adds
+concurrency, parent revocation, one-use child pairing, sibling isolation, deadline
+races, quiet hours, installation ownership, token invalidation, calendar/frame status
+and retry checks. Integration suites refuse any database not named
+`family_frame_tests` and use unique test schemas; never point them at the household
+database. A separately provisioned local PostgreSQL 17 database with a trusted local
+TLS certificate can be used if the remote test database is unavailable.
