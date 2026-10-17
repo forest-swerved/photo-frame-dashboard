@@ -3,6 +3,7 @@ import { ApiError, requireValue, uuidField } from './errors.js';
 import { digest } from './credentials.js';
 import { one } from './database.js';
 import { createAuthContext } from './supabase-auth.js';
+import { authenticateMobile } from './mobile.js';
 
 const keySets = new Map();
 export const FRAME_COOKIE = 'family_frame_session';
@@ -60,6 +61,7 @@ export function userDto(claims) {
 export async function authenticate(request, db, options = {}) {
   const { env = process.env, verifyJwt = verifyUserJwt } = options;
   const authorization = request.headers.get('authorization');
+  if (authorization?.startsWith('FamilyMobile ')) return authenticateMobile(request, db);
   if (!authorization) {
     const token = cookieValue(request, FRAME_COOKIE);
     requireValue(token && /^[A-Za-z0-9_-]{43}$/.test(token), 401, 'unauthenticated', 'Sign in or pair this frame.');
@@ -83,7 +85,7 @@ export async function authenticate(request, db, options = {}) {
     FROM family_members m JOIN family_households h ON h.id=m.household_id
     WHERE m.user_id=$1 AND m.revoked_at IS NULL`, [claims.sub]);
   return { authType: 'user', actor: `user:${claims.sub}`, role: row?.role || null,
-    user: userDto(claims), household: row ? householdDto(row) : null };
+    user: userDto(claims), sessionId: claims.session_id, household: row ? householdDto(row) : null };
 }
 
 function householdDto(row) { return { id: row.household_id, title: row.title, timezone: row.timezone }; }
@@ -95,5 +97,5 @@ export function requireHousehold(principal) {
 
 export function requireAdmin(principal) {
   requireHousehold(principal);
-  requireValue(principal.authType === 'user' && principal.role === 'admin', 403, 'admin_required', 'Only the household administrator can change Setup.');
+  requireValue(['user', 'mobile'].includes(principal.authType) && principal.role === 'admin', 403, 'admin_required', 'Only the household administrator can change Setup.');
 }

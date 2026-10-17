@@ -99,11 +99,12 @@ export async function redeemFramePair(db, body, env = process.env) {
 export async function householdSnapshot(db, principal, requestedDate) {
   const householdId = requireHousehold(principal);
   const date = dateField(requestedDate || householdDate(principal.household.timezone));
-  const people = (await db.query('SELECT * FROM family_people WHERE household_id=$1 ORDER BY created_at,id', [householdId])).rows.map(personDto);
+  const people = (await db.query('SELECT * FROM family_people WHERE household_id=$1 AND ($2::uuid IS NULL OR id=$2::uuid) ORDER BY created_at,id', [householdId, principal.role === 'child' ? principal.personId : null])).rows.map(personDto);
   const chores = (await db.query(`SELECT c.*,x.completed,x.version AS completion_version,x.updated_at AS completion_updated_at
     FROM family_chores c LEFT JOIN family_completions x ON x.household_id=c.household_id AND x.chore_id=c.id AND x.date=$2::date
-    WHERE c.household_id=$1 AND c.deleted_at IS NULL ORDER BY c.created_at,c.id`, [householdId, date])).rows.map(row => ({
+    WHERE c.household_id=$1 AND c.deleted_at IS NULL AND ($3::uuid IS NULL OR c.person_id=$3::uuid) ORDER BY c.created_at,c.id`, [householdId, date, principal.role === 'child' ? principal.personId : null])).rows.map(row => ({
     id: row.id, title: row.title, personId: row.person_id, weekdays: row.weekdays, version: row.version,
+    dueTime: row.due_time?.slice(0, 5) || null, reminderMinutes: row.reminder_minutes ?? 15,
     completion: { date, completed: row.completed || false, version: row.completion_version || 0, updatedAt: row.completion_updated_at || null },
   }));
   return { household: principal.household, role: principal.role, date, people, chores };
@@ -136,7 +137,15 @@ export async function changePerson(db, principal, id, body, remove = false) {
   });
 }
 
-const choreDto = row => ({ id: row.id, title: row.title, personId: row.person_id, weekdays: row.weekdays, version: row.version });
+const choreDto = row => ({ id: row.id, title: row.title, personId: row.person_id, weekdays: row.weekdays, version: row.version, dueTime: row.due_time?.slice(0, 5) || null, reminderMinutes: row.reminder_minutes ?? 15 });
+export function dueTimeField(value) {
+  requireValue(value === null || typeof value === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value), 422, 'invalid_due_time', 'Choose a valid due time.');
+  return value;
+}
+export function reminderMinutesField(value) {
+  requireValue(Number.isInteger(value) && value >= 0 && value <= 1440, 422, 'invalid_reminder', 'Reminders must be 0–1440 minutes before the due time.');
+  return value;
+}
 
 async function checkedPerson(client, householdId, personId) {
   if (personId === null || personId === undefined || personId === '') return null;
@@ -147,8 +156,8 @@ async function checkedPerson(client, householdId, personId) {
 
 export async function createChore(db, principal, body) {
   requireAdmin(principal);
-  return transaction(db, async client => choreDto(await one(client, 'INSERT INTO family_chores(id,household_id,title,person_id,weekdays) VALUES($1,$2,$3,$4,$5) RETURNING *',
-    [randomUUID(), principal.household.id, textField(body.title, 'Chore', 100), await checkedPerson(client, principal.household.id, body.personId), weekdaysField(body.weekdays)])));
+  return transaction(db, async client => choreDto(await one(client, 'INSERT INTO family_chores(id,household_id,title,person_id,weekdays,due_time,reminder_minutes) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',
+    [randomUUID(), principal.household.id, textField(body.title, 'Chore', 100), await checkedPerson(client, principal.household.id, body.personId), weekdaysField(body.weekdays), dueTimeField(body.dueTime ?? null), reminderMinutesField(body.reminderMinutes ?? 15)])));
 }
 
 export async function changeChore(db, principal, id, body, remove = false) {
@@ -164,8 +173,8 @@ export async function changeChore(db, principal, id, body, remove = false) {
       return { deleted: true };
     }
     const personId = body.personId === undefined ? row.person_id : checkedPersonId;
-    return choreDto(await one(client, 'UPDATE family_chores SET title=$3,person_id=$4,weekdays=$5,version=version+1 WHERE id=$1 AND household_id=$2 RETURNING *',
-      [id, principal.household.id, body.title === undefined ? row.title : textField(body.title, 'Chore', 100), personId, body.weekdays === undefined ? row.weekdays : weekdaysField(body.weekdays)]));
+    return choreDto(await one(client, 'UPDATE family_chores SET title=$3,person_id=$4,weekdays=$5,due_time=$6,reminder_minutes=$7,version=version+1 WHERE id=$1 AND household_id=$2 RETURNING *',
+      [id, principal.household.id, body.title === undefined ? row.title : textField(body.title, 'Chore', 100), personId, body.weekdays === undefined ? row.weekdays : weekdaysField(body.weekdays), body.dueTime === undefined ? row.due_time : dueTimeField(body.dueTime), body.reminderMinutes === undefined ? row.reminder_minutes : reminderMinutesField(body.reminderMinutes)]));
   });
 }
 
@@ -186,7 +195,7 @@ export async function setCompletion(db, principal, choreId, date, body) {
       requireValue(replay.request_hash === requestHash, 409, 'mutation_reused', 'Use a new mutation ID for a different change.');
       return replay.response;
     }
-    requireValue(await one(client, 'SELECT id FROM family_chores WHERE id=$1 AND household_id=$2 AND deleted_at IS NULL FOR SHARE', [choreId, householdId]), 404, 'not_found', 'That chore does not exist in this household.');
+    requireValue(await one(client, 'SELECT id FROM family_chores WHERE id=$1 AND household_id=$2 AND deleted_at IS NULL AND ($3::uuid IS NULL OR person_id=$3::uuid) FOR SHARE', [choreId, householdId, principal.role === 'child' ? principal.personId : null]), 404, 'not_found', 'That chore does not exist in this household.');
     await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`completion:${householdId}:${choreId}:${date}`]);
     const row = await one(client, 'SELECT * FROM family_completions WHERE household_id=$1 AND chore_id=$2 AND date=$3::date FOR UPDATE', [householdId, choreId, date]);
     const current = completionDto(row, choreId, date);

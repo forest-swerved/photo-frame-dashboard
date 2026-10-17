@@ -1,0 +1,5 @@
+// Public configuration only. Keep signing identities and APNs keys outside Git.
+FAMILY_BUNDLE_ID = com.swerved.familyframe
+FAMILY_API_HOST = forest-family-frame.vercel.app
+// Select your Apple Developer team in Xcode or in an untracked Local.xcconfig.
+#include? "Local.xcconfig"

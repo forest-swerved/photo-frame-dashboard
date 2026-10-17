@@ -11,8 +11,8 @@ grant database CONNECT and temporary USAGE/CREATE on public, and configure the a
 verified-TLS pooler credentials for it. Do not deploy the administrative database
 login or a Supabase secret/service-role key as application credentials.
 
-Run `npm run db:migrate` from `dashboard/` using that login. It creates the twelve
-household tables and revokes PUBLIC and Supabase API-role access. Supabase's
+Run `npm run db:migrate` from `dashboard/` using that login. It creates the twenty
+household, mobile and notification tables and revokes PUBLIC and Supabase API-role access. Supabase's
 temporary CLI administrator cannot assume this custom role; do not remove ownership
 checks or substitute the administrative login to work around that boundary.
 
@@ -35,3 +35,9 @@ Supabase organization team. The current confirmation email template contains
 Keep provider administration separate from a reusable application migration:
 `dashboard/server/schema.sql` is the table source applied as its owner, while this
 folder's administrative migration records only the private session boundary.
+
+For the mobile/notification upgrade, temporarily restore CREATE on public to the same
+server owner, run the owner migration and revoke CREATE afterward (including on failure).
+The versioned mobile migration is owner SQL; it must not be executed as the CLI
+administrator. The new completion trigger is SECURITY INVOKER and owned by that server
+role. Keep both managed Auth access and broad role membership restricted as before.

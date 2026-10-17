@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 import { createPool } from './database.js';
 
-export async function verifySchema(pool, schema = 'public') {
+export async function verifySchema(pool, schema = 'public', expectedCount = 20) {
   const { rows } = await pool.query(`SELECT c.relname,c.relrowsecurity,c.relforcerowsecurity,
     pg_get_userbyid(c.relowner)=current_user AS owned_by_server,
     NOT EXISTS(SELECT 1 FROM aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) acl WHERE acl.grantee=0) AS public_revoked,
@@ -11,7 +11,7 @@ export async function verifySchema(pool, schema = 'public') {
     NOT EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid) AS no_browser_policies
     FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
     WHERE n.nspname=$1 AND c.relname LIKE 'family\\_%' ESCAPE '\\' AND c.relkind='r' ORDER BY c.relname`, [schema]);
-  assert.equal(rows.length, 12, 'Expected all twelve household tables.');
+  assert.equal(rows.length, expectedCount, 'Expected all server-owned household, mobile and notification tables.');
   for (const row of rows) {
     assert.equal(row.relrowsecurity, true, `${row.relname}: RLS must be enabled`);
     assert.equal(row.relforcerowsecurity, false, `${row.relname}: owner must retain server access`);

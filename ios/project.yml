@@ -1,0 +1,76 @@
+name: FamilyFrame
+options:
+  bundleIdPrefix: com.swerved
+  deploymentTarget:
+    iOS: '17.0'
+  xcodeVersion: '27.0'
+  createIntermediateGroups: true
+configs:
+  Debug: debug
+  Release: release
+configFiles:
+  Debug: Config/FamilyFrame.xcconfig
+  Release: Config/FamilyFrame.xcconfig
+settings:
+  base:
+    SWIFT_VERSION: '5.9'
+    TARGETED_DEVICE_FAMILY: '1,2'
+    IPHONEOS_DEPLOYMENT_TARGET: '17.0'
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    GENERATE_INFOPLIST_FILE: NO
+  configs:
+    Debug:
+      APNS_ENVIRONMENT: development
+    Release:
+      APNS_ENVIRONMENT: production
+targets:
+  FamilyFrame:
+    type: application
+    platform: iOS
+    sources:
+      - path: FamilyFrame
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(FAMILY_BUNDLE_ID)
+        PRODUCT_NAME: FamilyFrame
+        MARKETING_VERSION: '1.0.0'
+        CURRENT_PROJECT_VERSION: '1'
+        INFOPLIST_FILE: FamilyFrame/Info.plist
+        CODE_SIGN_ENTITLEMENTS: FamilyFrame/FamilyFrame.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SUPPORTS_MACCATALYST: NO
+        SWIFT_EMIT_LOC_STRINGS: YES
+  FamilyFrameTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: FamilyFrameTests
+    dependencies:
+      - target: FamilyFrame
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.swerved.familyframe.tests
+        GENERATE_INFOPLIST_FILE: YES
+  FamilyFrameUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: FamilyFrameUITests
+    dependencies:
+      - target: FamilyFrame
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.swerved.familyframe.uitests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  FamilyFrame:
+    build:
+      targets:
+        FamilyFrame: all
+    test:
+      targets:
+        - FamilyFrameTests
+        - FamilyFrameUITests
+      gatherCoverageData: false

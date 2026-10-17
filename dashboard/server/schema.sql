@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS family_chores (
   version integer NOT NULL DEFAULT 1 CHECK (version > 0),
   created_at timestamptz NOT NULL DEFAULT now(),
   deleted_at timestamptz,
+  due_time time,
+  reminder_minutes smallint NOT NULL DEFAULT 15 CHECK (reminder_minutes BETWEEN 0 AND 1440),
   UNIQUE (household_id, id),
   FOREIGN KEY (household_id, person_id) REFERENCES family_people(household_id, id),
   CHECK (cardinality(weekdays) BETWEEN 1 AND 7 AND weekdays <@ ARRAY[0,1,2,3,4,5,6]::smallint[])

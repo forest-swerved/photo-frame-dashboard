@@ -7,6 +7,9 @@ import { digest } from './credentials.js';
 import { enforcePairRateLimit } from './pair-rate-limit.js';
 import { claimHousehold, createChore, createFramePair, createInvite, createPerson, changeChore, changePerson, householdSnapshot, joinHousehold, redeemFramePair, sessionData, setCompletion } from './household.js';
 import { calendarConnection, calendarSnapshot, connectCalendar, removeCalendar, selectCalendars } from './calendar-service.js';
+import { createMobileSession, createMobilePair, redeemMobilePair, mobileSessionData, mobileDevices, revokeMobile } from './mobile.js';
+import { registerPush, notificationPreferences, notificationInbox, markNotificationRead, processNotifications } from './notifications.js';
+import { apnsConfiguration } from './apns.js';
 
 export function apiPath(request) {
   const url = new URL(request.url);
@@ -33,6 +36,22 @@ export async function dispatch(request, db, principal, route, options = {}) {
   if (route === 'claim' && method === 'POST') return json(await claimHousehold(db, principal, await readJson(request), options.env));
   if (route === 'join' && method === 'POST') return json(await joinHousehold(db, principal, await readJson(request)));
   requireHousehold(principal);
+  if (route === 'mobile/sessions' && method === 'POST') return json(await createMobileSession(db, principal, await readJson(request)), 201);
+  if (route === 'mobile/pairings' && method === 'POST') return json(await createMobilePair(db, principal, await readJson(request), options.env), 201);
+  if (route === 'mobile/devices' && method === 'GET') return json(await mobileDevices(db, principal));
+  const mobileDevice = /^mobile\/devices\/([^/]+)$/.exec(route);
+  if (mobileDevice && method === 'DELETE') return json(await revokeMobile(db, principal, mobileDevice[1]));
+  if (route.startsWith('mobile/')) {
+    requireValue(principal.authType === 'mobile', 403, 'mobile_required', 'Use the Family Frame iOS app.');
+    if (route === 'mobile/status' && method === 'GET') { let pushConfigured = false; try { apnsConfiguration(options.env || process.env); pushConfigured = true; } catch { /* Report missing provider setup without exposing configuration. */ } return json({ pushConfigured, schedulingConfigured: Boolean((options.env || process.env).CRON_SECRET), serverTime: new Date().toISOString() }); }
+    if (route === 'mobile/session' && method === 'GET') return json(mobileSessionData(principal));
+    if (route === 'mobile/session' && method === 'DELETE') return json(await revokeMobile(db, principal, principal.mobileSessionId));
+    if (route === 'mobile/push-installations' && method === 'POST') return json(await registerPush(db, principal, await readJson(request), options.env));
+    if (route === 'mobile/notification-preferences' && ['GET', 'PUT', 'PATCH'].includes(method)) return json(await notificationPreferences(db, principal, method === 'GET' ? undefined : await readJson(request)));
+    if (route === 'mobile/notifications' && method === 'GET') return json(await notificationInbox(db, principal));
+    const readNotification = /^mobile\/notifications\/([^/]+)\/read$/.exec(route);
+    if (readNotification && method === 'POST') return json(await markNotificationRead(db, principal, readNotification[1]));
+  }
   if (route === 'household' && method === 'GET') return json(await householdSnapshot(db, principal, url.searchParams.get('date')));
   if (route === 'invites' && method === 'POST') return json(await createInvite(db, principal, await readJson(request)), 201);
   if (route === 'frame-pairs' && method === 'POST') return json(await createFramePair(db, principal, await readJson(request), options.env), 201);
@@ -102,7 +121,17 @@ export async function handleRequest(request, options = {}) {
     if (!['GET', 'HEAD'].includes(request.method)) assertSameOrigin(request);
     if (route === 'health' && request.method === 'GET') return json({ ok: true });
     db = options.db || createPool(options.env);
+    if (route === 'mobile/jobs/notifications' && request.method === 'GET') {
+      const env = options.env || process.env;
+      requireValue(typeof env.CRON_SECRET === 'string' && env.CRON_SECRET.length >= 32, 503, 'notifications_unconfigured', 'Notification scheduling is not configured.');
+      requireValue(digest(request.headers.get('authorization') || '') === digest(`Bearer ${env.CRON_SECRET}`), 401, 'unauthenticated', 'Unauthorized.');
+      return json(await processNotifications(db, { env }));
+    }
     if (route.startsWith('auth/')) return await authGateway(request, route.slice(5), db, options);
+    if (route === 'mobile/pairings/redeem' && request.method === 'POST') {
+      await enforcePairRateLimit(db, request, options.env);
+      return json(await redeemMobilePair(db, await readJson(request), options.env));
+    }
     if (route === 'frame-pairs/redeem' && request.method === 'POST') {
       const body = await readJson(request);
       await enforcePairRateLimit(db, request, options.env);
@@ -114,7 +143,7 @@ export async function handleRequest(request, options = {}) {
       if (token) await db.query('UPDATE family_devices SET revoked_at=now() WHERE token_hash=$1', [digest(token)]);
       return json({ deleted: true }, 200, { 'Set-Cookie': `${FRAME_COOKIE}=; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` });
     }
-    if (!options.authenticate && request.headers.has('authorization') && !['GET', 'HEAD'].includes(request.method)) authContext = (options.createAuthContext || createAuthContext)(request, options);
+    if (!options.authenticate && request.headers.get('authorization')?.startsWith('Bearer ') && !['GET', 'HEAD'].includes(request.method)) authContext = (options.createAuthContext || createAuthContext)(request, options);
     const principal = await (options.authenticate || authenticate)(request, db, { ...options, authContext });
     const response = await dispatch(request, db, principal, route, options);
     return authContext ? authContext.finish(response) : response;
