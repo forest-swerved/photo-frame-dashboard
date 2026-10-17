@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Run the actual navigation repair method against host settings/permission fakes.
+"""Run navigation repair fakes and fullscreen keyboard viewport geometry on the host.
 
 Requires Python 3 and a JDK on PATH. No Android device, SDK or third-party packages.
-This checks setting transitions, not Android service binding or boot timing.
+This checks settings and viewport sizes, not Android service binding, actual IME
+window reports, focused-input scrolling or boot timing.
 """
 from pathlib import Path
 import subprocess
@@ -10,6 +11,7 @@ import tempfile
 
 
 SOURCE = Path(__file__).resolve().parent / "src/com/wesbos/homehq/MainActivity.java"
+KEYBOARD_SOURCE = SOURCE.with_name("KeyboardViewport.java")
 text = SOURCE.read_text(encoding="utf-8")
 start = text.index("  private void keepNavigationEnabled() {")
 end = text.index("\n  private void openLauncher()", start)
@@ -102,6 +104,12 @@ __METHOD__
     }
     System.out.println("PASS " + name);
   }
+  static void viewport(String name, int fullHeight, int top, int bottom,
+                       int minimumKeyboardHeight, int expected) {
+    int actual = KeyboardViewport.contentHeight(fullHeight, top, bottom, minimumKeyboardHeight);
+    if (actual != expected) throw new AssertionError(name + ": expected " + expected + ", got " + actual);
+    System.out.println("PASS " + name);
+  }
   public static void main(String[] args) {
     check("selected, master off", OWN, 0, 0, false, OWN, 1, 0, 1);
     check("short component, preserve other services", OTHER + ":" + SHORT, 0, 0,
@@ -114,6 +122,20 @@ __METHOD__
     check("not granted or revoked before check", OWN, 0, -1, false, OWN, 0, 0, 0);
     check("permission lost before master write", OWN, 0, 0, true, OWN, 0, 0, 0);
     check("permission lost before list write", OTHER, 0, 0, true, OTHER, 0, 0, 0);
+    // PF1007L 1280x800: opening, changing and dismissing the IME must expose the full
+    // corresponding WebView viewport without accumulating the previous keyboard inset.
+    viewport("frame full display", 800, 0, 800, 100, 800);
+    viewport("frame keyboard opens", 800, 0, 400, 100, 400);
+    viewport("keyboard suggestions change height", 800, 0, 360, 100, 360);
+    viewport("keyboard closes to full display", 800, 0, 800, 100, 800);
+    viewport("transient navigation bar is not keyboard", 800, 0, 752, 100, 800);
+    viewport("nonzero decor origin uses screen coordinates", 800, 24, 424, 100, 400);
+    viewport("Android already resized window is not resized twice", 400, 0, 400, 100, 400);
+    viewport("empty focus-transition frame is ignored", 800, 0, 0, 100, 800);
+    viewport("visible frame beyond window stays bounded", 800, 24, 1000, 100, 800);
+    viewport("compact window keyboard still resizes", 400, 0, 250, 100, 250);
+    viewport("higher density display uses supplied pixel threshold", 1600, 0, 800, 200, 800);
+    viewport("unmeasured root waits for layout", 0, 0, 800, 100, 0);
   }
 }
 '''
@@ -122,7 +144,7 @@ with tempfile.TemporaryDirectory(prefix="homehq-navigation-") as directory:
     root = Path(directory)
     java = root / "NavigationHarness.java"
     java.write_text(HARNESS.replace("__METHOD__", method), encoding="utf-8")
-    subprocess.run(["javac", "--release", "8", "-d", str(root), str(java)],
+    subprocess.run(["javac", "--release", "8", "-d", str(root), str(java), str(KEYBOARD_SOURCE)],
                    check=True, timeout=30)
     subprocess.run(["java", "-cp", str(root), "com.wesbos.homehq.NavigationHarness"],
                    check=True, timeout=30)

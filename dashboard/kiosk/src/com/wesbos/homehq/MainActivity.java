@@ -11,6 +11,7 @@ import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.net.Uri;
@@ -23,6 +24,7 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewTreeObserver;
 import android.view.WindowManager;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -60,6 +62,10 @@ public class MainActivity extends Activity {
   static final float EXIT_SLOP_PX = 60;
 
   private WebView web;
+  private FrameLayout root, viewport;
+  private final Rect visibleFrame = new Rect();
+  private final int[] rootLocation = new int[2];
+  private ViewTreeObserver.OnGlobalLayoutListener keyboardLayout;
   private final Handler handler = new Handler(Looper.getMainLooper());
   // Not cleared in onDestroy, so a navigation rebind that has started always finishes.
   private final Handler rebindHandler = new Handler(Looper.getMainLooper());
@@ -133,6 +139,7 @@ public class MainActivity extends Activity {
     keepNavigationEnabled();
     getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
         | WindowManager.LayoutParams.FLAG_FULLSCREEN);
+    getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
 
     web = new WebView(this);
     WebSettings s = web.getSettings();
@@ -175,10 +182,29 @@ public class MainActivity extends Activity {
         handler.postDelayed(retry, RETRY_MS);
       }
     });
-    FrameLayout root = new FrameLayout(this);
-    root.addView(web);
-    root.addView(buildOffline());
+    root = new FrameLayout(this);
+    viewport = new FrameLayout(this);
+    viewport.addView(web, new FrameLayout.LayoutParams(
+        FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+    viewport.addView(buildOffline(), new FrameLayout.LayoutParams(
+        FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+    root.addView(viewport, new FrameLayout.LayoutParams(
+        FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
     setContentView(root);
+    // Android 6 ignores adjustResize for fullscreen windows. Keep the outer window fullscreen,
+    // but size its content to the visible area above the keyboard. Resizing the WebView also lets
+    // Chromium scroll the focused input into view and recalculate viewport units normally.
+    keyboardLayout = () -> {
+      root.getWindowVisibleDisplayFrame(visibleFrame);
+      root.getLocationOnScreen(rootLocation);
+      int height = KeyboardViewport.contentHeight(
+          root.getHeight(), rootLocation[1], visibleFrame.bottom, dp(100));
+      if (height <= 0 || viewport.getLayoutParams().height == height) return;
+      FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) viewport.getLayoutParams();
+      params.height = height;
+      viewport.setLayoutParams(params);
+    };
+    root.getViewTreeObserver().addOnGlobalLayoutListener(keyboardLayout);
 
     String url = urlFrom(getIntent());
     web.loadUrl(url != null ? url : savedUrl());
@@ -389,6 +415,9 @@ public class MainActivity extends Activity {
 
   @Override
   protected void onDestroy() {
+    if (root != null && keyboardLayout != null && root.getViewTreeObserver().isAlive()) {
+      root.getViewTreeObserver().removeOnGlobalLayoutListener(keyboardLayout);
+    }
     unregisterReceiver(networkChange);
     handler.removeCallbacksAndMessages(null);
     if (web != null) web.destroy();
