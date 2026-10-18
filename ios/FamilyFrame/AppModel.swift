@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import UserNotifications
+import UIKit
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -8,6 +9,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var session: MobileSession?
     @Published private(set) var snapshot: HouseholdSnapshot?
     @Published private(set) var calendar: CalendarSnapshot?
+    @Published private(set) var calendarAgenda: [CalendarDaySection] = []
     @Published private(set) var notifications: [FamilyNotification] = []
     @Published private(set) var deliveryStatus: MobileServiceStatus?
     @Published private(set) var preferences: NotificationPreferences?
@@ -22,25 +24,43 @@ final class AppModel: ObservableObject {
     @Published private(set) var calendarMessage: String?
     @Published private(set) var activityMessage: String?
     @Published var selectedTab = 0
-    private let api: APIClient
-    private let keychain = SecureStore()
-    private let cache = DashboardCache()
+    private let api: any FamilyAPI
+    private let keychain: any CredentialStoring
+    private let cache: any DashboardCaching
+    private let now: () -> Date
+    private var refreshTask: Task<Void, Never>?
+    private var refreshRequested = false
+    private var preferencesRequested = false
+    private var statusRequested = false
+    private var hasRequestedPreferences = false
+    private var hasRequestedStatus = false
+    // An old read cannot resolve the outcome of a newer uncertain write.
+    private var uncertaintyVersion = 0
+    private var preferencesRevision = 0
+    private var agendaCache = CalendarAgendaCache()
+    private var calendarReadAt: Date?
     private var credential: MobileCredential?
     private var generation = 0
     private var hasStarted = false
     private var registeredPushKey: String?
     private var isRegisteringPush = false
     var isAdmin: Bool { session?.isAdmin == true }
-    var canChange: Bool { session != nil && !isStale && !isLoading && snapshot?.date == today }
+    var canChange: Bool { session != nil && !isStale && snapshot?.date == today }
     var zone: TimeZone { session?.household.timeZone ?? TimeZone(secondsFromGMT: 0)! }
-    var today: String { Dates.day(in: zone) }
+    var today: String { Dates.day(now(), in: zone) }
     var visibleChores: [Chore] { snapshot?.todaysChores ?? [] }
     var completedCount: Int { visibleChores.filter { $0.completion.completed }.count }
     var unreadCount: Int { notifications.filter { $0.readAt == nil }.count }
     var canViewChildSettings: Bool { session?.isChild != true }
-    init(api: APIClient? = nil) {
-        self.api = api ?? APIClient()
-        NotificationController.shared.onToken = { [weak self] token in await self?.registerPush(token) }
+    func confirmsCalendarAvailability(from: String, to: String) -> Bool {
+        guard let read = calendarReadAt, calendarMessage == nil, (0...300).contains(now().timeIntervalSince(read)) else { return false }
+        return calendar?.confirmsAvailability(from: from, to: to, zone: zone) == true
+    }
+    init(api: (any FamilyAPI)? = nil, keychain: any CredentialStoring = SecureStore(),
+         cache: any DashboardCaching = DashboardCache(), now: @escaping () -> Date = Date.init,
+         observesPush: Bool = true) {
+        self.api = api ?? APIClient(); self.keychain = keychain; self.cache = cache; self.now = now
+        if observesPush { NotificationController.shared.onToken = { [weak self] token in await self?.registerPush(token) } }
     }
     func start() async {
         guard !hasStarted else { return }; hasStarted = true
@@ -48,7 +68,7 @@ final class AppModel: ObservableObject {
             if let saved = try keychain.load(), saved.isValid {
                 credential = saved; session = saved.session; api.mobileToken = saved.token
                 if let savedCache = cache.read(identity: saved.session.cacheIdentity) {
-                    snapshot = savedCache.snapshot; calendar = savedCache.calendar; notifications = savedCache.notifications
+                    snapshot = savedCache.snapshot; applyCalendar(savedCache.calendar); notifications = savedCache.notifications
                     lastUpdated = savedCache.savedAt
                 }
                 await refresh(includePreferences: true)
@@ -101,61 +121,134 @@ final class AppModel: ObservableObject {
     private func accept(_ value: MobileCredential) throws {
         guard value.isValid else { throw APIError(status: 0, code: "invalid_session", message: "The server did not create a valid app session.") }
         try keychain.save(value)
-        generation += 1; cache.clear(); clearDashboard()
+        generation += 1; cancelRefresh(); cache.clear(); clearDashboard()
         credential = value; session = value.session; api.mobileToken = value.token
     }
-    func refresh(includePreferences: Bool = false) async {
-        guard session != nil, !isLoading else { return }
-        isLoading = true; let started = generation
-        defer { isLoading = false }
+    /// Coalesce pushes, foreground polling and user refresh into a single flight
+    /// plus one trailing read. Every caller waits for the coalesced work.
+    func refresh(includePreferences: Bool = false, includeStatus: Bool = false) async {
+        guard session != nil else { return }
+        refreshRequested = true
+        preferencesRequested = preferencesRequested || includePreferences || !hasRequestedPreferences
+        statusRequested = statusRequested || includeStatus || !hasRequestedStatus
+        if preferencesRequested { hasRequestedPreferences = true }
+        if statusRequested { hasRequestedStatus = true }
+        if let task = refreshTask { await task.value; return }
+        let started = generation
+        isLoading = true
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.refreshLoop(generation: started)
+        }
+        refreshTask = task
+        await task.value
+    }
+    private func refreshLoop(generation started: Int) async {
+        defer { if generation == started { refreshTask = nil; isLoading = false } }
+        while refreshRequested && generation == started && !Task.isCancelled {
+            refreshRequested = false
+            let loadPreferences = preferencesRequested, loadStatus = statusRequested
+            preferencesRequested = false; statusRequested = false
+            await refreshCycle(generation: started, includePreferences: loadPreferences, includeStatus: loadStatus)
+        }
+    }
+    private func refreshCycle(generation started: Int, includePreferences: Bool, includeStatus: Bool) async {
         do {
             let current = try await api.currentSession()
-            guard started == generation else { return }
+            guard started == generation, !Task.isCancelled else { return }
             guard current.cacheIdentity == session?.cacheIdentity else {
                 throw APIError(status: 401, code: "session_changed", message: "This app's access changed. Sign in again.")
             }
             session = current
-            if var credential { credential.session = current; try keychain.save(credential); self.credential = credential }
-            let currentSnapshot = try await api.household(date: today)
-            guard started == generation else { return }
-            snapshot = currentSnapshot; lastUpdated = Date(); isStale = false; refreshIssue = nil
-        } catch {
-            guard started == generation else { return }
-            if (error as? APIError)?.isAuthenticationFailure == true { await forgetSession(reason: error.localizedDescription); return }
-            isStale = true
-            refreshIssue = error.localizedDescription
-            return
-        }
-        do {
-            let result = try await api.calendar(from: today, to: Dates.shiftedDay(today, by: 14))
-            guard started == generation else { return }
-            calendar = result; calendarMessage = nil
-        } catch {
-            guard started == generation else { return }
-            calendarMessage = "Calendar could not refresh. Any events shown are from the last successful sync."
-        }
-        do {
-            let result = try await api.notifications()
-            guard started == generation else { return }
-            notifications = result; activityMessage = nil
-        } catch {
-            guard started == generation else { return }
-            activityMessage = "Activity could not refresh. Pull to try again."
-        }
-        if includePreferences || preferences == nil {
-            do {
-                let result = try await api.preferences()
-                guard started == generation else { return }
-                preferences = result
-            } catch { /* Settings displays an explicit unavailable state and retry. */ }
-        }
-        do {
-            let result = try await api.serviceStatus()
-            guard started == generation else { return }
-            deliveryStatus = result
-        } catch { deliveryStatus = nil }
+            if var credential, credential.session != current { credential.session = current; try keychain.save(credential); self.credential = credential }
+        } catch { await failedHouseholdRefresh(error, generation: started); return }
+        // Each pane publishes independently. A slow calendar never gates fresh chores.
+        async let household: Void = refreshHousehold(generation: started)
+        async let events: Void = refreshCalendar(generation: started)
+        async let activity: Void = refreshActivity(generation: started)
+        async let settings: Void = refreshSettings(generation: started, preferences: includePreferences, status: includeStatus)
+        _ = await (household, events, activity, settings)
+        guard started == generation, !Task.isCancelled else { return }
         persistCache()
         if let token = NotificationController.shared.currentToken { await registerPush(token) }
+    }
+    private func refreshHousehold(generation started: Int) async {
+        let uncertaintyAtStart = uncertaintyVersion
+        do {
+            let result = try await api.household(date: today)
+            guard started == generation, !Task.isCancelled else { return }
+            snapshot = mergeHousehold(result)
+            guard uncertaintyAtStart == uncertaintyVersion else { refreshRequested = true; return }
+            lastUpdated = now(); isStale = false; refreshIssue = nil
+            persistCache()
+        } catch { await failedHouseholdRefresh(error, generation: started) }
+    }
+    private func failedHouseholdRefresh(_ error: Error, generation started: Int) async {
+        guard started == generation, !(error is CancellationError), !Task.isCancelled else { return }
+        if (error as? APIError)?.isAuthenticationFailure == true { await forgetSession(reason: error.localizedDescription); return }
+        isStale = true; refreshIssue = error.localizedDescription
+    }
+    private func refreshCalendar(generation started: Int) async {
+        let day = today
+        do {
+            let result = try await api.calendar(from: day, to: Dates.shiftedDay(day, by: 14))
+            guard started == generation, !Task.isCancelled else { return }
+            calendarReadAt = now(); applyCalendar(result); calendarMessage = nil
+        } catch {
+            guard started == generation, !(error is CancellationError), !Task.isCancelled else { return }
+            if (error as? APIError)?.isAuthenticationFailure == true { await forgetSession(reason: error.localizedDescription); return }
+            calendarReadAt = nil
+            calendarMessage = "Calendar could not refresh. Any events shown are from the last successful sync."
+        }
+    }
+    private func refreshActivity(generation started: Int) async {
+        do {
+            let result = try await api.notifications()
+            guard started == generation, !Task.isCancelled else { return }
+            // A response started before mark-as-read must not restore the badge.
+            let read = Dictionary(uniqueKeysWithValues: notifications.compactMap { item in item.readAt.map { (item.id, $0) } })
+            notifications = result.map { item in var current = item; current.readAt = current.readAt ?? read[item.id]; return current }
+            activityMessage = nil
+        } catch {
+            guard started == generation, !(error is CancellationError), !Task.isCancelled else { return }
+            if (error as? APIError)?.isAuthenticationFailure == true { await forgetSession(reason: error.localizedDescription); return }
+            activityMessage = "Activity could not refresh. Pull to try again."
+        }
+    }
+    private func refreshSettings(generation started: Int, preferences loadPreferences: Bool, status loadStatus: Bool) async {
+        async let preferences: Void = refreshPreferences(generation: started, enabled: loadPreferences)
+        async let status: Void = refreshStatus(generation: started, enabled: loadStatus)
+        _ = await (preferences, status)
+    }
+    private func refreshPreferences(generation started: Int, enabled: Bool) async {
+        guard enabled else { return }
+        let revision = preferencesRevision
+        do { let result = try await api.preferences(); if started == generation && revision == preferencesRevision && !Task.isCancelled { preferences = result } }
+        catch { /* Settings retains its explicit unavailable state and retry. */ }
+    }
+    private func refreshStatus(generation started: Int, enabled: Bool) async {
+        guard enabled else { return }
+        do { let result = try await api.serviceStatus(); if started == generation && !Task.isCancelled { deliveryStatus = result } }
+        catch { if started == generation && !Task.isCancelled { deliveryStatus = nil } }
+    }
+    private func mergeHousehold(_ incoming: HouseholdSnapshot) -> HouseholdSnapshot {
+        guard let existing = snapshot, existing.date == incoming.date else { return incoming }
+        let completions = Dictionary(uniqueKeysWithValues: existing.chores.map { ($0.id, $0.completion) })
+        var merged = incoming
+        for index in merged.chores.indices {
+            if let completion = completions[merged.chores[index].id], completion.version > merged.chores[index].completion.version {
+                merged.chores[index].completion = completion
+            }
+        }
+        return merged
+    }
+    private func applyCalendar(_ value: CalendarSnapshot?) {
+        calendar = value
+        if let sections = agendaCache.update(events: value?.events ?? [], calendars: value?.calendars ?? [], from: today, zone: zone) { calendarAgenda = sections }
+    }
+    private func cancelRefresh() {
+        refreshTask?.cancel(); refreshTask = nil; isLoading = false
+        refreshRequested = false; preferencesRequested = false; statusRequested = false
     }
     private func persistCache() {
         guard let session, let lastUpdated else { return }
@@ -169,14 +262,22 @@ final class AppModel: ObservableObject {
         do {
             let result = try await api.setCompletion(chore, date: snapshot.date, completed: !chore.completion.completed, mutationID: UUID().uuidString.lowercased())
             guard started == generation else { return }
-            if let i = self.snapshot?.chores.firstIndex(where: { $0.id == chore.id }) {
-                self.snapshot?.chores[i].completion = ChoreCompletion(date: result.date, completed: result.completed, version: result.version, updatedAt: result.updatedAt)
+            guard result.choreId == chore.id, result.date == snapshot.date else {
+                uncertaintyVersion += 1; isStale = true
+                changingChores.remove(chore.id); Task { await refresh() }; return
+            }
+            if self.snapshot?.date == snapshot.date, let i = self.snapshot?.chores.firstIndex(where: { $0.id == chore.id }) {
+                if result.version >= (self.snapshot?.chores[i].completion.version ?? 0) {
+                    self.snapshot?.chores[i].completion = ChoreCompletion(date: result.date, completed: result.completed, version: result.version, updatedAt: result.updatedAt)
+                }
                 persistCache()
             }
-            await refresh()
+            changingChores.remove(chore.id)
+            UISelectionFeedbackGenerator().selectionChanged()
+            Task { await refresh() }
         } catch {
             guard started == generation else { return }
-            isStale = true
+            uncertaintyVersion += 1; isStale = true
             if let apiError = error as? APIError, apiError.isConflict {
                 message = "This chore changed on another device. Your change was not forced. Refresh, review the current status, then try again."
             } else { message = error.localizedDescription }
@@ -185,12 +286,12 @@ final class AppModel: ObservableObject {
     func saveChore(_ draft: ChoreDraft, id: String?) async -> Bool {
         guard isAdmin, canChange else { return false }
         lastMutationNeedsReview = false
-        do { try await api.saveChore(draft, id: id); await refresh(); return true }
+        do { try await api.saveChore(draft, id: id); Task { await refresh() }; return true }
         catch {
             let failure = error as? APIError
             lastMutationNeedsReview = failure.map { $0.isConflict || $0.status == 0 || $0.status >= 500 } ?? true
             if lastMutationNeedsReview {
-                isStale = true
+                uncertaintyVersion += 1; isStale = true
                 message = failure?.isConflict == true ? "This chore changed elsewhere. Close this editor, refresh, and review the current chore before editing again." : "The save could not be confirmed. Close this editor and refresh to check whether it was saved before making another change."
             } else { message = error.localizedDescription }
             return false
@@ -198,8 +299,8 @@ final class AppModel: ObservableObject {
     }
     func deleteChore(_ chore: Chore) async -> Bool {
         guard isAdmin, canChange else { return false }
-        do { try await api.deleteChore(chore); await refresh(); return true }
-        catch { message = error.localizedDescription; return false }
+        do { try await api.deleteChore(chore); Task { await refresh() }; return true }
+        catch { uncertaintyVersion += 1; isStale = true; message = error.localizedDescription; return false }
     }
     func inviteChild(_ person: Person, email: String) async throws -> ChildInvitation {
         guard isAdmin else { throw APIError(status: 403, code: "admin_required", message: "Only a parent administrator can invite a child account.") }
@@ -208,16 +309,26 @@ final class AppModel: ObservableObject {
     func devices() async throws -> [MobileDevice] { try await api.devices() }
     func revoke(_ id: String) async throws { try await api.revokeDevice(id: id) }
     func savePreferences(_ value: NotificationPreferences) async -> Bool {
-        do { preferences = try await api.savePreferences(value); return true }
-        catch { message = error.localizedDescription; return false }
+        let started = generation
+        preferencesRevision += 1; let revision = preferencesRevision
+        do {
+            let result = try await api.savePreferences(value)
+            guard started == generation, revision == preferencesRevision else { return false }
+            preferencesRevision += 1; preferences = result; return true
+        } catch {
+            guard started == generation, revision == preferencesRevision else { return false }
+            preferencesRevision += 1; message = error.localizedDescription; return false
+        }
     }
     func markRead(_ item: FamilyNotification) async {
         guard item.readAt == nil, !isStale else { return }
+        let started = generation
         do {
             try await api.markRead(id: item.id)
+            guard started == generation else { return }
             if let i = notifications.firstIndex(where: { $0.id == item.id }) { notifications[i].readAt = ISO8601DateFormatter().string(from: Date()) }
             persistCache()
-        } catch { message = error.localizedDescription }
+        } catch { if started == generation { message = error.localizedDescription } }
     }
     func registerPush(_ token: String) async {
         guard let session else { return }
@@ -249,14 +360,15 @@ final class AppModel: ObservableObject {
         }
     }
     private func forgetSession(reason: String?) async {
-        generation += 1; api.mobileToken = nil; credential = nil; session = nil
+        generation += 1; cancelRefresh(); api.mobileToken = nil; credential = nil; session = nil
         clearDashboard(); cache.clear()
         do { try keychain.clear() } catch { message = error.localizedDescription; return }
         UNUserNotificationCenter.current().removeAllDeliveredNotifications()
         message = reason
     }
     private func clearDashboard() {
-        snapshot = nil; calendar = nil; notifications = []; preferences = nil; deliveryStatus = nil; lastUpdated = nil
+        snapshot = nil; calendar = nil; calendarAgenda = []; agendaCache = CalendarAgendaCache(); calendarReadAt = nil; notifications = []; preferences = nil; deliveryStatus = nil; lastUpdated = nil
+        hasRequestedPreferences = false; hasRequestedStatus = false
         changingChores = []; registeredPushKey = nil; isStale = true; refreshIssue = nil; calendarMessage = nil; activityMessage = nil; selectedTab = 0
     }
 }

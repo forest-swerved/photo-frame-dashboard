@@ -15,9 +15,12 @@
 		5CEE3030A1218E86C9D43A29 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8FC1945590D8D0280BBDC65B /* Assets.xcassets */; };
 		60E708C8606CE8DF729B05B7 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = D062E39CEA18BFA55B8B5978 /* Models.swift */; };
 		63FA3D8F18FBDBADFA79BEAB /* ModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0360E50BC70A515B29DB4CD /* ModelTests.swift */; };
+		66DC1A56EB669FDABC206E32 /* AppModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F99566BEC6299DFB6CC2451D /* AppModelTests.swift */; };
 		7D112BED8ACBEE8D2CA98063 /* APIClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6089EF0955B9234323FEDF54 /* APIClientTests.swift */; };
+		7D24F45A2A9CFD1E37D1CD6A /* CalendarAgendaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC8E5981AE0D262FBAEB35D1 /* CalendarAgendaTests.swift */; };
 		A1CE76FCFB5AC7CF7727D2E2 /* FamilyFrameApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55C1268B071337BD88B96704 /* FamilyFrameApp.swift */; };
 		AE9C5E5FFAF7D112591A1AE7 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84AC6E87B19DF8961FAD0775 /* Theme.swift */; };
+		B1CE37AA43F78285BBDE234A /* CalendarAgenda.swift in Sources */ = {isa = PBXBuildFile; fileRef = 716BF58DEC47D6A06886DD0B /* CalendarAgenda.swift */; };
 		C42454DFD0C8BA702BDFF7FE /* SecureStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAEBF625E1A80A12A3DDACB0 /* SecureStorage.swift */; };
 		CD9FAFAFD868C40709F20A9D /* EntryUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC1569D1880B64B10B170B11 /* EntryUITests.swift */; };
 		DD607BC25B71288AD9F4A46C /* SecureStorageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7D27BA2E54A0142861C3E1A /* SecureStorageTests.swift */; };
@@ -49,6 +52,7 @@
 		55C046137E63446BEC64260A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		55C1268B071337BD88B96704 /* FamilyFrameApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FamilyFrameApp.swift; sourceTree = "<group>"; };
 		6089EF0955B9234323FEDF54 /* APIClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClientTests.swift; sourceTree = "<group>"; };
+		716BF58DEC47D6A06886DD0B /* CalendarAgenda.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarAgenda.swift; sourceTree = "<group>"; };
 		7BA21B294941AE761626D995 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		84AC6E87B19DF8961FAD0775 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		8FC1945590D8D0280BBDC65B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -58,7 +62,9 @@
 		D197380552E546061B894DC1 /* FamilyFrame.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = FamilyFrame.xcconfig; sourceTree = "<group>"; };
 		D7D27BA2E54A0142861C3E1A /* SecureStorageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureStorageTests.swift; sourceTree = "<group>"; };
 		EAEBF625E1A80A12A3DDACB0 /* SecureStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureStorage.swift; sourceTree = "<group>"; };
+		EC8E5981AE0D262FBAEB35D1 /* CalendarAgendaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarAgendaTests.swift; sourceTree = "<group>"; };
 		F6992B32FF56B2CC0D013A9B /* FamilyFrame.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FamilyFrame.entitlements; sourceTree = "<group>"; };
+		F99566BEC6299DFB6CC2451D /* AppModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelTests.swift; sourceTree = "<group>"; };
 		FBAEB886064666591DC1890F /* FamilyFrame.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = FamilyFrame.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FC4DB9B036EC0D245C455E9A /* EditorAndSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorAndSettings.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -89,6 +95,8 @@
 			isa = PBXGroup;
 			children = (
 				6089EF0955B9234323FEDF54 /* APIClientTests.swift */,
+				F99566BEC6299DFB6CC2451D /* AppModelTests.swift */,
+				EC8E5981AE0D262FBAEB35D1 /* CalendarAgendaTests.swift */,
 				B0360E50BC70A515B29DB4CD /* ModelTests.swift */,
 				D7D27BA2E54A0142861C3E1A /* SecureStorageTests.swift */,
 			);
@@ -109,6 +117,7 @@
 				023C0455FD300CD7B2B887F3 /* APIClient.swift */,
 				7BA21B294941AE761626D995 /* AppModel.swift */,
 				8FC1945590D8D0280BBDC65B /* Assets.xcassets */,
+				716BF58DEC47D6A06886DD0B /* CalendarAgenda.swift */,
 				01C6B9845A12AE50B741CA05 /* DashboardScreens.swift */,
 				FC4DB9B036EC0D245C455E9A /* EditorAndSettings.swift */,
 				F6992B32FF56B2CC0D013A9B /* FamilyFrame.entitlements */,
@@ -246,6 +255,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				7D112BED8ACBEE8D2CA98063 /* APIClientTests.swift in Sources */,
+				66DC1A56EB669FDABC206E32 /* AppModelTests.swift in Sources */,
+				7D24F45A2A9CFD1E37D1CD6A /* CalendarAgendaTests.swift in Sources */,
 				63FA3D8F18FBDBADFA79BEAB /* ModelTests.swift in Sources */,
 				DD607BC25B71288AD9F4A46C /* SecureStorageTests.swift in Sources */,
 			);
@@ -257,6 +268,7 @@
 			files = (
 				3FD483F32768F5CE074D6574 /* APIClient.swift in Sources */,
 				049B1F52E712E74CC7CB7162 /* AppModel.swift in Sources */,
+				B1CE37AA43F78285BBDE234A /* CalendarAgenda.swift in Sources */,
 				4A620E973FD95E3EA5F86536 /* DashboardScreens.swift in Sources */,
 				0470EF284C159BC254D0EB2A /* EditorAndSettings.swift in Sources */,
 				A1CE76FCFB5AC7CF7727D2E2 /* FamilyFrameApp.swift in Sources */,

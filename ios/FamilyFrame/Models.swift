@@ -97,7 +97,7 @@ struct ChoreDraft: Encodable {
     enum CodingKeys: String, CodingKey { case title, personId, weekdays, dueTime, reminderMinutes, expectedVersion }
 }
 
-struct CalendarEvent: Codable, Identifiable {
+struct CalendarEvent: Codable, Identifiable, Equatable {
     let id: String
     let title: String
     let location: String?
@@ -114,17 +114,95 @@ struct CalendarEvent: Codable, Identifiable {
     func when(in zone: TimeZone) -> String {
         guard !allDay else { return "All day" }
         guard let startAt, let date = Dates.instant(startAt) else { return "Time unavailable" }
-        let f = DateFormatter(); f.timeZone = zone; f.dateStyle = .none; f.timeStyle = .short
-        return f.string(from: date)
+        return Dates.time(date, in: zone)
     }
 }
 
+struct CalendarPaletteEntry: Codable, Identifiable, Equatable {
+    let id: String
+    let name: String
+    let color: String
+    init(id: String, name: String, color: String) {
+        self.id = String(id.prefix(200)); self.name = String(name.prefix(120))
+        self.color = color.range(of: "^#[0-9a-fA-F]{6}$", options: .regularExpression) != nil ? color : "#00748c"
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(id: (try? c.decode(String.self, forKey: .id)) ?? "",
+                  name: (try? c.decode(String.self, forKey: .name)) ?? "Calendar",
+                  color: (try? c.decode(String.self, forKey: .color)) ?? "#00748c")
+    }
+}
+struct CalendarCoverage: Codable, Equatable {
+    let startDate: String?
+    let endDateExclusive: String?
+    let timeZone: String?
+    let complete: Bool
+    let truncated: Bool
+    init(startDate: String?, endDateExclusive: String?, timeZone: String?, complete: Bool, truncated: Bool) {
+        self.startDate = startDate; self.endDateExclusive = endDateExclusive; self.timeZone = timeZone
+        self.complete = complete; self.truncated = truncated
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        startDate = try? c.decode(String.self, forKey: .startDate)
+        endDateExclusive = try? c.decode(String.self, forKey: .endDateExclusive)
+        timeZone = try? c.decode(String.self, forKey: .timeZone)
+        complete = (try? c.decode(Bool.self, forKey: .complete)) ?? false
+        truncated = (try? c.decode(Bool.self, forKey: .truncated)) ?? true
+    }
+    func covers(from: String, to: String, zone: TimeZone) -> Bool {
+        guard complete, !truncated, timeZone == zone.identifier, let startDate, let endDateExclusive,
+              Dates.dayDate(startDate) != nil, Dates.dayDate(endDateExclusive) != nil else { return false }
+        return startDate <= from && endDateExclusive >= to && from < to
+    }
+}
+struct CalendarSyncInfo: Codable {
+    let state: String
+    let lastAttemptAt: String?
+    let nextAttemptAt: String?
+    let error: CalendarProblem?
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let raw = (try? c.decode(String.self, forKey: .state)) ?? "unknown"
+        state = ["idle", "scheduled", "syncing", "retrying"].contains(raw) ? raw : "unknown"
+        lastAttemptAt = try? c.decode(String.self, forKey: .lastAttemptAt)
+        nextAttemptAt = try? c.decode(String.self, forKey: .nextAttemptAt)
+        error = try? c.decode(CalendarProblem.self, forKey: .error)
+    }
+}
 struct CalendarSnapshot: Codable {
     let status: String
     let events: [CalendarEvent]
     let lastSuccessfulSyncAt: String?
     let error: CalendarProblem?
-    var isStale: Bool { status == "stale" || status == "error" }
+    let calendars: [CalendarPaletteEntry]
+    let coverage: CalendarCoverage?
+    let sync: CalendarSyncInfo?
+    init(status: String, events: [CalendarEvent], lastSuccessfulSyncAt: String?, error: CalendarProblem?, calendars: [CalendarPaletteEntry] = [], coverage: CalendarCoverage? = nil, sync: CalendarSyncInfo? = nil) {
+        self.status = status; self.events = events; self.lastSuccessfulSyncAt = lastSuccessfulSyncAt; self.error = error; self.calendars = calendars
+        self.coverage = coverage; self.sync = sync
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        status = try c.decode(String.self, forKey: .status); events = try c.decode([CalendarEvent].self, forKey: .events)
+        lastSuccessfulSyncAt = try c.decodeIfPresent(String.self, forKey: .lastSuccessfulSyncAt)
+        error = try c.decodeIfPresent(CalendarProblem.self, forKey: .error)
+        // Metadata is optional on older servers. Invalid labels/colors must never
+        // make the authoritative event list unreadable.
+        calendars = ((try? c.decodeIfPresent([CalendarPaletteEntry].self, forKey: .calendars)) ?? []).filter { !$0.id.isEmpty }
+        coverage = try? c.decode(CalendarCoverage.self, forKey: .coverage)
+        sync = try? c.decode(CalendarSyncInfo.self, forKey: .sync)
+    }
+    func confirmsAvailability(from: String, to: String, zone: TimeZone) -> Bool {
+        status == "ready" && error == nil && coverage?.covers(from: from, to: to, zone: zone) == true
+    }
+    var availabilityMessage: String {
+        if ["scheduled", "syncing"].contains(sync?.state ?? "") { return "Calendar is syncing. Events are not confirmed yet." }
+        if status == "error" || error != nil || sync?.error != nil { return "Calendar availability is not confirmed. Sync will retry automatically." }
+        return "Calendar availability is not confirmed yet."
+    }
+    var isStale: Bool { status == "stale" || status == "error" || status == "refreshing" }
 }
 struct CalendarProblem: Codable { let code: String; let message: String }
 
@@ -211,19 +289,34 @@ struct CachedDashboard: Codable {
 }
 
 enum Dates {
+    // Shared formatters are configured once and used under a lock, including
+    // from background grouping work. No formatter is mutated after caching.
+    private static let lock = NSRecursiveLock()
+    private static var formatters: [String: DateFormatter] = [:]
+    private static let precise: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f
+    }()
+    private static let basic = ISO8601DateFormatter()
+    private static let relativeFormatter = RelativeDateTimeFormatter()
+    private static func formatter(_ key: String, build: () -> DateFormatter) -> DateFormatter {
+        if let f = formatters[key] { return f }
+        let f = build(); formatters[key] = f; return f
+    }
     static func instant(_ value: String) -> Date? {
-        let precise = ISO8601DateFormatter(); precise.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return precise.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+        lock.lock(); defer { lock.unlock() }
+        return precise.date(from: value) ?? basic.date(from: value)
+    }
+    private static func dayFormatter(_ zone: TimeZone) -> DateFormatter {
+        formatter("day|" + zone.identifier) {
+            let f = DateFormatter(); f.calendar = Calendar(identifier: .gregorian); f.locale = Locale(identifier: "en_US_POSIX")
+            f.timeZone = zone; f.dateFormat = "yyyy-MM-dd"; f.isLenient = false; return f
+        }
     }
     static func day(_ date: Date = Date(), in zone: TimeZone) -> String {
-        let f = DateFormatter(); f.calendar = Calendar(identifier: .gregorian); f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = zone; f.dateFormat = "yyyy-MM-dd"
-        return f.string(from: date)
+        lock.lock(); defer { lock.unlock() }; return dayFormatter(zone).string(from: date)
     }
     static func dayDate(_ day: String) -> Date? {
-        let f = DateFormatter(); f.calendar = Calendar(identifier: .gregorian); f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone(secondsFromGMT: 0); f.dateFormat = "yyyy-MM-dd"; f.isLenient = false
-        return f.date(from: day)
+        lock.lock(); defer { lock.unlock() }; return dayFormatter(TimeZone(secondsFromGMT: 0)!).date(from: day)
     }
     static func weekday(_ day: String) -> Int {
         guard let date = dayDate(day) else { return -1 }
@@ -236,14 +329,38 @@ enum Dates {
         return self.day(c.date(byAdding: .day, value: count, to: date)!, in: c.timeZone)
     }
     static func dayLabel(_ day: String) -> String {
-        guard let d = dayDate(day) else { return day }
-        let f = DateFormatter(); f.timeZone = TimeZone(secondsFromGMT: 0); f.dateFormat = "EEEE, MMM d"
-        return f.string(from: d)
+        guard let date = dayDate(day) else { return day }
+        lock.lock(); defer { lock.unlock() }
+        return formatter("label|" + Locale.current.identifier) {
+            let f = DateFormatter(); f.timeZone = TimeZone(secondsFromGMT: 0); f.setLocalizedDateFormatFromTemplate("EEEEMMMd"); return f
+        }.string(from: date)
+    }
+    static func time(_ date: Date, in zone: TimeZone) -> String {
+        lock.lock(); defer { lock.unlock() }
+        return formatter("time|" + zone.identifier + "|" + Locale.current.identifier) {
+            let f = DateFormatter(); f.timeZone = zone; f.timeStyle = .short; f.dateStyle = .none; return f
+        }.string(from: date)
+    }
+    static func wallTime(_ value: String, on day: String, in zone: TimeZone) -> Date? {
+        guard validTime(value) else { return nil }
+        guard day.count == 10, let date = dayDate(day), self.day(date, in: TimeZone(secondsFromGMT: 0)!) == day else { return nil }
+        let parts = day.split(separator: "-").compactMap { Int($0) }, clock = value.split(separator: ":").compactMap { Int($0) }
+        guard parts.count == 3, clock.count == 2 else { return nil }
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = zone
+        // Calendar resolves a missing spring hour forward and chooses the first
+        // fall-back occurrence, matching the server's Temporal compatible policy.
+        return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2], hour: clock[0], minute: clock[1]))
+    }
+    static func wallTimeString(_ date: Date, in zone: TimeZone) -> String {
+        lock.lock(); defer { lock.unlock() }
+        return formatter("clock|" + zone.identifier) {
+            let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = zone; f.dateFormat = "HH:mm"; return f
+        }.string(from: date)
     }
     static func validTime(_ value: String) -> Bool { value.range(of: "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$", options: .regularExpression) != nil }
     static func relative(_ value: String?) -> String {
         guard let value, let date = instant(value) else { return "Not yet" }
-        return RelativeDateTimeFormatter().localizedString(for: date, relativeTo: Date())
+        lock.lock(); defer { lock.unlock() }; return relativeFormatter.localizedString(for: date, relativeTo: Date())
     }
 }
 
