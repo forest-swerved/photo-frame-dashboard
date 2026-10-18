@@ -1,7 +1,21 @@
 import Foundation
 import Security
 
-struct SecureStore {
+protocol CredentialStoring {
+    func load() throws -> MobileCredential?
+    func save(_ credential: MobileCredential) throws
+    func clear() throws
+    func installationID() throws -> String
+    func replaceInstallationID() throws -> String
+}
+
+protocol DashboardCaching {
+    func read(identity: String) -> CachedDashboard?
+    func write(_ value: CachedDashboard) throws
+    func clear()
+}
+
+struct SecureStore: CredentialStoring {
     private let service: String
     init(service: String = "com.swerved.familyframe.mobile-session") { self.service = service }
     private let account = "current"
@@ -56,7 +70,7 @@ enum StorageError: LocalizedError {
     var errorDescription: String? { "The app could not access protected storage. Unlock your device and try again." }
 }
 
-struct DashboardCache {
+struct DashboardCache: DashboardCaching {
     private let directory: URL
     init() {
         directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("FamilyFrame", isDirectory: true)

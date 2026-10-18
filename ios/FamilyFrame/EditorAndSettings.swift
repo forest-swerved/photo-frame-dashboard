@@ -109,7 +109,7 @@ struct SettingsScreen: View {
                     Button("Open notification settings") { if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) } }
                 }
                 if let prefs = model.preferences { NavigationLink("Choose notifications and quiet hours") { NotificationPreferencesScreen(initial: prefs) } }
-                else { Button("Load notification preferences") { Task { await model.refresh(includePreferences: true) } }.disabled(model.isLoading) }
+                else { Button("Load notification preferences") { Task { await model.refresh(includePreferences: true, includeStatus: true) } }.disabled(model.isLoading) }
                 if let server = model.deliveryStatus {
                     Label(server.pushConfigured ? "Apple push service configured" : "Push delivery awaits Apple developer configuration", systemImage: server.pushConfigured ? "checkmark.shield" : "clock").font(.caption).foregroundStyle(server.pushConfigured ? Brand.cyanInk : Brand.muted)
                     if !server.schedulingConfigured { Text("Scheduled reminders await server scheduling configuration.").font(.caption).foregroundStyle(Brand.muted) }
@@ -121,14 +121,14 @@ struct SettingsScreen: View {
             if model.isAdmin {
                 Section("Family access") {
                     NavigationLink("Invite a child account") { ChildInvitationScreen() }
-                    NavigationLink("Manage mobile devices") { MobileDevicesScreen() }
+                    NavigationLink("Signed-in phones and tablets") { MobileDevicesScreen() }
                     Link("Parent invitations and frame setup", destination: APIClient.configuredURL)
                 }
             }
             Section("Your household") {
                 LabeledContent("Timezone", value: model.session?.household.timezone ?? "")
                 if let last = model.lastUpdated { LabeledContent("Last refreshed", value: last.formatted(date: .abbreviated, time: .shortened)) }
-                Button("Refresh current data") { Task { await model.refresh(includePreferences: true) } }.disabled(model.isLoading)
+                Button("Refresh current data") { Task { await model.refresh(includePreferences: true, includeStatus: true) } }.disabled(model.isLoading)
                 if model.isStale { Text("An offline copy is visible. Changes stay paused until a successful refresh.").font(.caption).foregroundStyle(.orange) }
             }
             Section {
@@ -149,12 +149,15 @@ struct NotificationPreferencesScreen: View {
     @Environment(\.dismiss) private var dismiss
     @State private var value: NotificationPreferences
     @State private var quiet: Bool
-    @State private var start: String
-    @State private var end: String
+    @State private var start: Date
+    @State private var end: Date
     @State private var saving = false
     init(initial: NotificationPreferences) {
         _value = State(initialValue: initial); _quiet = State(initialValue: initial.quietStart != nil && initial.quietEnd != nil)
-        _start = State(initialValue: initial.quietStart ?? "21:00"); _end = State(initialValue: initial.quietEnd ?? "07:00")
+        let zone = TimeZone(identifier: initial.timezone) ?? TimeZone(secondsFromGMT: 0)!
+        let day = Dates.day(in: zone)
+        _start = State(initialValue: Dates.wallTime(initial.quietStart ?? "21:00", on: day, in: zone) ?? Date())
+        _end = State(initialValue: Dates.wallTime(initial.quietEnd ?? "07:00", on: day, in: zone) ?? Date())
     }
     var body: some View {
         Form {
@@ -165,22 +168,24 @@ struct NotificationPreferencesScreen: View {
                 Toggle("Due soon", isOn: $value.choreDueSoon)
                 Toggle("Overdue", isOn: $value.choreOverdue)
             }
-            Section("Around the house") {
-                Toggle("Calendar reminders", isOn: $value.calendarEvents)
-                Toggle("Frame offline / reconnected", isOn: $value.frameStatus)
+            if model.canViewChildSettings {
+                Section("Around the house") {
+                    Toggle("Calendar reminders", isOn: $value.calendarEvents)
+                    Toggle("Frame offline / reconnected", isOn: $value.frameStatus)
+                }
             }
             Section {
                 Toggle("Enable quiet hours", isOn: $quiet)
                 if quiet {
-                    HStack { Text("Start"); Spacer(); TextField("21:00", text: $start).keyboardType(.numbersAndPunctuation).multilineTextAlignment(.trailing).frame(width: 100).accessibilityLabel("Quiet hours start, 24-hour time") }
-                    HStack { Text("End"); Spacer(); TextField("07:00", text: $end).keyboardType(.numbersAndPunctuation).multilineTextAlignment(.trailing).frame(width: 100).accessibilityLabel("Quiet hours end, 24-hour time") }
-                    if !valid { Text("Use different start and end times in HH:mm format.").font(.caption).foregroundStyle(Brand.red) }
+                    DatePicker("Start", selection: $start, displayedComponents: .hourAndMinute).environment(\.timeZone, model.zone)
+                    DatePicker("End", selection: $end, displayedComponents: .hourAndMinute).environment(\.timeZone, model.zone)
+                    if !valid { Text("Choose different start and end times.").font(.caption).foregroundStyle(Brand.red) }
                 }
             } header: { Text("Quiet hours") } footer: { Text("Quiet hours use \(value.timezone). Your Activity inbox remains available.") }
         }.navigationTitle("Notifications").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button { Task { saving = true; value.quietStart = quiet ? start : nil; value.quietEnd = quiet ? end : nil; if await model.savePreferences(value) { dismiss() }; saving = false } } label: { if saving { ProgressView() } else { Text("Save").bold() } }.disabled(!valid || saving || model.isStale) } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button { Task { saving = true; value.quietStart = quiet ? Dates.wallTimeString(start, in: model.zone) : nil; value.quietEnd = quiet ? Dates.wallTimeString(end, in: model.zone) : nil; if await model.savePreferences(value) { dismiss() }; saving = false } } label: { if saving { ProgressView() } else { Text("Save").bold() } }.disabled(!valid || saving || model.isStale) } }
     }
-    private var valid: Bool { !quiet || (Dates.validTime(start) && Dates.validTime(end) && start != end) }
+    private var valid: Bool { !quiet || Dates.wallTimeString(start, in: model.zone) != Dates.wallTimeString(end, in: model.zone) }
 }
 
 struct ChildInvitationScreen: View {

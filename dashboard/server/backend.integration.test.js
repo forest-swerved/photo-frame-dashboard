@@ -44,9 +44,10 @@ test('isolated Postgres authorization and concurrency boundaries', { skip: !enab
     await pool.query(`CREATE SCHEMA ${schema}`);
     created = true;
     await db.query(await readFile(new URL('./schema.sql', import.meta.url), 'utf8'));
+    await db.query(await readFile(new URL('./calendar-sync-schema.sql', import.meta.url), 'utf8'));
 
     await t.test('all server-only tables have RLS, owner access, and no PUBLIC policies', async () => {
-      assert.equal(await verifySchema(db, schema, 12), 12);
+      assert.equal(await verifySchema(db, schema, 13), 13);
     });
 
     await t.test('a short setup code cannot be claimed by a different signed-in account', async () => {

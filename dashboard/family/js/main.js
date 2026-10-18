@@ -1,10 +1,13 @@
 import { request, setFrameMode } from './api.js';
-import { authClient } from './auth.js';
-import { escapeHtml as h, color, dateInZone, addDays, dateLabel, weekday, calendarRange, eventsOn, calendarDayIsKnown, completionBody, mergeCompletion, reconcileHousehold, mutationId } from './model.js';
+import { authClient, clearAuthCache } from './auth.js';
+import { escapeHtml as h, color, dateInZone, dateFormatter, addDays, dateLabel, weekday, calendarRange, calendarEventsByDay, calendarDayIsKnown, timeLabel, choreUrgency, orderChores, completionBody, mergeCompletion, reconcileHousehold, mutationId } from './model.js';
+import { createRenderer } from './render.js';
 
 const app = document.querySelector('#family-app');
 const dialog = document.querySelector('#family-dialog');
 const notice = document.querySelector('#family-notice');
+const paintApp = createRenderer(app);
+const noEvents = [];
 const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const views = ['today', 'calendar', 'chores', 'setup'];
 const icons = {
@@ -20,7 +23,7 @@ const S = {
   verificationEmail: '', verificationMethod: 'code',
   entryPair: new URLSearchParams(location.search).get('display') === 'frame',
   inviteToken: '', generatedInvite: null, pairing: null, message: '', error: '', loading: false,
-  pending: new Map(), conflicts: new Map(), failures: new Map(), attempts: new Map(), calendarBusy: false, setupBusy: false,
+  pending: new Map(), conflicts: new Map(), failures: new Map(), attempts: new Map(), calendarBusy: false, calendarShowingBusy: false, setupBusy: false,
 };
 let generation = 0;
 let noticeTimer;
@@ -28,6 +31,8 @@ let pendingRender = false;
 let pollBusy = false;
 let queuedCalendar = null;
 let calendarGeneration = 0;
+let paintedView = null;
+let pointerActive = false;
 
 if (location.hash.startsWith('#invite=')) {
   try { S.inviteToken = decodeURIComponent(location.hash.slice(8)); } catch { /* Invalid token stays blank. */ }
@@ -45,7 +50,7 @@ function people() { return S.snapshot?.people || []; }
 function person(id) { return people().find(item => item.id === id); }
 function idPath(id) { return encodeURIComponent(id); }
 function errorMessage(error) { return error?.message || 'Something went wrong. Please try again.'; }
-function edited() { return dialog.open || !!document.activeElement?.closest('form'); }
+function edited() { return pointerActive || dialog.open || !!document.activeElement?.closest('form') || !!document.querySelector('form[data-submitting]'); }
 function toast(message) {
   clearTimeout(noticeTimer);
   notice.textContent = message;
@@ -55,15 +60,15 @@ function toast(message) {
 function clockMarkup() { return '<span class="live-time" data-clock></span><span class="live-date" data-clock-date></span>'; }
 function paintClock() {
   const now = new Date();
-  const time = new Intl.DateTimeFormat('en-US', { timeZone: zone(), hour: 'numeric', minute: '2-digit' }).format(now);
-  const date = new Intl.DateTimeFormat('en-US', { timeZone: zone(), weekday: 'long', month: 'long', day: 'numeric' }).format(now);
-  document.querySelectorAll('[data-clock]').forEach(element => { element.textContent = time; });
-  document.querySelectorAll('[data-clock-date]').forEach(element => { element.textContent = date; });
+  const time = dateFormatter({ timeZone: zone(), hour: 'numeric', minute: '2-digit' }).format(now);
+  const date = dateFormatter({ timeZone: zone(), weekday: 'long', month: 'long', day: 'numeric' }).format(now);
+  document.querySelectorAll('[data-clock]').forEach(element => { if (element.textContent !== time) element.textContent = time; });
+  document.querySelectorAll('[data-clock-date]').forEach(element => { if (element.textContent !== date) element.textContent = date; });
 }
 
 function field(label, name, value = '', options = {}) {
   const { type = 'text', required = true, autocomplete = 'off', max = 160, extra = '' } = options;
-  return `<label class="field"><span>${h(label)}</span><input type="${h(type)}" name="${h(name)}" value="${h(value)}" ${required ? 'required' : ''} autocomplete="${h(autocomplete)}" maxlength="${max}" ${extra}></label>`;
+  return `<label class="field" data-key="field-${h(name)}"><span>${h(label)}</span><input type="${h(type)}" name="${h(name)}" value="${h(value)}" ${required ? 'required' : ''} autocomplete="${h(autocomplete)}" maxlength="${max}" ${extra}></label>`;
 }
 function formError() { return '<p class="form-error" data-form-error role="alert" hidden></p>'; }
 function button(text, action, cls = 'button', extra = '') { return `<button type="button" class="${cls}" data-action="${h(action)}" ${extra}>${h(text)}</button>`; }
@@ -71,7 +76,7 @@ function empty(titleText, detail, action = '') { return `<div class="empty-state
 function initials(name) { return (name || '?').trim().split(/\s+/).slice(0, 2).map(part => part[0] || '').join('').toUpperCase(); }
 function avatar(profile) { return `<span class="avatar" style="--person:${color(profile?.color)}" aria-hidden="true">${h(initials(profile?.name || 'Anyone'))}</span>`; }
 function profileLabel(id) { return person(id)?.name || 'Anyone'; }
-function noticeBanner() { return S.error ? `<div class="banner banner-error" role="alert"><span>${h(S.error)}</span>${button('Retry', 'refresh', 'text-button')}</div>` : ''; }
+function noticeBanner() { return S.error ? `<div class="banner banner-error" data-key="data-error" role="alert"><span>${h(S.error)}</span>${button('Retry', 'refresh', 'text-button')}</div>` : ''; }
 function updateStamp(value) {
   if (!value) return '';
   const minutes = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 60000));
@@ -80,12 +85,12 @@ function updateStamp(value) {
 
 function shell(content) {
   const labels = { today: 'Today', calendar: 'Calendar', chores: 'Chores', setup: 'Setup' };
-  return `<div class="family-shell">
+  return `<div class="family-shell" data-key="family-shell">
     <aside class="sidebar"><a class="brand" href="#today" aria-label="${h(title())} home"><span class="brand-mark">f<span>f</span></span><span class="brand-name">${h(title())}<small>A little more together.</small></span></a>
-      <nav aria-label="Main navigation">${views.map(view => `<a class="nav-item ${S.view === view ? 'active' : ''}" href="#${view}" ${S.view === view ? 'aria-current="page"' : ''}>${icon(view)}<span>${labels[view]}</span></a>`).join('')}</nav>
+      <nav aria-label="Main navigation">${views.map(view => `<a class="nav-item ${S.view === view ? 'active' : ''}" data-key="nav-${view}" href="#${view}" ${S.view === view ? 'aria-current="page"' : ''}>${icon(view)}<span>${labels[view]}</span></a>`).join('')}</nav>
       <div class="sidebar-bottom"><span class="connection-dot ${S.error ? 'warning' : ''}"></span><span>${frame() ? 'Paired family frame' : 'Your family, connected'}</span></div>
     </aside>
-    <main id="main-content" class="main-content" tabindex="-1"><header class="page-heading"><div><p class="eyebrow">${h(title())}</p><h1>${labels[S.view]}</h1></div><div class="header-clock">${clockMarkup()}</div></header>${noticeBanner()}${content}</main>
+    <main id="main-content" class="main-content" tabindex="-1"><header class="page-heading" data-key="page-heading"><div><p class="eyebrow">${h(title())}</p><h1>${labels[S.view]}</h1></div><div class="header-clock">${clockMarkup()}</div></header>${noticeBanner()}${content}</main>
   </div>`;
 }
 
@@ -94,38 +99,56 @@ function calendarStatus() {
   if (!calendar) return '<div class="status-note">Checking your calendar connection…</div>';
   if (calendar.status === 'not_configured') return `<div class="status-note">Your Apple Calendar is not connected.${admin() ? ' Connect it in Setup.' : ' Ask your family administrator to connect it.'}</div>`;
   if (calendar.status === 'loading') return '<div class="status-note">Your calendar is syncing. Events will appear after a successful sync.</div>';
-  if (calendar.status === 'stale') return `<div class="status-note status-warning"><strong>Calendar may be out of date.</strong> ${h(updateStamp(calendar.lastSuccessfulSyncAt))}. ${h(calendar.error?.message || 'We could not refresh the latest events.')}</div>`;
+  if (calendar.status === 'stale') {
+    const updating = ['scheduled', 'syncing'].includes(calendar.sync?.state);
+    const heading = updating ? 'Calendar update in progress.' : calendar.sync?.state === 'retrying' ? 'Calendar update delayed.' : 'Calendar may be out of date.';
+    const detail = updating ? 'Showing saved events while the background sync runs.' : calendar.error?.message || 'Showing the last synced events. A background update will check for changes.';
+    return `<div class="status-note status-warning"><strong>${heading}</strong> ${h(updateStamp(calendar.lastSuccessfulSyncAt))}. ${h(detail)}</div>`;
+  }
   if (calendar.status === 'error') return `<div class="status-note status-warning"><strong>Calendar is unavailable.</strong> ${h(calendar.error?.message || 'Please try refreshing.')}</div>`;
   if (!calendar.coverage?.complete || calendar.coverage?.truncated) return '<div class="status-note status-warning">This calendar view is incomplete. It cannot confirm availability.</div>';
-  return `<div class="calendar-meta"><span class="connection-dot"></span>${h(updateStamp(calendar.lastSuccessfulSyncAt))}${S.calendarBusy ? ' · Refreshing…' : ''}</div>`;
+  return `<div class="calendar-meta"><span class="connection-dot"></span>${h(updateStamp(calendar.lastSuccessfulSyncAt))}${S.calendarShowingBusy ? ' · Refreshing…' : ''}</div>`;
+}
+
+function selectedCalendars() { return (S.calendar?.calendars || S.connection?.calendars || []).filter(calendar => calendar.selected !== false); }
+function eventMetadata(event) { return selectedCalendars().find(calendar => calendar.id === event.calendarId); }
+function eventDays() {
+  const range = S.view === 'calendar' ? calendarRange(S.selectedDate, S.calendarMode) : { from: today(), to: addDays(today(), 7) };
+  return calendarEventsByDay(S.calendar?.events || noEvents, zone(), range.from, range.to);
+}
+function calendarLegend() {
+  const calendars = selectedCalendars();
+  return calendars.length ? `<div class="calendar-legend" data-key="calendar-legend" aria-label="Calendar colors">${calendars.map(calendar => `<span data-key="legend-${h(calendar.id)}"><i style="background:${color(calendar.color)}" aria-hidden="true"></i>${h(calendar.name)}</span>`).join('')}</div>` : '';
 }
 
 function eventCard(event, compact = false) {
-  const metadata = S.connection?.calendars?.find(calendar => calendar.id === event.calendarId);
-  const eventColor = color(metadata?.color || '#6d8066');
+  const metadata = eventMetadata(event);
+  const eventColor = color(metadata?.color || '#00748c');
   let time = 'All day';
   if (!event.allDay) {
-    const formatter = new Intl.DateTimeFormat('en-US', { timeZone: zone(), hour: 'numeric', minute: '2-digit' });
+    const formatter = dateFormatter({ timeZone: zone(), hour: 'numeric', minute: '2-digit' });
     time = `${formatter.format(new Date(event.startAt))} – ${formatter.format(new Date(event.endAt))}`;
   }
-  return `<article class="event-card ${compact ? 'compact' : ''}" style="--event:${eventColor}"><span class="event-time">${h(time)}</span><div><h3>${h(event.title || 'Untitled event')}</h3>${event.location ? `<p>${h(event.location)}</p>` : ''}${metadata?.name && !compact ? `<span class="event-calendar">${h(metadata.name)}</span>` : ''}</div></article>`;
+  return `<article class="event-card ${compact ? 'compact' : ''}" data-key="event-${h(event.calendarId)}-${h(event.id)}" style="--event:${eventColor}"><span class="event-time">${h(time)}</span><div><h3>${h(event.title || 'Untitled event')}</h3>${event.location ? `<p>${h(event.location)}</p>` : ''}${metadata?.name && !compact ? `<span class="event-calendar">${h(metadata.name)}</span>` : ''}</div></article>`;
 }
 
 function eventList(date, limit = Infinity) {
-  const list = eventsOn(S.calendar?.events || [], date, zone());
+  const list = eventDays().get(date) || noEvents;
   if (list.length) return list.slice(0, limit).map(event => eventCard(event, limit !== Infinity)).join('') + (list.length > limit ? `<a href="#calendar" class="more-link">See ${list.length - limit} more</a>` : '');
   return `<p class="quiet-empty">${calendarDayIsKnown(S.calendar, date) ? 'No events on this day.' : 'Events will appear when this day has synced.'}</p>`;
 }
 
-function scheduledChores() { return (S.snapshot?.chores || []).filter(chore => chore.weekdays.includes(weekday(S.snapshot.date))); }
+function scheduledChores() { return orderChores((S.snapshot?.chores || []).filter(chore => chore.weekdays.includes(weekday(S.snapshot.date))), S.snapshot?.date || today(), zone()); }
 function done(chore) { return chore.completion?.date === S.snapshot?.date && chore.completion.completed === true; }
 function choreRow(chore, showPerson = true) {
   const key = `${chore.id}:${S.snapshot.date}`;
   const pending = S.pending.has(key);
   const conflict = S.conflicts.has(key);
   const failure = S.failures.get(key);
-  return `<div class="chore-row ${done(chore) ? 'is-done' : ''} ${pending ? 'is-pending' : ''}">
-    <button type="button" class="chore-toggle" data-action="complete-chore" data-id="${h(chore.id)}" aria-pressed="${done(chore)}" aria-label="${done(chore) ? 'Reopen' : 'Complete'} ${h(chore.title)}" ${pending ? 'disabled aria-busy="true"' : ''}><span class="check-box" aria-hidden="true">${done(chore) ? '✓' : ''}</span><span><strong>${h(chore.title)}</strong>${showPerson ? `<small>${h(profileLabel(chore.personId))}</small>` : ''}${chore.dueTime ? `<small>Due ${h(chore.dueTime)}</small>` : ''}${pending ? '<small class="save-status">Saving…</small>' : ''}</span></button>
+  const urgency = choreUrgency(chore, S.snapshot.date, zone());
+  const deadline = chore.dueTime ? `${urgency === 'overdue' ? 'Overdue · ' : urgency === 'soon' ? 'Due soon · ' : ''}Due ${timeLabel(chore.dueTime)}` : '';
+  return `<div class="chore-row ${done(chore) ? 'is-done' : ''} ${pending ? 'is-pending' : ''} is-${urgency}" data-key="chore-${h(key)}">
+    <button type="button" class="chore-toggle" data-action="complete-chore" data-id="${h(chore.id)}" aria-pressed="${done(chore)}" aria-label="${done(chore) ? 'Reopen' : 'Complete'} ${h(chore.title)}${deadline ? `. ${h(deadline)}` : ''}" ${pending ? 'aria-disabled="true" aria-busy="true"' : ''}><span class="check-box" aria-hidden="true">${done(chore) ? '✓' : ''}</span><span><strong>${h(chore.title)}</strong>${showPerson ? `<small>${h(profileLabel(chore.personId))}</small>` : ''}${deadline ? `<small class="chore-deadline">${h(deadline)}</small>` : ''}${pending ? '<small class="save-status">Saving…</small>' : ''}</span></button>
     ${admin() ? button('Edit', 'edit-chore', 'text-button', `data-id="${h(chore.id)}" aria-label="Edit ${h(chore.title)}"`) : ''}
     ${conflict ? `<div class="write-feedback" role="alert">Changed on another device. The latest state is shown. ${button('Retry my change', 'retry-completion', 'text-button', `data-id="${h(chore.id)}"`)}</div>` : failure ? `<div class="write-feedback" role="alert">${h(failure)} ${button('Retry', 'retry-completion', 'text-button', `data-id="${h(chore.id)}"`)}</div>` : ''}
   </div>`;
@@ -134,8 +157,8 @@ function choreRow(chore, showPerson = true) {
 function todayView() {
   const chores = scheduledChores();
   const completed = chores.filter(done).length;
-  return `<section class="welcome-strip"><div><p class="eyebrow">${h(dateLabel(today(), { weekday: 'long', month: 'long', day: 'numeric' }))}</p><h2>Make room for<br><em>what matters.</em></h2></div><div class="family-portraits">${people().slice(0, 6).map(profile => `<span title="${h(profile.name)}">${avatar(profile)}</span>`).join('')}</div></section>
-    <div class="today-grid"><section class="panel agenda-panel"><div class="section-heading"><div><p class="eyebrow">The day ahead</p><h2>On your calendar</h2></div><a href="#calendar" class="text-button">View calendar <span aria-hidden="true">↗</span></a></div>${calendarStatus()}<div class="event-list">${eventList(today(), 4)}</div></section>
+  return `<section class="welcome-strip" data-key="today-summary"><div><p class="eyebrow">${h(dateLabel(today(), { weekday: 'long', month: 'long', day: 'numeric' }))}</p><h2>Today, together.</h2><p class="welcome-summary">${chores.length ? `${chores.length - completed} ${chores.length - completed === 1 ? 'chore' : 'chores'} remaining · ${completed} complete` : 'Your family’s day, in one place.'}</p></div><div class="family-portraits">${people().slice(0, 6).map(profile => `<span title="${h(profile.name)}" data-key="portrait-${h(profile.id)}">${avatar(profile)}</span>`).join('')}</div></section>
+    <div class="today-grid" data-key="today-grid"><section class="panel agenda-panel"><div class="section-heading"><div><p class="eyebrow">The day ahead</p><h2>On your calendar</h2></div><a href="#calendar" class="text-button">View calendar <span aria-hidden="true">↗</span></a></div>${calendarStatus()}${calendarLegend()}<div class="event-list">${eventList(today(), 4)}</div></section>
     <section class="panel chores-panel"><div class="section-heading"><div><p class="eyebrow">A shared little effort</p><h2>Today's chores</h2></div><span class="count-pill">${completed}<span> / ${chores.length}</span></span></div>${S.snapshot ? (chores.length ? `<div class="progress-track" role="progressbar" aria-label="Today's chores complete" aria-valuenow="${completed}" aria-valuemin="0" aria-valuemax="${chores.length}"><i style="width:${Math.round(completed / chores.length * 100)}%"></i></div><div class="chore-list">${chores.slice(0, 6).map(chore => choreRow(chore)).join('')}</div>${chores.length > 6 ? '<a href="#chores" class="more-link">View all chores</a>' : ''}` : empty('A fresh start', 'No chores are scheduled for today.', admin() ? button('Add a chore', 'add-chore', 'button button-small') : '')) : '<p class="quiet-empty">Loading shared chores…</p>'}</section></div>`;
 }
 
@@ -144,8 +167,8 @@ function calendarView() {
   const dayCount = S.calendarMode === 'month' ? 42 : S.calendarMode === 'week' ? 7 : 1;
   const dates = Array.from({ length: dayCount }, (_, index) => addDays(range.from, index));
   const heading = S.calendarMode === 'month' ? dateLabel(`${S.selectedDate.slice(0, 7)}-01`, { weekday: undefined, month: 'long', day: undefined, year: 'numeric' }) : S.calendarMode === 'week' ? `${dateLabel(range.from, { weekday: undefined, month: 'short', day: 'numeric' })} – ${dateLabel(addDays(range.to, -1), { weekday: undefined, month: 'short', day: 'numeric' })}` : dateLabel(S.selectedDate);
-  return `<section class="panel calendar-panel"><div class="calendar-toolbar"><div class="date-navigation">${button('‹', 'previous-date', 'icon-button', 'aria-label="Previous period"')}<h2>${h(heading)}</h2>${button('›', 'next-date', 'icon-button', 'aria-label="Next period"')}${button('Today', 'calendar-today', 'text-button')}</div><div class="segmented" role="group" aria-label="Calendar view">${['day', 'week', 'month'].map(mode => button(mode[0].toUpperCase() + mode.slice(1), 'calendar-mode', `segment ${S.calendarMode === mode ? 'selected' : ''}`, `data-mode="${mode}" aria-pressed="${S.calendarMode === mode}"`)).join('')}</div>${button(S.calendarBusy ? 'Refreshing…' : 'Refresh', 'refresh-calendar', 'text-button', S.calendarBusy ? 'disabled' : '')}</div>${calendarStatus()}
-    ${S.calendarMode === 'month' ? `<div class="month-grid">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(day => `<div class="month-weekday">${day}</div>`).join('')}${dates.map(date => { const events = eventsOn(S.calendar?.events || [], date, zone()); return `<button type="button" class="month-day ${date === today() ? 'is-today' : ''} ${date.slice(0, 7) !== S.selectedDate.slice(0, 7) ? 'outside-month' : ''}" data-action="select-date" data-date="${date}" aria-label="${h(dateLabel(date))}${calendarDayIsKnown(S.calendar, date) ? `, ${events.length} events` : ', calendar not confirmed'}"><strong>${Number(date.slice(-2))}</strong><span>${events.slice(0, 2).map(event => `<span class="month-event">${h(event.title || 'Untitled event')}</span>`).join('')}${events.length > 2 ? `<small>+${events.length - 2} more</small>` : ''}</span></button>`; }).join('')}</div>` : `<div class="agenda-days ${S.calendarMode === 'week' ? 'week-agenda' : ''}">${dates.map(date => `<section class="agenda-day ${date === today() ? 'is-today' : ''}"><header><span>${h(dateLabel(date, { weekday: 'short', month: undefined, day: undefined }))}</span><strong>${Number(date.slice(-2))}</strong></header><div class="event-list">${eventList(date)}</div></section>`).join('')}</div>`}
+  return `<section class="panel calendar-panel" data-key="calendar-panel"><div class="calendar-toolbar"><div class="date-navigation">${button('‹', 'previous-date', 'icon-button', 'aria-label="Previous period"')}<h2>${h(heading)}</h2>${button('›', 'next-date', 'icon-button', 'aria-label="Next period"')}${button('Today', 'calendar-today', 'text-button')}</div><div class="segmented" role="group" aria-label="Calendar view">${['day', 'week', 'month'].map(mode => button(mode[0].toUpperCase() + mode.slice(1), 'calendar-mode', `segment ${S.calendarMode === mode ? 'selected' : ''}`, `data-mode="${mode}" aria-pressed="${S.calendarMode === mode}"`)).join('')}</div>${button(S.calendarShowingBusy ? 'Refreshing…' : 'Refresh', 'refresh-calendar', 'text-button', S.calendarShowingBusy ? 'disabled' : '')}</div>${calendarStatus()}${calendarLegend()}
+    ${S.calendarMode === 'month' ? `<div class="month-grid" data-key="month-grid">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(day => `<div class="month-weekday" data-key="weekday-${day}">${day}</div>`).join('')}${dates.map(date => { const events = eventDays().get(date) || noEvents; return `<button type="button" class="month-day ${date === today() ? 'is-today' : ''} ${date.slice(0, 7) !== S.selectedDate.slice(0, 7) ? 'outside-month' : ''}" data-key="month-${date}" data-action="select-date" data-date="${date}" aria-label="${h(dateLabel(date))}${calendarDayIsKnown(S.calendar, date) ? `, ${events.length} events` : ', calendar not confirmed'}"><strong>${Number(date.slice(-2))}</strong><span>${events.slice(0, 2).map(event => `<span class="month-event" style="--event:${color(eventMetadata(event)?.color || '#00748c')}">${h(event.title || 'Untitled event')}</span>`).join('')}${events.length > 2 ? `<small>+${events.length - 2} more</small>` : ''}</span></button>`; }).join('')}</div>` : `<div class="agenda-days ${S.calendarMode === 'week' ? 'week-agenda' : ''}" data-key="${S.calendarMode}-agenda">${dates.map(date => `<section class="agenda-day ${date === today() ? 'is-today' : ''}" data-key="agenda-${date}"><header><span>${h(dateLabel(date, { weekday: 'short', month: undefined, day: undefined }))}</span><strong>${Number(date.slice(-2))}</strong></header><div class="event-list">${eventList(date)}</div></section>`).join('')}</div>`}
     <p class="footnote">Apple Calendar is read-only here. Add or edit events in your Calendar app.</p></section>`;
 }
 
@@ -153,9 +176,9 @@ function choresView() {
   if (!S.snapshot) return '<section class="panel">Loading shared chores…</section>';
   const chores = scheduledChores();
   const lanes = [...people(), ...(chores.some(chore => !chore.personId) ? [{ id: null, name: 'Anyone', color: '#8c7859' }] : [])];
-  return `<div class="section-heading chores-heading"><div><p class="eyebrow">${h(dateLabel(S.snapshot.date))}</p><h2>Everyone has a part.</h2></div>${admin() ? button('+ Add a chore', 'add-chore') : '<span class="soft-label">Tap a chore to complete it</span>'}</div>
-    ${lanes.length ? `<div class="person-lanes">${lanes.map(profile => { const list = chores.filter(chore => chore.personId === profile.id || (!chore.personId && profile.id === null)); return `<section class="panel person-lane"><header>${avatar(profile)}<div><h2>${h(profile.name)}</h2><p>${list.length ? `${list.filter(done).length} of ${list.length} complete` : 'No chores today'}</p></div></header>${list.length ? `<div class="chore-list">${list.map(chore => choreRow(chore, false)).join('')}</div>` : `<p class="quiet-empty">No chores are scheduled for today.</p>${admin() ? button('Add a chore', 'add-chore', 'button button-small', `data-person-id="${h(profile.id)}" aria-label="Add a chore for ${h(profile.name)}"`) : ''}`}</section>`; }).join('')}</div>` : `<section class="panel">${empty('Nothing assigned today', admin() ? 'Add a recurring chore and choose the days it should appear.' : 'Your family administrator can add recurring chores.', admin() ? button('Add a chore', 'add-chore') : '')}</section>`}
-    ${admin() && S.snapshot.chores.length ? `<section class="panel all-chores"><div class="section-heading"><div><p class="eyebrow">Your routine</p><h2>All recurring chores</h2></div></div><div class="definition-list">${S.snapshot.chores.map(chore => `<div><span><strong>${h(chore.title)}</strong><small>${h(profileLabel(chore.personId))} · ${chore.weekdays.length === 7 ? 'Every day' : h(chore.weekdays.map(day => days[day]).join(', '))}</small></span>${button('Edit', 'edit-chore', 'text-button', `data-id="${h(chore.id)}"`)}</div>`).join('')}</div></section>` : ''}`;
+  return `<div class="section-heading chores-heading" data-key="chores-heading"><div><p class="eyebrow">${h(dateLabel(S.snapshot.date))}</p><h2>Everyone has a part.</h2></div>${admin() ? button('+ Add a chore', 'add-chore') : '<span class="soft-label">Tap a chore to complete it</span>'}</div>
+    ${lanes.length ? `<div class="person-lanes" data-key="person-lanes">${lanes.map(profile => { const list = chores.filter(chore => chore.personId === profile.id || (!chore.personId && profile.id === null)); return `<section class="panel person-lane" data-key="person-${h(profile.id || 'anyone')}"><header>${avatar(profile)}<div><h2>${h(profile.name)}</h2><p>${list.length ? `${list.filter(done).length} of ${list.length} complete` : 'No chores today'}</p></div></header>${list.length ? `<div class="chore-list">${list.map(chore => choreRow(chore, false)).join('')}</div>` : `<p class="quiet-empty">No chores are scheduled for today.</p>${admin() ? button('Add a chore', 'add-chore', 'button button-small', `data-person-id="${h(profile.id)}" aria-label="Add a chore for ${h(profile.name)}"`) : ''}`}</section>`; }).join('')}</div>` : `<section class="panel">${empty('Nothing assigned today', admin() ? 'Add a recurring chore and choose the days it should appear.' : 'Your family administrator can add recurring chores.', admin() ? button('Add a chore', 'add-chore') : '')}</section>`}
+    ${admin() && S.snapshot.chores.length ? `<section class="panel all-chores" data-key="all-chores"><div class="section-heading"><div><p class="eyebrow">Your routine</p><h2>All recurring chores</h2></div></div><div class="definition-list">${S.snapshot.chores.map(chore => `<div data-key="definition-${h(chore.id)}"><span><strong>${h(chore.title)}</strong><small>${h(profileLabel(chore.personId))} · ${chore.weekdays.length === 7 ? 'Every day' : h(chore.weekdays.map(day => days[day]).join(', '))}</small></span>${button('Edit', 'edit-chore', 'text-button', `data-id="${h(chore.id)}"`)}</div>`).join('')}</div></section>` : ''}`;
 }
 
 function profileCards() {
@@ -205,11 +228,20 @@ function joinView() {
 function render(force = false) {
   if (!force && edited()) { pendingRender = true; return; }
   pendingRender = false;
-  app.setAttribute('aria-busy', S.booting ? 'true' : 'false');
-  if (S.booting) app.innerHTML = '<main id="main-content" class="initial-state"><p class="eyebrow">Family Frame</p><h1>Opening your dashboard…</h1><p>Checking your family connection.</p></main>';
-  else if (!S.session) app.innerHTML = entryView();
-  else if (!S.session.household) app.innerHTML = joinView();
-  else app.innerHTML = shell(({ today: todayView, calendar: calendarView, chores: choresView, setup: setupView })[S.view]());
+  const busy = S.booting ? 'true' : 'false';
+  if (app.getAttribute('aria-busy') !== busy) app.setAttribute('aria-busy', busy);
+  document.documentElement.classList.toggle('frame-display', frame() || S.entryPair);
+  let markup;
+  if (S.booting) markup = '<main id="main-content" class="initial-state"><p class="eyebrow">Family Frame</p><h1>Opening your dashboard…</h1><p>Checking your family connection.</p></main>';
+  else if (!S.session) markup = entryView();
+  else if (!S.session.household) markup = joinView();
+  else markup = shell(({ today: todayView, calendar: calendarView, chores: choresView, setup: setupView })[S.view]());
+  paintApp(markup);
+  if (S.session?.household && paintedView !== S.view) {
+    const main = app.querySelector('.main-content');
+    if (main) main.scrollTop = 0;
+  }
+  paintedView = S.session?.household ? S.view : null;
   paintClock();
 }
 
@@ -217,7 +249,8 @@ async function loadHousehold() {
   const epoch = generation;
   const data = await request(`/api/household?date=${today()}`);
   if (epoch !== generation) return;
-  S.snapshot = reconcileHousehold(S.snapshot, data);
+  const snapshot = reconcileHousehold(S.snapshot, data);
+  if (JSON.stringify(snapshot) !== JSON.stringify(S.snapshot)) S.snapshot = snapshot;
   if (S.session) { S.session.household = data.household; S.session.role = data.role; }
   S.error = '';
   render();
@@ -226,6 +259,7 @@ async function loadHousehold() {
 function invalidateCalendar() {
   calendarGeneration++;
   S.calendarBusy = false;
+  S.calendarShowingBusy = false;
   queuedCalendar = null;
   S.calendar = null;
 }
@@ -238,10 +272,14 @@ async function loadCalendar(explicit = false) {
   const current = () => epoch === generation && calendarEpoch === calendarGeneration;
   const range = S.view === 'calendar' ? calendarRange(S.selectedDate, S.calendarMode) : { from: today(), to: addDays(today(), 7) };
   S.calendarBusy = true;
-  render();
+  S.calendarShowingBusy = explicit || !S.calendar;
+  if (S.calendarShowingBusy) render();
   try {
     const data = explicit && admin() ? await request('/api/calendar/sync', { method: 'POST', body: range }) : await request(`/api/calendar?from=${range.from}&to=${range.to}`);
-    if (current()) S.calendar = data;
+    if (current() && JSON.stringify(data) !== JSON.stringify(S.calendar)) {
+      if (S.calendar && JSON.stringify(data.events) === JSON.stringify(S.calendar.events)) data.events = S.calendar.events;
+      S.calendar = data;
+    }
   } catch (error) {
     if (!current()) return;
     if (error.status === 401 || error.status === 403) { dataFailure(error); return; }
@@ -249,6 +287,7 @@ async function loadCalendar(explicit = false) {
   } finally {
     if (current()) {
       S.calendarBusy = false;
+      S.calendarShowingBusy = false;
       render();
       if (queuedCalendar) { const next = queuedCalendar; queuedCalendar = null; loadCalendar(next.explicit); }
     }
@@ -275,7 +314,9 @@ async function loadSetup() {
 
 async function boot() {
   const epoch = ++generation;
+  clearAuthCache();
   S.calendarBusy = false;
+  S.calendarShowingBusy = false;
   S.setupBusy = false;
   queuedCalendar = null;
   S.snapshot = null; S.calendar = null; S.connection = null; S.devices = []; S.members = [];
@@ -314,6 +355,7 @@ async function refresh() {
 function dataFailure(error) {
   if (error.status === 401 || error.status === 403) {
     generation++;
+    clearAuthCache();
     S.session = null; S.snapshot = null; S.calendar = null; S.connection = null; S.devices = []; S.members = [];
     S.generatedInvite = null; S.pairing = null;
     S.pending.clear(); S.conflicts.clear(); S.failures.clear(); S.attempts.clear();
@@ -396,13 +438,16 @@ async function submitForm(event, run) {
   const submit = form.querySelector('button[type="submit"]');
   const oldLabel = submit?.textContent;
   if (submit?.disabled) return;
+  form.dataset.submitting = 'true';
   if (submit) { submit.disabled = true; submit.textContent = 'Saving…'; }
   if (errorBox) { errorBox.hidden = true; errorBox.textContent = ''; }
   try { await run(new FormData(form), form); }
   catch (error) {
     if (errorBox) { errorBox.textContent = `${errorMessage(error)}${error.status === 409 ? ' Another device changed this item. Close this form, refresh, and try again.' : ''}`; errorBox.hidden = false; }
   } finally {
+    delete form.dataset.submitting;
     if (submit?.isConnected) { submit.disabled = false; submit.textContent = oldLabel; }
+    if (pendingRender && !edited()) render();
   }
 }
 
@@ -546,11 +591,16 @@ async function action(name, element) {
 app.addEventListener('submit', event => { const run = forms[event.target.dataset.form]; if (run) submitForm(event, run); });
 document.addEventListener('click', event => {
   const element = event.target.closest('[data-action]');
-  if (!element || element.disabled) return;
+  if (!element || element.disabled || element.getAttribute('aria-disabled') === 'true') return;
   action(element.dataset.action, element).catch(error => toast(errorMessage(error)));
 });
 dialog.addEventListener('close', () => { if (dialog.open) return; dialog.innerHTML = ''; if (pendingRender) render(); });
 document.addEventListener('focusout', () => setTimeout(() => { if (pendingRender && !edited()) render(); }, 150));
+document.addEventListener('pointerdown', event => { if (app.contains(event.target)) pointerActive = true; }, { passive: true });
+for (const name of ['pointerup', 'pointercancel']) document.addEventListener(name, () => {
+  pointerActive = false;
+  setTimeout(() => { if (pendingRender && !edited()) render(); }, 100);
+}, { passive: true });
 window.addEventListener('hashchange', () => {
   const next = location.hash.slice(1);
   if (!views.includes(next)) return;

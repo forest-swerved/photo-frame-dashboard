@@ -24,7 +24,34 @@ private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate {
 }
 
 @MainActor
-final class APIClient {
+protocol FamilyAPI: AnyObject {
+    var mobileToken: String? { get set }
+    func accountSignIn(email: String, password: String, invitation: String) async throws -> AccountOutcome
+    func createAccount(name: String, email: String, password: String, invitation: String) async throws -> AccountOutcome
+    func confirmAccount(email: String, code: String, invitation: String) async throws -> AccountOutcome
+    func resendConfirmation(email: String) async throws
+    func joinFamily(invitation: String) async throws -> AccountOutcome
+    func cancelAccountOnboarding() async
+    func serviceStatus() async throws -> MobileServiceStatus
+    func currentSession() async throws -> MobileSession
+    func signOut() async throws
+    func household(date: String) async throws -> HouseholdSnapshot
+    func calendar(from: String, to: String) async throws -> CalendarSnapshot
+    func setCompletion(_ chore: Chore, date: String, completed: Bool, mutationID: String) async throws -> CompletionResult
+    func saveChore(_ draft: ChoreDraft, id: String?) async throws
+    func deleteChore(_ chore: Chore) async throws
+    func createChildInvitation(personID: String, email: String) async throws -> ChildInvitation
+    func devices() async throws -> [MobileDevice]
+    func revokeDevice(id: String) async throws
+    func registerPush(token: String, environment: String, installationID: String) async throws
+    func preferences() async throws -> NotificationPreferences
+    func savePreferences(_ prefs: NotificationPreferences) async throws -> NotificationPreferences
+    func notifications() async throws -> [FamilyNotification]
+    func markRead(id: String) async throws
+}
+
+@MainActor
+final class APIClient: FamilyAPI {
     let baseURL: URL
     private let session: URLSession
     private let redirectDelegate = NoRedirectDelegate()
@@ -78,6 +105,7 @@ final class APIClient {
             } catch { throw APIError(status: 0, code: "invalid_response", message: "The app could not read this response. Refresh or update the app.") }
         } catch let error as APIError { throw error }
         catch is CancellationError { throw CancellationError() }
+        catch let error as URLError where error.code == .cancelled { throw CancellationError() }
         catch {
             throw APIError(status: 0, code: "network_error", message: "Cannot reach Family Frame. Check your connection, then refresh before trying changes again.")
         }

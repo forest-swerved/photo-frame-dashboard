@@ -175,4 +175,12 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(invite.email, "child@example.test"); XCTAssertEqual(invite.role, "child")
     }
 
+    @MainActor func testCancellationDoesNotBecomeAnOfflineError() async throws {
+        let api = client()
+        MockProtocol.handler = { _ in throw URLError(.cancelled) }
+        do { _ = try await api.currentSession(); XCTFail("Expected cancellation") }
+        catch is CancellationError { }
+        catch { XCTFail("Cancellation must not be shown as an offline failure: \(error)") }
+    }
+
 }

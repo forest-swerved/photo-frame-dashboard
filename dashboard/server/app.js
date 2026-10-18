@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { ApiError, json, readJson, requireValue, textField, timezoneField, uuidField, versionField } from './errors.js';
-import { createPool, one, transaction } from './database.js';
+import { sharedPool, one, transaction } from './database.js';
 import { authenticate, assertSameOrigin, cookieValue, FRAME_COOKIE, requireAdmin, requireHousehold } from './auth.js';
 import { authGateway, confirmedAccountEmail, createAuthContext } from './supabase-auth.js';
 import { digest } from './credentials.js';
 import { enforcePairRateLimit } from './pair-rate-limit.js';
 import { claimHousehold, createChore, createFramePair, createInvite, createPerson, changeChore, changePerson, householdSnapshot, joinHousehold, redeemFramePair, revokeHouseholdMember, sessionData, setCompletion } from './household.js';
-import { calendarConnection, calendarSnapshot, connectCalendar, removeCalendar, selectCalendars } from './calendar-service.js';
+import { calendarConnection, calendarSnapshot, connectCalendar, removeCalendar, selectCalendars, processCalendarSyncJobs } from './calendar-service.js';
 import { createMobileSession, createMobilePair, redeemMobilePair, mobileSessionData, mobileDevices, revokeMobile } from './mobile.js';
 import { registerPush, notificationPreferences, notificationInbox, markNotificationRead, processNotifications } from './notifications.js';
 import { preflightApns } from './apns.js';
@@ -123,7 +123,13 @@ export async function handleRequest(request, options = {}) {
     if (!['GET', 'HEAD'].includes(request.method)) assertSameOrigin(request);
     if (route === 'health' && request.method === 'GET') return json({ ok: true });
     if (['mobile/pairings','mobile/pairings/redeem'].includes(route) && request.method === 'POST') throw new ApiError(410, 'child_accounts_required', 'Children now use their own email accounts and a parent invitation.');
-    db = options.db || createPool(options.env);
+    db = options.db || sharedPool(options.env);
+    if (route === 'calendar/jobs/sync' && request.method === 'GET') {
+      const env = options.env || process.env;
+      requireValue(typeof env.CRON_SECRET === 'string' && env.CRON_SECRET.length >= 32, 503, 'calendar_jobs_unconfigured', 'Calendar scheduling is not configured.');
+      requireValue(digest(request.headers.get('authorization') || '') === digest(`Bearer ${env.CRON_SECRET}`), 401, 'unauthenticated', 'Unauthorized.');
+      return json(await processCalendarSyncJobs(db, { env, ...(options.calendarSync ? { sync: options.calendarSync } : {}) }));
+    }
     if (route === 'mobile/jobs/notifications' && request.method === 'GET') {
       const env = options.env || process.env;
       requireValue(typeof env.CRON_SECRET === 'string' && env.CRON_SECRET.length >= 32, 503, 'notifications_unconfigured', 'Notification scheduling is not configured.');
@@ -158,7 +164,5 @@ export async function handleRequest(request, options = {}) {
     if (status >= 500) console.error(JSON.stringify({ requestId, code, route, method: request.method }));
     const response = Response.json({ error: { code, message: known ? error.message : 'Something went wrong. Please try again.', ...(known && error.details ? { details: error.details } : {}) }, requestId }, { status, headers: { 'Cache-Control': 'no-store' } });
     return authContext ? authContext.finish(response) : response;
-  } finally {
-    if (db && !options.db) await db.end().catch(() => {});
   }
 }

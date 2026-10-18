@@ -57,13 +57,14 @@ struct WelcomeScreen: View {
     @State private var invitation = ""
     @State private var confirmationNotice: String?
     @FocusState private var focus: Field?
-    enum Field { case name, email, password, confirmPassword, code, invitation }
+    enum Field: Hashable { case name, email, password, confirmPassword, code, invitation }
     var body: some View {
+        ScrollViewReader { reader in
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
                 HStack(spacing: 14) { BrandMark(); Text("FAMILY FRAME").font(.caption.weight(.heavy)).tracking(2) }.padding(.top, 30)
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("A little more\ntogether.").font(.system(size: 42, weight: .bold, design: .rounded)).fixedSize(horizontal: false, vertical: true)
+                    Text("A little more\ntogether.").font(.largeTitle.bold()).fixedSize(horizontal: false, vertical: true)
                     Text("The family calendar, everyone's chores, and the moments that keep your home moving.").font(.title3).foregroundStyle(Brand.muted)
                 }
                 HStack(spacing: 8) {
@@ -83,6 +84,11 @@ struct WelcomeScreen: View {
         }
         .background(Brand.background).scrollDismissesKeyboard(.interactively)
         .toolbar { ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("Done") { focus = nil } } }
+        .onChange(of: focus) { _, field in if let field { reader.scrollTo(field, anchor: .center) } }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
+            if let focus { reader.scrollTo(focus, anchor: .center) }
+        }
+        }
     }
     private var accountEntry: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -90,12 +96,12 @@ struct WelcomeScreen: View {
             Text(creating ? "Your own account." : "Welcome home.").font(.title2.bold())
             Text(creating ? "Create an account with your own email. A parent invitation connects a child's account to their chores." : "Parents and kids sign in here with their own email and password.").font(.subheadline).foregroundStyle(Brand.muted)
             if creating {
-                TextField("Name", text: $name).textContentType(.name).focused($focus, equals: .name).textFieldStyle(.roundedBorder).accessibilityLabel("Your name")
+                TextField("Name", text: $name).textContentType(.name).focused($focus, equals: .name).id(Field.name).textFieldStyle(.roundedBorder).accessibilityLabel("Your name")
             }
-            TextField("Email", text: $email).keyboardType(.emailAddress).textContentType(.username).textInputAutocapitalization(.never).autocorrectionDisabled().focused($focus, equals: .email).submitLabel(.next).onSubmit { focus = .password }.textFieldStyle(.roundedBorder).accessibilityLabel("Account email")
-            SecureField("Password", text: $password).textContentType(creating ? .newPassword : .password).focused($focus, equals: .password).submitLabel(creating ? .next : .go).textFieldStyle(.roundedBorder).accessibilityLabel("Account password").onSubmit { if creating { focus = .confirmPassword } else { submitAccount() } }
+            TextField("Email", text: $email).keyboardType(.emailAddress).textContentType(.username).textInputAutocapitalization(.never).autocorrectionDisabled().focused($focus, equals: .email).id(Field.email).submitLabel(.next).onSubmit { focus = .password }.textFieldStyle(.roundedBorder).accessibilityLabel("Account email")
+            SecureField("Password", text: $password).textContentType(creating ? .newPassword : .password).focused($focus, equals: .password).id(Field.password).submitLabel(creating ? .next : .go).textFieldStyle(.roundedBorder).accessibilityLabel("Account password").onSubmit { if creating { focus = .confirmPassword } else { submitAccount() } }
             if creating {
-                SecureField("Confirm password", text: $confirmPassword).textContentType(.newPassword).focused($focus, equals: .confirmPassword).textFieldStyle(.roundedBorder).accessibilityLabel("Confirm account password")
+                SecureField("Confirm password", text: $confirmPassword).textContentType(.newPassword).focused($focus, equals: .confirmPassword).id(Field.confirmPassword).textFieldStyle(.roundedBorder).accessibilityLabel("Confirm account password")
                 Text("Use at least 12 characters. Keep your password private.").font(.caption).foregroundStyle(Brand.muted)
                 if !confirmPassword.isEmpty && password != confirmPassword { Text("The passwords must match.").font(.caption).foregroundStyle(Brand.red) }
             }
@@ -111,7 +117,7 @@ struct WelcomeScreen: View {
             Image(systemName: "envelope.badge").font(.title).foregroundStyle(Brand.cyanInk).accessibilityHidden(true)
             Text("Check your email.").font(.title2.bold())
             Text("Enter the confirmation code sent to \(email). This confirms the account belongs to you.").font(.subheadline).foregroundStyle(Brand.muted)
-            TextField("Email confirmation code", text: $confirmationCode).keyboardType(.numberPad).textContentType(.oneTimeCode).focused($focus, equals: .code).textFieldStyle(.roundedBorder).font(.title2.monospacedDigit())
+            TextField("Email confirmation code", text: $confirmationCode).keyboardType(.numberPad).textContentType(.oneTimeCode).focused($focus, equals: .code).id(Field.code).textFieldStyle(.roundedBorder).font(.title2.monospacedDigit())
                 .onChange(of: confirmationCode) { _, value in confirmationCode = String(value.filter(\.isNumber).prefix(10)) }.accessibilityLabel("Email confirmation code")
             Button { focus = nil; Task { if await model.confirmAccount(code: confirmationCode, invitation: invitation) { confirmationCode = "" } } } label: {
                 if model.isSigningIn { ProgressView().tint(.white) } else { Text("Confirm my email") }
@@ -134,7 +140,7 @@ struct WelcomeScreen: View {
         }
     }
     private var invitationField: some View {
-        TextField("Invitation token", text: $invitation, axis: .vertical).lineLimit(2...4).keyboardType(.asciiCapable).textInputAutocapitalization(.never).autocorrectionDisabled().focused($focus, equals: .invitation).textFieldStyle(.roundedBorder).accessibilityLabel("Family invitation token").privacySensitive()
+        TextField("Invitation token", text: $invitation, axis: .vertical).lineLimit(2...4).keyboardType(.asciiCapable).textInputAutocapitalization(.never).autocorrectionDisabled().focused($focus, equals: .invitation).id(Field.invitation).textFieldStyle(.roundedBorder).accessibilityLabel("Family invitation token").privacySensitive()
     }
     private var backToSignIn: some View {
         Button("Use a different account") { focus = nil; Task { await model.cancelAccountOnboarding(); email = ""; name = ""; password = ""; confirmPassword = ""; confirmationCode = ""; invitation = ""; confirmationNotice = nil } }.font(.subheadline).disabled(model.isSigningIn)
