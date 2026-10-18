@@ -208,6 +208,7 @@ export async function authGateway(request, path, db, options = {}) {
       const changed = await auth.updateUser({ password });
       if (changed.error) throw providerError(changed.error);
       await db.query('UPDATE family_mobile_sessions SET revoked_at=coalesce(revoked_at,now()) WHERE user_id=$1', [claims.sub]);
+      await db.query('UPDATE family_frame_authorizations SET revoked_at=coalesce(revoked_at,now()) WHERE created_by=$1', [claims.sub]);
       const signedOut = await auth.signOut({ scope: 'global' });
       if (signedOut.error) throw providerError(signedOut.error);
       context.clearCookies();
