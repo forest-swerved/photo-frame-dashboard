@@ -103,7 +103,7 @@ export function inspectPolicyInventory({ device, config, macs, policies, ordered
   }
   const identity = { deviceId: device.id, householdId: device.household_id, name: device.name, kind: device.kind,
     personIds: [...device.person_ids].sort(), macAddresses: macs, allowApplePush: device.allow_apple_push === true,
-    consoleId, applicationVersion, ...config, managementHost: plan.managementHost, beforePolicyId: before };
+    timezone: device.timezone, consoleId, applicationVersion, ...config, managementHost: plan.managementHost, beforePolicyId: before };
   const foreignDigest = hash({ order: foreign, policies: foreign.map(id => Object.fromEntries(Object.entries(byId.get(id)).filter(([key]) => !volatile.has(key)))) });
   const identityBinding = hash({ version: 1, identity });
   const managementBinding = hash({ identityBinding, foreignDigest, managementId: ids.management, applePushId: ids.applePush,
@@ -112,7 +112,7 @@ export function inspectPolicyInventory({ device, config, macs, policies, ordered
   const reviewedFingerprint = ids.management && ids.deny && permanentDenyVerified && managementVerified && appleVerified && placementVerified
     ? reviewedPolicyFingerprint(policies, orderedIds, { managementId: ids.management, denyId: ids.deny, ignoredSessionIds: ignoredSessions }) : null;
   return { version: 1, deviceId: device.id, deviceName: device.name, ...config, beforePolicyId: before, macAddresses: macs,
-    managementHost: plan.managementHost, applicationVersion, policyIds: ids, requiredChecks: ['identity_stability', 'management_preflight', ...plan.requiredChecks],
+    managementHost: plan.managementHost, applicationVersion, timezone: device.timezone, policyIds: ids, requiredChecks: ['identity_stability', 'management_preflight', ...plan.requiredChecks],
     policies: { management: plan.management, ...(plan.applePush ? { applePush: plan.applePush } : {}), deny: plan.deny },
     orderedPolicyIds: orderedIds, foreignPolicyDigest: foreignDigest, identityBinding, managementBinding, binding, reviewedFingerprint,
     observations: { managementVerified, appleVerified, permanentDenyVerified, pilotDenyVerified, placementVerified,
@@ -151,10 +151,12 @@ async function proofs(db, context, now) {
 
 async function exclusiveContext(client, original) {
   await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`internet:${original.device.household_id}`]);
+  const household = await one(client, 'SELECT timezone FROM family_households WHERE id=$1 FOR SHARE', [original.device.household_id]);
   const device = await one(client, 'SELECT * FROM family_managed_devices WHERE id=$1 AND removed_at IS NULL FOR UPDATE', [original.device.id]);
   const integration = await one(client, 'SELECT * FROM family_network_integrations WHERE household_id=$1 FOR UPDATE', [original.device.household_id]);
-  requireValue(device?.version === original.device.version && (integration?.version || 0) === (original.integration?.version || 0),
-    409, 'operator_plan_changed', 'The saved device or connection changed during inspection. Build a new plan.');
+  requireValue(household?.timezone === original.device.timezone && device?.version === original.device.version
+    && (integration?.version || 0) === (original.integration?.version || 0),
+    409, 'operator_plan_changed', 'The saved device, household timezone, or connection changed during inspection. Build a new plan.');
   requireValue(!await one(client, `SELECT id FROM family_internet_sessions WHERE household_id=$1 AND ${live} LIMIT 1`, [device.household_id]),
     409, 'internet_sessions_active', 'End all household Internet sessions and confirm their blocking before enrollment.');
   return { device, integration };

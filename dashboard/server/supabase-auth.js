@@ -3,6 +3,7 @@ import { createServerClient, parseCookieHeader, serializeCookieHeader } from '@s
 import { ApiError, readJson, requireValue, textField } from './errors.js';
 import { assertSameOrigin, authUrl, userDto, verifySessionRow, verifyUserJwt } from './auth.js';
 import { enforcePairRateLimit } from './pair-rate-limit.js';
+import { revokeFrameAccessAfterRecovery } from './capabilities.js';
 
 export const AUTH_COOKIE = '__Host-family_auth';
 // The pinned SDK persists both an individual PKCE verifier and its flow index
@@ -211,6 +212,7 @@ export async function authGateway(request, path, db, options = {}) {
       await db.query('UPDATE family_frame_authorizations SET revoked_at=coalesce(revoked_at,now()) WHERE created_by=$1', [claims.sub]);
       const signedOut = await auth.signOut({ scope: 'global' });
       if (signedOut.error) throw providerError(signedOut.error);
+      await revokeFrameAccessAfterRecovery(db, claims.sub);
       context.clearCookies();
       result = { success: true };
     } else if (path === 'resend-verification') {

@@ -55,23 +55,63 @@ export async function transferOwnership(db, principal, body) {
   });
 }
 
+// Recheck issuance authority after taking the code lock. Authentication may have
+// happened before recovery, membership changes, or account cleanup began.
+async function frameCodeIssuer(client, principal, scope, personId) {
+  const member = await one(client, `SELECT role,person_id,manage_chores,manage_internet FROM family_members m
+    WHERE household_id=$1 AND user_id=$2 AND revoked_at IS NULL
+      AND NOT EXISTS(SELECT 1 FROM family_account_deletion_jobs d WHERE d.user_id=$2::uuid)`,
+  [principal.household.id, principal.user.id]);
+  requireValue(member, 403, 'parent_required', 'Your household access has ended. Sign in again.');
+  let live;
+  if (principal.authType === 'user') {
+    requireValue(principal.sessionId, 401, 'session_required', 'Your sign-in has ended. Sign in again.');
+    live = await one(client, `SELECT id FROM family_internal.auth_sessions WHERE id=$1::uuid AND user_id=$2::uuid
+      AND (not_after IS NULL OR not_after>clock_timestamp())`, [principal.sessionId, principal.user.id]);
+  } else {
+    requireValue(principal.mobileSessionId, 401, 'mobile_session_revoked', 'Sign in to this app again.');
+    live = await one(client, `SELECT s.id FROM family_mobile_sessions s JOIN family_internal.auth_sessions a
+      ON a.id=s.provider_session_id AND a.user_id::text=s.user_id
+      WHERE s.id=$1 AND s.user_id=$2 AND s.household_id=$3 AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp()
+        AND (a.not_after IS NULL OR a.not_after>clock_timestamp())
+        AND ((s.kind='parent' AND $4 IN ('admin','member') AND s.person_id IS NULL AND $5::uuid IS NULL)
+          OR (s.kind='child' AND $4='child' AND s.person_id=$5::uuid))`,
+    [principal.mobileSessionId, principal.user.id, principal.household.id, member.role, member.person_id]);
+  }
+  requireValue(live, 401, 'session_required', 'Your sign-in has ended. Sign in again.');
+  if (scope === 'parent') requireValue(member.role === 'admin' || member.role === 'member' && (member.manage_chores || member.manage_internet),
+    403, 'parent_required', 'A parent with permission must create this unlock.');
+  else {
+    requireValue(member.role === 'child' ? member.person_id === personId : member.role === 'admin' || member.role === 'member' && member.manage_internet,
+      403, 'parent_required', 'Use your own profile, or ask a parent with Internet permission.');
+    requireValue(await one(client, 'SELECT id FROM family_people WHERE household_id=$1 AND id=$2', [principal.household.id, personId]),
+      404, 'not_found', 'That child profile does not exist.');
+  }
+}
+
+// Run after global provider sign-out. Issuance uses these same ordered locks and
+// rechecks its live session inside them, so an older queued request cannot mint
+// a surviving grant after recovery. Ordinary sign-out does not call this.
+export async function revokeFrameAccessAfterRecovery(db, userId) {
+  return transaction(db, async client => {
+    const households = (await client.query(`SELECT household_id FROM family_members WHERE user_id=$1
+      UNION SELECT household_id FROM family_frame_authorizations WHERE created_by=$1 ORDER BY household_id`, [userId])).rows;
+    for (const row of households) await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`frame-unlock:${row.household_id}:${userId}`]);
+    await client.query('UPDATE family_frame_authorizations SET revoked_at=coalesce(revoked_at,now()) WHERE created_by=$1', [userId]);
+  });
+}
+
 export async function createFrameAccessCode(db, principal, body, { env = process.env, now = new Date() } = {}) {
   requireHousehold(principal);
   requireValue(['user', 'mobile'].includes(principal.authType), 403, 'account_required', 'Create an unlock code from your signed-in phone.');
   requireValue(['parent', 'child'].includes(body.scope), 422, 'invalid_scope', 'Choose a parent or child unlock.');
-  let personId = null;
-  if (body.scope === 'parent') {
-    const capabilities = await parentCapabilities(db, principal);
-    requireValue(capabilities.manageChores || capabilities.manageInternet, 403, 'parent_required', 'A parent with permission must create this unlock.');
-  }
-  else {
-    personId = uuidField(body.personId, 'Child profile');
-    if (principal.role === 'child') requireValue(principal.personId === personId, 403, 'parent_required', 'Use your own profile.');
-    else await requireCapability(db, principal, 'manageInternet');
-    requireValue(await one(db, 'SELECT id FROM family_people WHERE household_id=$1 AND id=$2', [principal.household.id, personId]), 404, 'not_found', 'That child profile does not exist.');
-  }
+  const personId = body.scope === 'child' ? uuidField(body.personId, 'Child profile') : null;
   return transaction(db, async client => {
+    // Match cleanup/ownership lock ordering so deletion cannot be followed by
+    // a stale in-flight issuer recreating an account-owned authorization row.
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`membership:${principal.user.id}`]);
     await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`frame-unlock:${principal.household.id}:${principal.user.id}`]);
+    await frameCodeIssuer(client, principal, body.scope, personId);
     await client.query("DELETE FROM family_frame_authorizations WHERE household_id=$1 AND expires_at<$2::timestamptz-interval '1 day'", [principal.household.id, now]);
     await client.query('UPDATE family_frame_authorizations SET revoked_at=$3 WHERE household_id=$1 AND created_by=$2 AND revoked_at IS NULL', [principal.household.id, principal.user.id, now]);
     const expiresAt = new Date(now.getTime() + 5 * 60_000);

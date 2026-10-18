@@ -202,6 +202,27 @@ test('isolated Postgres authorization and concurrency boundaries', { skip: !enab
       assert.deepEqual(result.events, []);
       assert.equal((await db.query('SELECT * FROM family_calendar_cache')).rowCount, 0);
     });
+    await t.test('home timezone changes preserve current settings and cannot invalidate enrolled network schedules', async () => {
+      const patch = body => handleRequest(request('settings', 'PATCH', body), { db, env, authenticate: async () => admin });
+      await db.query(`INSERT INTO family_network_integrations(household_id,site_id,source_zone_id,external_zone_id,state,management_host,pilot_checks)
+        VALUES($1,$2,$3,$4,'ready','forest-family-frame.vercel.app','{"midnight":true}')`, [admin.household.id, randomUUID(), randomUUID(), randomUUID()]);
+      assert.equal((await patch({ timezone: 'America/New_York' })).status, 200);
+      const current = await patch({ title: 'Updated fixture family' });
+      assert.equal((await current.json()).data.household.timezone, 'America/New_York', 'A stale authenticated household snapshot cannot restore its old timezone.');
+      const integration = (await db.query('SELECT state,pilot_checks FROM family_network_integrations WHERE household_id=$1', [admin.household.id])).rows[0];
+      assert.equal(integration.state, 'pilot_required'); assert.deepEqual(integration.pilot_checks, {});
+      const person = await createPerson(db, admin, { name: 'Timezone fixture' }), deviceId = randomUUID();
+      await db.query(`INSERT INTO family_managed_devices(id,household_id,name,person_ids,mac_addresses,control_state,management_policy_id)
+        VALUES($1,$2,'Timezone fixture',ARRAY[$3::uuid],ARRAY['02:12:34:56:78:90'],'ready',$4)`, [deviceId, admin.household.id, person.id, randomUUID()]);
+      const denied = await patch({ timezone: 'America/Denver' }); assert.equal(denied.status, 409); assert.equal((await denied.json()).error.code, 'network_timezone_locked');
+      await db.query("UPDATE family_managed_devices SET control_state='unenrolled',management_policy_id=NULL WHERE id=$1", [deviceId]);
+      const sessionId = randomUUID();
+      await db.query(`INSERT INTO family_internet_sessions(id,household_id,person_id,device_id,source,state,desired_state,requested_at,remaining_seconds,allocated_seconds,policy_snapshot,created_by)
+        VALUES($1,$2,$3,$4,'parent','paused','blocked',now(),60,60,'{}','user:fixture')`, [sessionId, admin.household.id, person.id, deviceId]);
+      assert.equal((await patch({ timezone: 'America/Denver' })).status, 409, 'Paused time is still a nonterminal home-timezone commitment.');
+      await db.query("UPDATE family_internet_sessions SET state='ended' WHERE id=$1", [sessionId]);
+      assert.equal((await patch({ timezone: 'America/Denver' })).status, 200);
+    });
   } finally {
     if (created) {
       assert.equal((await pool.query('SELECT current_database() AS name')).rows[0].name, 'family_frame_tests');

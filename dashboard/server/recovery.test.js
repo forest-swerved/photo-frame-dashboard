@@ -11,16 +11,19 @@ test('recovery links require exact project and recovery type; never follow redir
   for (const recoveryLink of [`https://attacker.example/auth/v1/verify?token=${token}&type=recovery`, `https://auth.example/auth/v1/verify?token=${token}&type=signup`, `https://auth.example/auth/v1/verify?token=${token}&type=recovery&type=recovery`]) assert.throws(() => recoveryCredentials({ recoveryLink }, env));
 });
 test('successful recovery verifies a fresh proof before password change and revokes sign-ins', async () => {
-  const calls = [], revocations = [];
+  const calls = [], revocations = []; let signedOut = false;
   const auth = { async verifyOtp(proof) { calls.push(['proof', proof]); return { data: { user: { id: claims.sub }, session: { access_token: claims.accessToken } } }; },
-    async updateUser(value) { calls.push(['password', value]); return {}; }, async signOut(value) { calls.push(['signOut', value]); return {}; } };
+    async updateUser(value) { calls.push(['password', value]); return {}; }, async signOut(value) { calls.push(['signOut', value]); signedOut = true; return {}; } };
   const context = { client: { auth }, async sessionClaims() { calls.push(['claims']); return claims; }, clearCookies() { calls.push(['clear']); }, finish: response => response };
-  const resetDb = { ...db, async query(sql, values) { revocations.push({ sql, values }); return { rows: [], rowCount: 0 }; } };
+  const record = async (sql, values) => { revocations.push({ sql, values, signedOut }); return { rows: sql.includes('RETURNING attempts') ? [{ attempts: 1 }] : sql.startsWith('SELECT household_id') ? [{ household_id: '00000000-0000-4000-8000-000000000002' }, { household_id: '00000000-0000-4000-8000-000000000003' }] : [], rowCount: 0 }; };
+  const resetDb = { query: record, async connect() { return { query: record, release() {} }; } };
   const response = await authGateway(request('reset-password', { email: 'fixture@example.test', token: '123456', password: 'a-new-strong-password' }), 'reset-password', resetDb, { env, createAuthContext: () => context });
   assert.equal(response.status, 200); assert.deepEqual(await response.json(), { success: true });
   assert.deepEqual(calls.map(c => c[0]), ['proof', 'claims', 'password', 'signOut', 'clear']); assert.equal(calls[0][1].type, 'recovery'); assert.equal(calls[3][1].scope, 'global');
   assert.ok(revocations.some(q => q.sql.startsWith('UPDATE family_mobile_sessions') && q.values[0] === claims.sub));
   assert.ok(revocations.some(q => q.sql.startsWith('UPDATE family_frame_authorizations') && q.values[0] === claims.sub), 'Password recovery revokes issued parent/child frame approvals.');
+  assert.ok(revocations.some(q => q.sql.startsWith('UPDATE family_frame_authorizations') && q.signedOut), 'Final revocation runs after global Auth sign-out.');
+  assert.deepEqual(revocations.filter(q => q.signedOut && q.sql.includes('pg_advisory_xact_lock')).map(q => q.values[0]), ['frame-unlock:00000000-0000-4000-8000-000000000002:' + claims.sub, 'frame-unlock:00000000-0000-4000-8000-000000000003:' + claims.sub]);
 });
 test('a previous normal session or failed recovery cannot authorize a new password', async () => {
   for (const result of [{ error: { code: 'otp_expired' } }, { data: {} }, { data: { user: { id: 'another-user' }, session: { access_token: claims.accessToken } } }]) {

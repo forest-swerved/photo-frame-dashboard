@@ -141,8 +141,22 @@ export async function dispatch(request, db, principal, route, options = {}) {
   if (route === 'settings' && method === 'PATCH') {
     requireAdmin(principal);
     const body = await readJson(request);
-    const changed = await one(db, 'UPDATE family_households SET title=$2,timezone=$3 WHERE id=$1 RETURNING id,title,timezone',
-      [principal.household.id, body.title === undefined ? principal.household.title : textField(body.title, 'Household title', 80), body.timezone === undefined ? principal.household.timezone : timezoneField(body.timezone)]);
+    const title = body.title === undefined ? undefined : textField(body.title, 'Household title', 80);
+    const timezone = body.timezone === undefined ? undefined : timezoneField(body.timezone);
+    const changed = await transaction(db, async client => {
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`internet:${principal.household.id}`]);
+      const current = await one(client, 'SELECT id,title,timezone FROM family_households WHERE id=$1 FOR UPDATE', [principal.household.id]);
+      requireValue(current, 404, 'not_found', 'This household is no longer available.');
+      if (timezone !== undefined && timezone !== current.timezone) {
+        const enrolled = await one(client, `SELECT id FROM family_managed_devices WHERE household_id=$1 AND
+          (management_policy_id IS NOT NULL OR deny_policy_id IS NOT NULL OR apple_push_policy_id IS NOT NULL OR control_state='ready') LIMIT 1`, [current.id]);
+        const active = await one(client, "SELECT id FROM family_internet_sessions WHERE household_id=$1 AND state NOT IN ('ended','failed') LIMIT 1", [current.id]);
+        requireValue(!enrolled && !active, 409, 'network_timezone_locked', 'End all Internet sessions and safely unenroll managed devices before changing the home timezone.');
+        await client.query("UPDATE family_network_integrations SET state='pilot_required',pilot_checks='{}',management_verified_at=NULL,version=version+1 WHERE household_id=$1", [current.id]);
+      }
+      return one(client, 'UPDATE family_households SET title=$2,timezone=$3 WHERE id=$1 RETURNING id,title,timezone',
+        [current.id, title ?? current.title, timezone ?? current.timezone]);
+    });
     return json({ household: changed });
   }
   if (route === 'calendar/connection') {

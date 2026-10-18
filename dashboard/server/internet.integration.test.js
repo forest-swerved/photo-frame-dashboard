@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { createPool, transaction } from './database.js';
 import { ensureDailyOccurrences, setOccurrenceCompletion, changeChoreOccurrence, getRequiredProgress } from './chore-occurrences.js';
 import { changeInternetSession, internetSnapshot, saveManagedDevice, saveRewardPolicy, startInternetSession, syncChoreReward, resolveRewardReview } from './internet.js';
-import { createFrameAccessCode, frameAuthorization, redeemFrameAccess, parentCapabilities, changeMemberCapabilities, transferOwnership } from './capabilities.js';
+import { createFrameAccessCode, frameAuthorization, redeemFrameAccess, parentCapabilities, changeMemberCapabilities, transferOwnership, revokeFrameAccessAfterRecovery } from './capabilities.js';
 import { managedPolicyPlan, requiredPilotChecks, reviewedPolicyFingerprint } from './unifi.js';
 import { processInternetJobs } from './internet-worker.js';
 import { verifySchema } from './verify-schema.js';
@@ -18,11 +18,25 @@ test('reward reservation, frame authorization and durable provider reconciliatio
   const now = new Date('2026-10-18T01:00:00Z'), today = '2026-10-17';
   const env = { FAMILY_UNIFI_API_KEY: 'synthetic-provider-key-not-a-secret', FAMILY_UNIFI_CONSOLE_ID: `${'a'.repeat(64)}:12345`, FAMILY_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString('base64') };
   const household = { id: randomUUID(), title: 'Fixture family', timezone: 'America/Denver' };
-  const parent = { authType: 'user', role: 'admin', actor: 'user:fixture', user: { id: randomUUID(), name: 'Fixture parent' }, household };
-  const child = { ...parent, authType: 'mobile', role: 'child', actor: 'mobile:fixture', personId: randomUUID(), user: { id: randomUUID(), name: 'Fixture child' } };
-  const sibling = { ...child, actor: 'mobile:sibling', personId: randomUUID(), user: { id: randomUUID(), name: 'Fixture sibling' } };
+  const parent = { authType: 'user', role: 'admin', actor: 'user:fixture', sessionId: randomUUID(), user: { id: randomUUID(), name: 'Fixture parent' }, household };
+  const child = { ...parent, authType: 'mobile', role: 'child', actor: 'mobile:fixture', mobileSessionId: randomUUID(), providerId: randomUUID(), personId: randomUUID(), user: { id: randomUUID(), name: 'Fixture child' } };
+  const sibling = { ...child, actor: 'mobile:sibling', mobileSessionId: randomUUID(), providerId: randomUUID(), personId: randomUUID(), user: { id: randomUUID(), name: 'Fixture sibling' } };
   const frame = { ...parent, authType: 'frame', role: 'frame', actor: 'frame:fixture', user: { id: randomUUID(), name: 'Fixture frame' } };
-  const db = { async connect() { const c = await pool.connect(); try { await c.query(`SET search_path TO ${schema},pg_catalog`); return c; } catch (e) { c.release(); throw e; } }, async query(sql, values) { const c = await this.connect(); try { return await c.query(sql, values); } finally { c.release(); } } };
+  let issuanceBarrier = null;
+  // This fixture owns its provider-session substitute; it never touches the
+  // shared Auth view or another suite's account/session records.
+  const db = { async connect() {
+    const c = await pool.connect();
+    try { await c.query(`SET search_path TO ${schema},pg_catalog`); }
+    catch (error) { c.release(); throw error; }
+    return { async query(sql, values) {
+      const result = await c.query(sql.replaceAll('family_internal.auth_sessions', `${schema}.fixture_auth_sessions`), values);
+      if (issuanceBarrier && sql.startsWith('SELECT id FROM family_internal.auth_sessions')) {
+        const barrier = issuanceBarrier; issuanceBarrier = null; barrier.entered(); await barrier.released;
+      }
+      return result;
+    }, release() { c.release(); } };
+  }, async query(sql, values) { const c = await this.connect(); try { return await c.query(sql, values); } finally { c.release(); } } };
   const change = (row, completed, actor = child) => setOccurrenceCompletion(db, actor, row.id, { completed, expectedVersion: row.version, mutationId: randomUUID() }, { now, onChange: (c, event) => syncChoreReward(c, event, { now }) });
   const createRoutine = async (personId = child.personId) => (await db.query(`INSERT INTO family_chores(id,household_id,title,person_id) VALUES($1,$2,'Fixture chore',$3) RETURNING *`, [randomUUID(), household.id, personId])).rows[0];
   const snapshot = actor => internetSnapshot(db, actor || child, { env, now });
@@ -45,9 +59,15 @@ test('reward reservation, frame authorization and durable provider reconciliatio
     for (const name of ['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql', 'calendar-sync-schema.sql', 'chore-schema.sql', 'account-notifications-schema.sql', 'internet-schema.sql', 'account-deletion-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
     await db.query(await readFile(new URL('internet-schema.sql', import.meta.url), 'utf8'));
     assert.equal(await verifySchema(db, schema, 35), 35);
+    await db.query('CREATE TABLE fixture_auth_sessions(id uuid PRIMARY KEY,user_id uuid NOT NULL,not_after timestamptz)');
+    await db.query('INSERT INTO fixture_auth_sessions(id,user_id) VALUES($1,$2)', [parent.sessionId, parent.user.id]);
     await db.query('INSERT INTO family_households(id,title,timezone) VALUES($1,$2,$3)', [household.id, household.title, household.timezone]);
     for (const p of [child, sibling]) await db.query("INSERT INTO family_people(id,household_id,name,color) VALUES($1,$2,$3,'#00748c')", [p.personId, household.id, p.user.name]);
     for (const p of [parent, child, sibling]) await db.query('INSERT INTO family_members(household_id,user_id,name,email,role,person_id) VALUES($1,$2,$3,$4,$5,$6)', [household.id, p.user.id, p.user.name, `${p.user.id}@example.test`, p.role, p.personId || null]);
+    for (const p of [child, sibling]) {
+      await db.query('INSERT INTO fixture_auth_sessions(id,user_id) VALUES($1,$2)', [p.providerId, p.user.id]);
+      await db.query("INSERT INTO family_mobile_sessions(id,household_id,token_hash,kind,user_id,provider_session_id,person_id,label) VALUES($1,$2,$3,'child',$4,$5,$6,'Fixture phone')", [p.mobileSessionId, household.id, randomUUID(), p.user.id, p.providerId, p.personId]);
+    }
     await db.query("INSERT INTO family_devices(id,household_id,label,token_hash) VALUES($1,$2,'Frame','fixture-token-hash')", [frame.user.id, household.id]);
 
     await t.test('empty required list earns no credit and child inventory hides identities', async () => {
@@ -88,8 +108,9 @@ test('reward reservation, frame authorization and durable provider reconciliatio
       await db.query('UPDATE family_members SET revoked_at=NULL WHERE user_id=$1', [child.user.id]);
     });
     await t.test('caregiver permissions and owner transfer require explicit current parent authority', async () => {
-      const adult = { ...parent, role: 'member', actor: 'user:caregiver', user: { id: randomUUID(), name: 'Fixture caregiver' } };
+      const adult = { ...parent, sessionId: randomUUID(), role: 'member', actor: 'user:caregiver', user: { id: randomUUID(), name: 'Fixture caregiver' } };
       await db.query("INSERT INTO family_members(household_id,user_id,name,email,role) VALUES($1,$2,'Caregiver','caregiver@example.test','member')", [household.id, adult.user.id]);
+      await db.query('INSERT INTO fixture_auth_sessions(id,user_id) VALUES($1,$2)', [adult.sessionId, adult.user.id]);
       assert.deepEqual(await parentCapabilities(db, adult), { manageChores: false, manageInternet: false });
       await assert.rejects(changeMemberCapabilities(db, child, adult.user.id, { manageChores: true, manageInternet: true }), e => e.status === 403);
       await changeMemberCapabilities(db, parent, adult.user.id, { manageChores: true, manageInternet: false });
@@ -104,6 +125,72 @@ test('reward reservation, frame authorization and durable provider reconciliatio
       assert.equal((await transferOwnership(db, { ...adult, role: 'admin' }, { userId: parent.user.id })).transferred, true);
       await db.query('DELETE FROM family_frame_authorizations WHERE created_by=$1', [adult.user.id]);
       await db.query('DELETE FROM family_members WHERE user_id=$1', [adult.user.id]);
+      await db.query('DELETE FROM fixture_auth_sessions WHERE user_id=$1', [adult.user.id]);
+    });
+    await t.test('issuance rechecks provider sessions, current capabilities and deletion state inside its lock', async () => {
+      await db.query('DELETE FROM fixture_auth_sessions WHERE id=$1', [parent.sessionId]);
+      await assert.rejects(createFrameAccessCode(db, parent, { scope: 'parent' }, { env, now }), error => error.code === 'session_required');
+      await db.query("INSERT INTO fixture_auth_sessions(id,user_id,not_after) VALUES($1,$2,clock_timestamp()-interval '1 second')", [parent.sessionId, parent.user.id]);
+      await assert.rejects(createFrameAccessCode(db, parent, { scope: 'parent' }, { env, now }), error => error.code === 'session_required');
+      await db.query('UPDATE fixture_auth_sessions SET not_after=NULL WHERE id=$1', [parent.sessionId]);
+      await db.query("UPDATE fixture_auth_sessions SET not_after=clock_timestamp()-interval '1 second' WHERE id=$1", [child.providerId]);
+      await assert.rejects(createFrameAccessCode(db, child, { scope: 'child', personId: child.personId }, { env, now }), error => error.code === 'session_required');
+      await db.query('UPDATE fixture_auth_sessions SET not_after=NULL WHERE id=$1', [child.providerId]);
+      await db.query('UPDATE family_mobile_sessions SET revoked_at=$2 WHERE id=$1', [child.mobileSessionId, now]);
+      await assert.rejects(createFrameAccessCode(db, child, { scope: 'child', personId: child.personId }, { env, now }), error => error.code === 'session_required');
+      await db.query('UPDATE family_mobile_sessions SET revoked_at=NULL WHERE id=$1', [child.mobileSessionId]);
+      await db.query("INSERT INTO family_account_deletion_jobs(user_id,stage) VALUES($1,'data_deleted')", [parent.user.id]);
+      await assert.rejects(createFrameAccessCode(db, parent, { scope: 'parent' }, { env, now }), error => error.code === 'parent_required');
+      await db.query('DELETE FROM family_account_deletion_jobs WHERE user_id=$1', [parent.user.id]);
+      await db.query("UPDATE family_members SET role='member',manage_chores=false,manage_internet=false WHERE user_id=$1", [parent.user.id]);
+      await assert.rejects(createFrameAccessCode(db, parent, { scope: 'parent' }, { env, now }), error => error.code === 'parent_required');
+      await db.query("UPDATE family_members SET role='admin',manage_chores=true,manage_internet=true WHERE user_id=$1", [parent.user.id]);
+    });
+    await t.test('recovery waits for an in-flight issuance, then revokes its newly committed code', async () => {
+      let entered, release;
+      const waiting = new Promise(resolve => { entered = resolve; }), released = new Promise(resolve => { release = resolve; });
+      issuanceBarrier = { entered, released };
+      const issuing = createFrameAccessCode(db, parent, { scope: 'parent' }, { env, now });
+      await waiting;
+      // Global sign-out removes the provider session after the issuer already
+      // checked it; final recovery revocation must wait for that transaction.
+      await db.query('DELETE FROM fixture_auth_sessions WHERE id=$1', [parent.sessionId]);
+      let finished = false;
+      const recovering = revokeFrameAccessAfterRecovery(db, parent.user.id).then(() => { finished = true; });
+      try {
+        await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(finished, false);
+        release(); const code = await issuing; await recovering;
+        await assert.rejects(redeemFrameAccess(db, frame, { code: code.code }, { env, now }), error => error.code === 'invalid_unlock');
+      } finally { release(); await Promise.allSettled([issuing, recovering]); }
+      await db.query('INSERT INTO fixture_auth_sessions(id,user_id) VALUES($1,$2)', [parent.sessionId, parent.user.id]);
+    });
+    await t.test('an old queued issuance cannot create a code after global sign-out', async () => {
+      const blocker = await db.connect(); await blocker.query('BEGIN');
+      await blocker.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`frame-unlock:${household.id}:${parent.user.id}`]);
+      const issuing = createFrameAccessCode(db, parent, { scope: 'parent' }, { env, now });
+      // Attach the rejection handler before releasing the blocked operation.
+      const rejected = assert.rejects(issuing, error => error.code === 'session_required');
+      try { await db.query('DELETE FROM fixture_auth_sessions WHERE id=$1', [parent.sessionId]); }
+      finally { await blocker.query('COMMIT'); blocker.release(); }
+      await rejected;
+      await revokeFrameAccessAfterRecovery(db, parent.user.id);
+      await db.query('INSERT INTO fixture_auth_sessions(id,user_id) VALUES($1,$2)', [parent.sessionId, parent.user.id]);
+    });
+    await t.test('ordinary mobile sign-out does not revoke an already delegated frame approval', async () => {
+      const code = await createFrameAccessCode(db, child, { scope: 'child', personId: child.personId }, { env, now });
+      const access = await redeemFrameAccess(db, frame, { code: code.code }, { env, now });
+      await db.query('UPDATE family_mobile_sessions SET revoked_at=$2 WHERE id=$1', [child.mobileSessionId, now]);
+      assert.equal((await frameAuthorization(db, frame, access.token, now)).personId, child.personId);
+      await db.query('UPDATE family_mobile_sessions SET revoked_at=NULL WHERE id=$1', [child.mobileSessionId]);
+    });
+    await t.test('ordinary web sign-out preserves an existing grant but cannot issue another', async () => {
+      const code = await createFrameAccessCode(db, parent, { scope: 'parent' }, { env, now });
+      const access = await redeemFrameAccess(db, frame, { code: code.code }, { env, now });
+      await db.query('DELETE FROM fixture_auth_sessions WHERE id=$1', [parent.sessionId]);
+      assert.equal((await frameAuthorization(db, frame, access.token, now)).verifiedCapabilities.manageInternet, true);
+      await assert.rejects(createFrameAccessCode(db, parent, { scope: 'parent' }, { env, now }), error => error.code === 'session_required');
+      await db.query('INSERT INTO fixture_auth_sessions(id,user_id) VALUES($1,$2)', [parent.sessionId, parent.user.id]);
+      await revokeFrameAccessAfterRecovery(db, parent.user.id);
     });
     await t.test('verified readiness allows exactly one atomic reservation, and duplicate requests replay', async () => {
       const plan = managedPolicyPlan({ deviceId: device.id, macAddresses: ['02:11:22:33:44:55'], sourceZoneId: sourceZone, destinationZoneId: externalZone });
