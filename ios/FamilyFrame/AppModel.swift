@@ -4,6 +4,7 @@ import UserNotifications
 
 @MainActor
 final class AppModel: ObservableObject {
+    @Published private(set) var accountStage: AccountStage = .entry
     @Published private(set) var session: MobileSession?
     @Published private(set) var snapshot: HouseholdSnapshot?
     @Published private(set) var calendar: CalendarSnapshot?
@@ -54,17 +55,48 @@ final class AppModel: ObservableObject {
             } else { try keychain.clear(); cache.clear() }
         } catch { message = error.localizedDescription }
     }
-    func signIn(email: String, password: String) async -> Bool {
+    func signIn(email: String, password: String, invitation: String = "") async -> Bool {
         guard !isSigningIn else { return false }; isSigningIn = true
         defer { isSigningIn = false }
-        do { try accept(await api.parentLogin(email: email.trimmingCharacters(in: .whitespacesAndNewlines), password: password)); await refresh(includePreferences: true); return true }
+        let cleanEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        do { let outcome = try await api.accountSignIn(email: cleanEmail, password: password, invitation: invitation); try await continueAccount(outcome, email: cleanEmail); return true }
         catch { message = error.localizedDescription; return false }
     }
-    func pairChild(code: String) async -> Bool {
+    func createAccount(name: String, email: String, password: String, invitation: String = "") async -> Bool {
         guard !isSigningIn else { return false }; isSigningIn = true
         defer { isSigningIn = false }
-        do { try accept(await api.childPair(code: code)); await refresh(includePreferences: true); return true }
+        let cleanEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        do { let outcome = try await api.createAccount(name: name.trimmingCharacters(in: .whitespacesAndNewlines), email: cleanEmail, password: password, invitation: invitation); try await continueAccount(outcome, email: cleanEmail); return true }
         catch { message = error.localizedDescription; return false }
+    }
+    func confirmAccount(code: String, invitation: String = "") async -> Bool {
+        guard !isSigningIn, let email = accountStage.email else { return false }; isSigningIn = true
+        defer { isSigningIn = false }
+        do { let outcome = try await api.confirmAccount(email: email, code: code, invitation: invitation); try await continueAccount(outcome, email: email); return true }
+        catch { message = error.localizedDescription; return false }
+    }
+    func joinFamily(invitation: String) async -> Bool {
+        guard !isSigningIn, let email = accountStage.email else { return false }; isSigningIn = true
+        defer { isSigningIn = false }
+        do { let outcome = try await api.joinFamily(invitation: invitation); try await continueAccount(outcome, email: email); return true }
+        catch { message = error.localizedDescription; return false }
+    }
+    private func continueAccount(_ outcome: AccountOutcome, email: String) async throws {
+        switch outcome {
+        case .authenticated(let credential): try accept(credential); accountStage = .entry; await refresh(includePreferences: true)
+        case .confirmationRequired: accountStage = .confirmEmail(email)
+        case .invitationRequired: accountStage = .joinFamily(email)
+        }
+    }
+    func resendConfirmation() async -> Bool {
+        guard !isSigningIn, let email = accountStage.email else { return false }; isSigningIn = true
+        defer { isSigningIn = false }
+        do { try await api.resendConfirmation(email: email); return true }
+        catch { message = error.localizedDescription; return false }
+    }
+    func cancelAccountOnboarding() async {
+        guard !isSigningIn else { return }; isSigningIn = true
+        await api.cancelAccountOnboarding(); accountStage = .entry; isSigningIn = false
     }
     private func accept(_ value: MobileCredential) throws {
         guard value.isValid else { throw APIError(status: 0, code: "invalid_session", message: "The server did not create a valid app session.") }
@@ -80,7 +112,7 @@ final class AppModel: ObservableObject {
             let current = try await api.currentSession()
             guard started == generation else { return }
             guard current.cacheIdentity == session?.cacheIdentity else {
-                throw APIError(status: 401, code: "session_changed", message: "This app's access changed. Sign in or pair again.")
+                throw APIError(status: 401, code: "session_changed", message: "This app's access changed. Sign in again.")
             }
             session = current
             if var credential { credential.session = current; try keychain.save(credential); self.credential = credential }
@@ -169,9 +201,9 @@ final class AppModel: ObservableObject {
         do { try await api.deleteChore(chore); await refresh(); return true }
         catch { message = error.localizedDescription; return false }
     }
-    func pairing(for person: Person) async throws -> ChildPairing {
-        guard isAdmin else { throw APIError(status: 403, code: "admin_required", message: "Only a parent administrator can pair a child device.") }
-        return try await api.createPairing(personID: person.id, label: "\(person.name)'s iPhone or iPad")
+    func inviteChild(_ person: Person, email: String) async throws -> ChildInvitation {
+        guard isAdmin else { throw APIError(status: 403, code: "admin_required", message: "Only a parent administrator can invite a child account.") }
+        return try await api.createChildInvitation(personID: person.id, email: email.trimmingCharacters(in: .whitespacesAndNewlines))
     }
     func devices() async throws -> [MobileDevice] { try await api.devices() }
     func revoke(_ id: String) async throws { try await api.revokeDevice(id: id) }

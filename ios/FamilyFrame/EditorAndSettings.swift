@@ -96,7 +96,7 @@ struct SettingsScreen: View {
                     BrandMark()
                     VStack(alignment: .leading, spacing: 5) {
                         Text(model.session?.user.name ?? "Family member").font(.headline)
-                        Text(model.session?.isChild == true ? "Child device" : model.isAdmin ? "Parent administrator" : "Family member").font(.caption).foregroundStyle(Brand.muted)
+                        Text(model.session?.isChild == true ? "Child account" : model.isAdmin ? "Parent administrator" : "Family member").font(.caption).foregroundStyle(Brand.muted)
                         Text(model.session?.household.title ?? "").font(.subheadline).foregroundStyle(Brand.muted)
                     }
                 }.padding(.vertical, 10)
@@ -120,7 +120,7 @@ struct SettingsScreen: View {
             }
             if model.isAdmin {
                 Section("Family access") {
-                    NavigationLink("Pair a child device") { ChildPairingScreen() }
+                    NavigationLink("Invite a child account") { ChildInvitationScreen() }
                     NavigationLink("Manage mobile devices") { MobileDevicesScreen() }
                     Link("Parent invitations and frame setup", destination: APIClient.configuredURL)
                 }
@@ -183,43 +183,52 @@ struct NotificationPreferencesScreen: View {
     private var valid: Bool { !quiet || (Dates.validTime(start) && Dates.validTime(end) && start != end) }
 }
 
-struct ChildPairingScreen: View {
+struct ChildInvitationScreen: View {
     @EnvironmentObject var model: AppModel
     @State private var personID = ""
-    @State private var result: ChildPairing?
+    @State private var email = ""
+    @State private var result: ChildInvitation?
     @State private var generating = false
     @State private var error: String?
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 FrameCard(accent: Brand.magenta) {
-                    Text("Their chores. Their space.").font(.title2.bold())
-                    Text("Choose a child, then create a temporary code. On their phone, open Family Frame → Child pairing and enter the code. The child does not need an email account.").font(.subheadline).foregroundStyle(Brand.muted)
-                    Picker("Child", selection: $personID) {
+                    Text("Their account. Their chores.").font(.title2.bold())
+                    Text("Choose a child profile and enter that child's real email. They create or sign into their own account, confirm their email, then accept this invitation. The server links them only to the chosen profile.").font(.subheadline).foregroundStyle(Brand.muted)
+                    Picker("Child profile", selection: $personID) {
                         Text("Choose a person").tag("")
                         ForEach(model.snapshot?.people ?? []) { person in Text(person.name).tag(person.id) }
                     }.pickerStyle(.menu)
-                    Button { Task { await generate() } } label: { if generating { ProgressView().tint(.white) } else { Text("Create pairing code") } }.buttonStyle(PrimaryButton()).disabled(personID.isEmpty || generating || model.isStale)
+                    TextField("Child's email", text: $email).keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled().textContentType(.emailAddress).textFieldStyle(.roundedBorder).accessibilityLabel("Invited child's email")
+                    Button { Task { await generate() } } label: { if generating { ProgressView().tint(.white) } else { Text("Create child invitation") } }.buttonStyle(PrimaryButton()).disabled(personID.isEmpty || !email.contains("@") || generating || model.isStale)
                 }
                 if let result {
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                    TimelineView(.periodic(from: .now, by: 30)) { context in
                         let valid = (Dates.instant(result.expiresAt) ?? .distantPast) > context.date
                         FrameCard(accent: Brand.lime) {
-                            Text(valid ? "Enter on the child's device" : "This code has expired").font(.headline)
-                            Text(valid ? result.code : "••••••").font(.system(size: 38, weight: .bold, design: .monospaced)).tracking(6).frame(maxWidth: .infinity).padding(.vertical)
-                            Text(valid ? "One use. Expires \(Dates.relative(result.expiresAt)). Keep this code within your family." : "Create a new code to pair the device.").font(.caption).foregroundStyle(Brand.muted)
+                            Text(valid ? "Share privately with your child" : "This invitation has expired").font(.headline)
+                            Text(result.email).font(.subheadline.weight(.semibold)).textSelection(.enabled)
+                            if valid {
+                                Text(result.token).font(.caption.monospaced()).textSelection(.enabled).privacySensitive()
+                                ShareLink(item: invitationMessage(result)) { Label("Share invitation", systemImage: "square.and.arrow.up") }.font(.headline)
+                                Text("One use. Expires \(Dates.relative(result.expiresAt)). The child must confirm this same email; possession of the token alone does not grant access.").font(.caption).foregroundStyle(Brand.muted)
+                            } else { Text("Create a new invitation to connect the account.").font(.caption).foregroundStyle(Brand.muted) }
                         }
                     }
                 }
                 if let error { Text(error).foregroundStyle(Brand.red).font(.subheadline) }
             }.padding(20).frame(maxWidth: 650).frame(maxWidth: .infinity)
-        }.background(Brand.background).navigationTitle("Pair a child device").navigationBarTitleDisplayMode(.inline)
-            .onChange(of: personID) { _, _ in result = nil }
+        }.background(Brand.background).navigationTitle("Invite a child account").navigationBarTitleDisplayMode(.inline)
+            .onChange(of: personID) { _, _ in result = nil }.onChange(of: email) { _, _ in result = nil }
+    }
+    private func invitationMessage(_ invitation: ChildInvitation) -> String {
+        "Join our Family Frame household using your own account with \(invitation.email). Create an account in the Family Frame iPhone/iPad app, confirm your email, and paste this family invitation token: \(invitation.token). The invitation expires \(Dates.relative(invitation.expiresAt))."
     }
     private func generate() async {
         guard let person = model.snapshot?.people.first(where: { $0.id == personID }) else { return }
         generating = true; error = nil; defer { generating = false }
-        do { result = try await model.pairing(for: person) } catch { self.error = error.localizedDescription }
+        do { result = try await model.inviteChild(person, email: email) } catch { self.error = error.localizedDescription }
     }
 }
 

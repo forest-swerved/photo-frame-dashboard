@@ -3,24 +3,26 @@ import XCTest
 final class EntryUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
     override func tearDownWithError() throws { XCUIApplication().terminate() }
-    func testParentEntryShowsNativeAccessibleFields() {
+    func testParentsAndKidsShareEmailPasswordSignIn() {
         let app = XCUIApplication(); app.launch()
-        XCTAssertTrue(app.textFields["Parent email"].waitForExistence(timeout: 8))
-        XCTAssertTrue(app.secureTextFields["Parent password"].exists)
-        XCTAssertFalse(app.buttons["Sign in"].isEnabled)
-        let screenshot = XCTAttachment(screenshot: app.screenshot()); screenshot.name = "Parent sign-in"; screenshot.lifetime = .keepAlways; add(screenshot)
+        XCTAssertTrue(app.textFields["Account email"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.secureTextFields["Account password"].exists)
+        XCTAssertFalse(app.buttons["Sign in to Family Frame"].isEnabled)
+        XCTAssertFalse(app.buttons["Child pairing"].exists)
+        let screenshot = XCTAttachment(screenshot: app.screenshot()); screenshot.name = "Shared account sign-in"; screenshot.lifetime = .keepAlways; add(screenshot)
     }
-    func testChildPairingUsesCodeAndDoesNotRequireParentCredentials() {
+    func testChildAccountCreationRequiresOwnEmailAndMatchingStrongPassword() {
         let app = XCUIApplication(); app.launch()
-        app.buttons["Child pairing"].tap()
-        let field = app.textFields["Six-digit child pairing code"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
-        XCTAssertFalse(app.secureTextFields["Parent password"].exists)
-        XCTAssertFalse(app.buttons["Pair my device"].isEnabled)
-        field.tap(); field.typeText("123456")
-        XCTAssertTrue(app.buttons["Pair my device"].isEnabled)
-        XCTAssertTrue(field.isHittable, "The focused code field must stay visible above the keyboard")
-        // This synthetic code is never submitted to the live API.
-        let screenshot = XCTAttachment(screenshot: app.screenshot()); screenshot.name = "Child pairing keyboard"; screenshot.lifetime = .keepAlways; add(screenshot)
+        app.buttons["Create account"].tap()
+        XCTAssertTrue(app.textFields["Your name"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textFields["Account email"].exists)
+        XCTAssertTrue(app.secureTextFields["Account password"].exists)
+        XCTAssertTrue(app.secureTextFields["Confirm account password"].exists)
+        XCTAssertFalse(app.buttons["Create my account"].isEnabled)
+        app.textFields["Account email"].tap()
+        app.textFields["Account email"].typeText("child@example.test")
+        XCTAssertTrue(app.textFields["Account email"].isHittable, "The account email must stay visible above the keyboard")
+        // No account is created and no request is sent to a live auth service.
+        let screenshot = XCTAttachment(screenshot: app.screenshot()); screenshot.name = "Account creation keyboard"; screenshot.lifetime = .keepAlways; add(screenshot)
     }
 }

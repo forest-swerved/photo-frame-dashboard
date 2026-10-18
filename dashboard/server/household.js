@@ -13,7 +13,7 @@ const householdDto = row => ({ id: row.id, title: row.title, timezone: row.timez
 export async function sessionData(db, principal) {
   const claimed = await one(db, 'SELECT id FROM family_households LIMIT 1');
   return { authenticated: true, authType: principal.authType, user: principal.user, role: principal.role,
-    household: principal.household, claimRequired: !claimed && principal.authType === 'user' };
+    household: principal.household, personId: principal.personId || null, claimRequired: !claimed && principal.authType === 'user' };
 }
 
 export async function claimHousehold(db, principal, body, env = process.env) {
@@ -39,26 +39,92 @@ export async function claimHousehold(db, principal, body, env = process.env) {
 
 export async function createInvite(db, principal, body) {
   requireAdmin(principal);
+  requireValue(Object.keys(body).every(key => ['role','personId','email','expiresInHours'].includes(key)), 422, 'invalid_invite', 'This invitation contains unsupported fields.');
+  const role = body.role ?? 'member';
+  requireValue(['member','child'].includes(role), 422, 'invalid_invite', 'Invite a family member or a child profile.');
   const hours = body.expiresInHours ?? 24;
   requireValue(Number.isInteger(hours) && hours >= 1 && hours <= 168, 422, 'invalid_expiry', 'Invitations may last 1–168 hours.');
+  let personId = null, email = null;
+  if (role === 'child') {
+    personId = uuidField(body.personId, 'Child profile');
+    email = textField(body.email, 'Child email', 254).toLowerCase();
+    requireValue(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email), 422, 'invalid_email', 'Enter the child’s own email address.');
+  } else requireValue(body.personId === undefined && body.email === undefined, 422, 'invalid_invite', 'Choose the child invitation type to bind an email to a profile.');
   const token = randomToken();
-  const row = await one(db, "INSERT INTO family_invites(id,household_id,token_hash,expires_at,created_by) VALUES($1,$2,$3,now()+($4::int * interval '1 hour'),$5) RETURNING id,expires_at", [randomUUID(), principal.household.id, digest(token), hours, principal.user.id]);
-  return { id: row.id, token, expiresAt: row.expires_at };
+  return transaction(db, async client => {
+    if (role === 'child') {
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`membership-email:${principal.household.id}:${email}`]);
+      requireValue(await one(client, 'SELECT id FROM family_people WHERE household_id=$1 AND id=$2 FOR UPDATE', [principal.household.id, personId]), 404, 'not_found', 'That child profile does not exist.');
+      const account = await one(client, 'SELECT role,person_id FROM family_members WHERE household_id=$1 AND lower(trim(email))=$2 LIMIT 1', [principal.household.id, email]);
+      requireValue(!account || account.role === 'child' && account.person_id === personId, 409, 'child_profile_locked', 'This email is already linked to another family role or profile.');
+      const assigned = await one(client, "SELECT email FROM family_members WHERE household_id=$1 AND person_id=$2 AND role='child' AND revoked_at IS NULL", [principal.household.id, personId]);
+      requireValue(!assigned || assigned.email.trim().toLowerCase() === email, 409, 'profile_already_claimed', 'This profile is already linked to another account. Remove that account’s access first.');
+      await client.query("UPDATE family_invites SET revoked_at=now() WHERE household_id=$1 AND (person_id=$2 OR email=$3) AND role='child' AND redeemed_at IS NULL AND revoked_at IS NULL", [principal.household.id, personId, email]);
+    }
+    const row = await one(client, `INSERT INTO family_invites(id,household_id,token_hash,expires_at,created_by,role,person_id,email)
+      VALUES($1,$2,$3,now()+($4::int * interval '1 hour'),$5,$6,$7,$8) RETURNING id,expires_at`,
+    [randomUUID(), principal.household.id, digest(token), hours, principal.user.id, role, personId, email]);
+    return { id: row.id, token, expiresAt: row.expires_at, role, personId, email };
+  });
 }
 
-export async function joinHousehold(db, principal, body) {
+export async function joinHousehold(db, principal, body, { getVerifiedEmail } = {}) {
   requireValue(principal.authType === 'user', 403, 'user_required', 'Sign in to use an invitation.');
   const token = textField(body.token, 'Invitation', 200);
+  const candidate = await one(db, 'SELECT id,household_id,role,person_id FROM family_invites WHERE token_hash=$1', [digest(token)]);
+  requireValue(candidate, 403, 'invalid_invite', 'That invitation has expired or was already used.');
+  // Production supplies a provider lookup for every join, including member
+  // invitations: a stale JWT email must not bypass a child's email reservation.
+  const verifiedEmail = getVerifiedEmail ? await getVerifiedEmail() : null;
   return transaction(db, async client => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`membership:${principal.user.id}`]);
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`membership-email:${candidate.household_id}:${verifiedEmail || (principal.user.email || '').trim().toLowerCase()}`]);
+    let profile;
+    if (candidate.role === 'child') {
+      profile = await one(client, 'SELECT id,name FROM family_people WHERE household_id=$1 AND id=$2 FOR UPDATE', [candidate.household_id, candidate.person_id]);
+      requireValue(profile, 403, 'invalid_invite', 'That invitation has expired or was already used.');
+    }
     const invite = await one(client, 'SELECT * FROM family_invites WHERE token_hash=$1 FOR UPDATE', [digest(token)]);
-    requireValue(invite && !invite.redeemed_at && new Date(invite.expires_at) > new Date(), 403, 'invalid_invite', 'That invitation has expired or was already used.');
+    requireValue(invite && !invite.redeemed_at && !invite.revoked_at && new Date(invite.expires_at) > new Date()
+      && invite.role === candidate.role && invite.person_id === candidate.person_id, 403, 'invalid_invite', 'That invitation has expired or was already used.');
     requireValue(!principal.household || principal.household.id === invite.household_id, 409, 'already_member', 'You already belong to a household.');
-    await client.query(`INSERT INTO family_members(household_id,user_id,name,email,role) VALUES($1,$2,$3,$4,'member')
-      ON CONFLICT(household_id,user_id) DO UPDATE SET revoked_at=NULL,name=EXCLUDED.name,email=EXCLUDED.email`,
-    [invite.household_id, principal.user.id, principal.user.name || 'Family member', principal.user.email]);
+    const existing = await one(client, 'SELECT * FROM family_members WHERE user_id=$1 ORDER BY joined_at LIMIT 1 FOR UPDATE', [principal.user.id]);
+    requireValue(!existing || existing.household_id === invite.household_id, 409, 'already_member', 'You already belong to a household.');
+    let role = existing && !existing.revoked_at ? existing.role : 'member';
+    let name = principal.user.name || 'Family member', email = verifiedEmail || principal.user.email, personId = null;
+    if (invite.role === 'child') {
+      requireValue(verifiedEmail && verifiedEmail === invite.email, 403, 'invited_email_required', 'Sign in with the confirmed email address this invitation was created for.');
+      requireValue(!existing || existing.role === 'child' && existing.person_id === invite.person_id,
+        409, 'child_profile_locked', 'This account is already linked. A parent must manage its access.');
+      const assigned = await one(client, "SELECT user_id FROM family_members WHERE household_id=$1 AND person_id=$2 AND role='child' AND revoked_at IS NULL AND user_id<>$3", [invite.household_id, invite.person_id, principal.user.id]);
+      requireValue(!assigned, 409, 'profile_already_claimed', 'This profile is already linked to another account.');
+      role = 'child'; personId = invite.person_id; name = profile.name; email = verifiedEmail;
+    } else {
+      const reserved = !existing || existing.revoked_at ? await one(client, "SELECT id FROM family_invites WHERE household_id=$1 AND role='child' AND email=$2 LIMIT 1", [invite.household_id, (verifiedEmail || principal.user.email || '').trim().toLowerCase()]) : null;
+      requireValue(existing?.role !== 'child' && !reserved, 409, 'child_profile_locked', 'A child account cannot accept a parent or family-member invitation.');
+    }
+    await client.query(`INSERT INTO family_members(household_id,user_id,name,email,role,person_id) VALUES($1,$2,$3,$4,$5,$6)
+      ON CONFLICT(household_id,user_id) DO UPDATE SET revoked_at=NULL,name=EXCLUDED.name,email=EXCLUDED.email,role=EXCLUDED.role,person_id=EXCLUDED.person_id`,
+    [invite.household_id, principal.user.id, name, email, role, personId]);
     await client.query('UPDATE family_invites SET redeemed_at=now(),redeemed_by=$2 WHERE id=$1', [invite.id, principal.user.id]);
     const row = await one(client, `SELECT m.role,h.id,h.title,h.timezone FROM family_members m JOIN family_households h ON h.id=m.household_id WHERE m.household_id=$1 AND m.user_id=$2`, [invite.household_id, principal.user.id]);
-    return { authenticated: true, authType: 'user', user: principal.user, role: row.role, household: householdDto(row), claimRequired: false };
+    return { authenticated: true, authType: 'user', user: { ...principal.user, name, email }, role: row.role, personId, household: householdDto(row), claimRequired: false };
+  });
+}
+
+export async function revokeHouseholdMember(db, principal, userId) {
+  requireAdmin(principal); uuidField(userId, 'Account ID');
+  requireValue(userId !== principal.user.id, 422, 'cannot_remove_owner', 'The administrator cannot remove their own access.');
+  return transaction(db, async client => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`membership:${userId}`]);
+    const candidate = await one(client, 'SELECT person_id FROM family_members WHERE household_id=$1 AND user_id=$2', [principal.household.id, userId]);
+    if (candidate?.person_id) await client.query('SELECT id FROM family_people WHERE household_id=$1 AND id=$2 FOR UPDATE', [principal.household.id, candidate.person_id]);
+    const member = await one(client, "SELECT * FROM family_members WHERE household_id=$1 AND user_id=$2 AND role IN ('member','child') AND revoked_at IS NULL FOR UPDATE", [principal.household.id, userId]);
+    requireValue(member, 404, 'not_found', 'That family account does not exist.');
+    await client.query('UPDATE family_members SET revoked_at=now() WHERE household_id=$1 AND user_id=$2', [principal.household.id, userId]);
+    await client.query('UPDATE family_mobile_sessions SET revoked_at=coalesce(revoked_at,now()) WHERE household_id=$1 AND user_id=$2', [principal.household.id, userId]);
+    if (member.person_id) await client.query("UPDATE family_invites SET revoked_at=coalesce(revoked_at,now()) WHERE household_id=$1 AND person_id=$2 AND role='child' AND redeemed_at IS NULL", [principal.household.id, member.person_id]);
+    return { deleted: true };
   });
 }
 
@@ -128,6 +194,8 @@ export async function changePerson(db, principal, id, body, remove = false) {
     if (!row) throw notFound();
     requireValue(row.version === body.expectedVersion, 409, 'version_conflict', 'This person changed. Refresh and try again.', { current: personDto(row) });
     if (remove) {
+      await client.query("UPDATE family_mobile_sessions SET revoked_at=coalesce(revoked_at,now()) WHERE household_id=$1 AND person_id=$2", [principal.household.id, id]);
+      await client.query("UPDATE family_members SET revoked_at=coalesce(revoked_at,now()),person_id=NULL WHERE household_id=$1 AND person_id=$2 AND role='child'", [principal.household.id, id]);
       await client.query('UPDATE family_chores SET person_id=NULL,version=version+1 WHERE person_id=$1 AND household_id=$2', [id, principal.household.id]);
       await client.query('DELETE FROM family_people WHERE id=$1 AND household_id=$2', [id, principal.household.id]);
       return { deleted: true };

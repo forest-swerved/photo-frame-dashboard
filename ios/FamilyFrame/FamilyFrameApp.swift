@@ -48,12 +48,16 @@ struct DashboardTabs: View {
 
 struct WelcomeScreen: View {
     @EnvironmentObject var model: AppModel
-    @State private var child = false
+    @State private var creating = false
+    @State private var name = ""
     @State private var email = ""
     @State private var password = ""
-    @State private var code = ""
+    @State private var confirmPassword = ""
+    @State private var confirmationCode = ""
+    @State private var invitation = ""
+    @State private var confirmationNotice: String?
     @FocusState private var focus: Field?
-    enum Field { case email, password, code }
+    enum Field { case name, email, password, confirmPassword, code, invitation }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
@@ -67,37 +71,83 @@ struct WelcomeScreen: View {
                     Capsule().fill(Brand.lime).frame(width: 62, height: 6)
                     Capsule().fill(Brand.magenta).frame(width: 62, height: 6)
                 }.accessibilityHidden(true)
-                FrameCard(accent: child ? Brand.magenta : Brand.cyan) {
-                    Picker("How are you joining?", selection: $child) { Text("Parent sign-in").tag(false); Text("Child pairing").tag(true) }.pickerStyle(.segmented)
-                    if child {
-                        Text("Your own space.").font(.title2.bold())
-                        Text("Ask a parent to create a code in Settings → Pair a child device. Enter it here to open your checklist.").font(.subheadline).foregroundStyle(Brand.muted)
-                        TextField("Six-digit pairing code", text: $code).keyboardType(.numberPad).textContentType(.oneTimeCode)
-                            .focused($focus, equals: .code).textFieldStyle(.roundedBorder).font(.title2.monospacedDigit())
-                            .onChange(of: code) { _, value in code = String(value.filter(\.isNumber).prefix(6)) }
-                            .accessibilityLabel("Six-digit child pairing code")
-                        Button { focus = nil; Task { if await model.pairChild(code: code) { code = "" } } } label: {
-                            if model.isSigningIn { ProgressView().tint(.white) } else { Text("Pair my device") }
-                        }.buttonStyle(PrimaryButton()).disabled(code.count != 6 || model.isSigningIn)
-                    } else {
-                        Text("Welcome home.").font(.title2.bold())
-                        TextField("Email", text: $email).keyboardType(.emailAddress).textContentType(.username).textInputAutocapitalization(.never).autocorrectionDisabled().focused($focus, equals: .email).submitLabel(.next).onSubmit { focus = .password }.textFieldStyle(.roundedBorder).accessibilityLabel("Parent email")
-                        SecureField("Password", text: $password).textContentType(.password).focused($focus, equals: .password).submitLabel(.go).textFieldStyle(.roundedBorder).accessibilityLabel("Parent password")
-                        Button { login() } label: {
-                            if model.isSigningIn { ProgressView().tint(.white) } else { Text("Sign in") }
-                        }.buttonStyle(PrimaryButton()).disabled(email.trimmingCharacters(in: .whitespaces).isEmpty || password.isEmpty || model.isSigningIn)
-                        Link("Create an account or manage access on the web", destination: APIClient.configuredURL).font(.footnote).foregroundStyle(Brand.cyanInk)
+                FrameCard(accent: creating ? Brand.magenta : Brand.cyan) {
+                    switch model.accountStage {
+                    case .entry: accountEntry
+                    case .confirmEmail(let accountEmail): confirmationEntry(email: accountEmail)
+                    case .joinFamily(let accountEmail): joinEntry(email: accountEmail)
                     }
                 }
-                Text("Your frame, phone, and family stay in sync. Notifications are optional and can be changed at any time.").font(.footnote).foregroundStyle(Brand.muted)
+                Text("Parents and kids each use their own email and password. Your household role controls what you can see and change.").font(.footnote).foregroundStyle(Brand.muted)
             }.padding(24).frame(maxWidth: 560).frame(maxWidth: .infinity)
         }
         .background(Brand.background).scrollDismissesKeyboard(.interactively)
         .toolbar { ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("Done") { focus = nil } } }
-        .onSubmit { if !child && focus == .password { login() } }
     }
-    private func login() {
-        focus = nil
-        Task { if await model.signIn(email: email, password: password) { password = "" } }
+    private var accountEntry: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Picker("Account access", selection: $creating) { Text("Sign in").tag(false); Text("Create account").tag(true) }.pickerStyle(.segmented).disabled(model.isSigningIn)
+            Text(creating ? "Your own account." : "Welcome home.").font(.title2.bold())
+            Text(creating ? "Create an account with your own email. A parent invitation connects a child's account to their chores." : "Parents and kids sign in here with their own email and password.").font(.subheadline).foregroundStyle(Brand.muted)
+            if creating {
+                TextField("Name", text: $name).textContentType(.name).focused($focus, equals: .name).textFieldStyle(.roundedBorder).accessibilityLabel("Your name")
+            }
+            TextField("Email", text: $email).keyboardType(.emailAddress).textContentType(.username).textInputAutocapitalization(.never).autocorrectionDisabled().focused($focus, equals: .email).submitLabel(.next).onSubmit { focus = .password }.textFieldStyle(.roundedBorder).accessibilityLabel("Account email")
+            SecureField("Password", text: $password).textContentType(creating ? .newPassword : .password).focused($focus, equals: .password).submitLabel(creating ? .next : .go).textFieldStyle(.roundedBorder).accessibilityLabel("Account password").onSubmit { if creating { focus = .confirmPassword } else { submitAccount() } }
+            if creating {
+                SecureField("Confirm password", text: $confirmPassword).textContentType(.newPassword).focused($focus, equals: .confirmPassword).textFieldStyle(.roundedBorder).accessibilityLabel("Confirm account password")
+                Text("Use at least 12 characters. Keep your password private.").font(.caption).foregroundStyle(Brand.muted)
+                if !confirmPassword.isEmpty && password != confirmPassword { Text("The passwords must match.").font(.caption).foregroundStyle(Brand.red) }
+            }
+            DisclosureGroup("Have a family invitation?") { invitationField.padding(.top, 8) }.font(.subheadline)
+            Button { submitAccount() } label: {
+                if model.isSigningIn { ProgressView().tint(.white) } else { Text(creating ? "Create my account" : "Sign in to Family Frame") }
+            }.buttonStyle(PrimaryButton()).disabled(!entryValid || model.isSigningIn)
+            Link("Open the web dashboard", destination: APIClient.configuredURL).font(.footnote).foregroundStyle(Brand.cyanInk)
+        }
+    }
+    private func confirmationEntry(email: String) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Image(systemName: "envelope.badge").font(.title).foregroundStyle(Brand.cyanInk).accessibilityHidden(true)
+            Text("Check your email.").font(.title2.bold())
+            Text("Enter the confirmation code sent to \(email). This confirms the account belongs to you.").font(.subheadline).foregroundStyle(Brand.muted)
+            TextField("Email confirmation code", text: $confirmationCode).keyboardType(.numberPad).textContentType(.oneTimeCode).focused($focus, equals: .code).textFieldStyle(.roundedBorder).font(.title2.monospacedDigit())
+                .onChange(of: confirmationCode) { _, value in confirmationCode = String(value.filter(\.isNumber).prefix(10)) }.accessibilityLabel("Email confirmation code")
+            Button { focus = nil; Task { if await model.confirmAccount(code: confirmationCode, invitation: invitation) { confirmationCode = "" } } } label: {
+                if model.isSigningIn { ProgressView().tint(.white) } else { Text("Confirm my email") }
+            }.buttonStyle(PrimaryButton()).disabled(!(6...10).contains(confirmationCode.count) || model.isSigningIn)
+            Button("Resend confirmation email") { Task { if await model.resendConfirmation() { confirmationNotice = "A new confirmation email was requested. Check your inbox and junk folder." } } }.disabled(model.isSigningIn)
+            if let confirmationNotice { Text(confirmationNotice).font(.caption).foregroundStyle(Brand.muted) }
+            backToSignIn
+        }
+    }
+    private func joinEntry(email: String) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Join your family.").font(.title2.bold())
+            Text("You're signed in as \(email). Ask a parent for the invitation assigned to your email and paste its token below. It connects your account to the right profile.").font(.subheadline).foregroundStyle(Brand.muted)
+            invitationField
+            Button { focus = nil; Task { _ = await model.joinFamily(invitation: invitation) } } label: {
+                if model.isSigningIn { ProgressView().tint(.white) } else { Text("Accept family invitation") }
+            }.buttonStyle(PrimaryButton()).disabled(invitation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isSigningIn)
+            Text("An account without an accepted invitation has no access to household data.").font(.caption).foregroundStyle(Brand.muted)
+            backToSignIn
+        }
+    }
+    private var invitationField: some View {
+        TextField("Invitation token", text: $invitation, axis: .vertical).lineLimit(2...4).keyboardType(.asciiCapable).textInputAutocapitalization(.never).autocorrectionDisabled().focused($focus, equals: .invitation).textFieldStyle(.roundedBorder).accessibilityLabel("Family invitation token").privacySensitive()
+    }
+    private var backToSignIn: some View {
+        Button("Use a different account") { focus = nil; Task { await model.cancelAccountOnboarding(); email = ""; name = ""; password = ""; confirmPassword = ""; confirmationCode = ""; invitation = ""; confirmationNotice = nil } }.font(.subheadline).disabled(model.isSigningIn)
+    }
+    private var entryValid: Bool {
+        let validEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).contains("@")
+        return validEmail && !password.isEmpty && (!creating || (!name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && name.count <= 120 && password.count >= 12 && password == confirmPassword))
+    }
+    private func submitAccount() {
+        guard entryValid else { return }; focus = nil
+        Task {
+            let progressed = creating ? await model.createAccount(name: name, email: email, password: password, invitation: invitation) : await model.signIn(email: email, password: password, invitation: invitation)
+            if progressed { password = ""; confirmPassword = "" }
+        }
     }
 }

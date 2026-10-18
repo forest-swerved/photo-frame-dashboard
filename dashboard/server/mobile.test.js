@@ -9,7 +9,7 @@ const id=randomUUID(),householdId=randomUUID(),personId=randomUUID();
 const principal={authType:'mobile',actor:`mobile:${id}`,mobileSessionId:id,role:'child',personId,user:{id:personId,name:'Child'},household:{id:householdId,title:'Test household',timezone:'America/Denver'}};
 const token='a'.repeat(43);
 const request=(authorization=`FamilyMobile ${token}`)=>new Request('https://family.example/api/mobile/session',{headers:{authorization}});
-const row={id,kind:'parent',household_id:householdId,title:'Test household',timezone:'America/Denver',user_id:randomUUID(),member_name:'Parent',member_role:'admin',member_revoked_at:null,active_provider_session:randomUUID(),person_id:null};
+const row={id,kind:'parent',household_id:householdId,title:'Test household',timezone:'America/Denver',user_id:randomUUID(),provider_session_id:randomUUID(),member_name:'Parent',member_role:'admin',member_person_id:null,member_revoked_at:null,active_provider_session:randomUUID(),person_id:null};
 const fakeDb=value=>({async query(sql){if(sql.startsWith('SELECT'))return {rows:value?[value]:[]};return {rows:[],rowCount:1};}});
 
 test('malformed mobile credentials cannot reach storage',async()=>{
@@ -24,11 +24,11 @@ test('native parents lose access when provider session or household membership i
  const changed=await authenticateMobile(request(),fakeDb({...row,member_role:'member'}));
  assert.equal(changed.role,'member');assert.throws(()=>mobileAdmin(changed),e=>e.status===403);
 });
-test('kid sessions derive their person and role from stored pairing, never request fields',async()=>{
- const kid={...row,kind:'child',person_id:personId,person_name:'Test child',member_role:'admin',user_id:null};
- const actual=await authenticateMobile(request(),fakeDb(kid));assert.equal(actual.role,'child');assert.equal(actual.personId,personId);assert.equal(actual.user.id,personId);
+test('kid account sessions require live provider membership and their exact assigned profile',async()=>{
+ const kid={...row,kind:'child',person_id:personId,member_person_id:personId,person_name:'Test child',member_role:'child'};
+ const actual=await authenticateMobile(request(),fakeDb(kid));assert.equal(actual.role,'child');assert.equal(actual.personId,personId);assert.equal(actual.user.id,kid.user_id);
  assert.throws(()=>mobileAdmin(actual),e=>e.status===403);
- await assert.rejects(authenticateMobile(request(),fakeDb({...kid,person_name:null})),e=>e.code==='mobile_session_revoked');
+ for(const changed of [{...kid,person_name:null},{...kid,user_id:null},{...kid,active_provider_session:null},{...kid,member_person_id:randomUUID()},{...kid,member_role:'admin'},{...kid,kind:'parent'}])await assert.rejects(authenticateMobile(request(),fakeDb(changed)),e=>e.code==='mobile_session_revoked');
 });
 test('a frame or paired child cannot exchange its credential for a parent session',async()=>{
  for(const p of [principal,{...principal,authType:'frame',role:'frame'},{...principal,authType:'user',role:'admin',sessionId:null}]){

@@ -4,6 +4,7 @@ import { ApiError, requireValue, uuidField } from './errors.js';
 import { decryptCredentials, digest, encryptCredentials, keyedDigest } from './credentials.js';
 import { one, transaction } from './database.js';
 import { classifyApnsResult, providerToken, sendApns } from './apns.js';
+import { activeMobileSessionSql as activeSession } from './mobile.js';
 
 const preferenceColumns = Object.freeze({ pushEnabled: 'push_enabled', choreCompleted: 'chore_completed', choreReopened: 'chore_reopened',
   choreDueSoon: 'chore_due_soon', choreOverdue: 'chore_overdue', calendarEvents: 'calendar_events', frameStatus: 'frame_status' });
@@ -12,11 +13,6 @@ const preferenceForKind = { chore_completed: 'choreCompleted', chore_reopened: '
 const notFound = () => new ApiError(404, 'not_found', 'That notification does not exist.');
 const iso = value => new Date(value).toISOString();
 const localDate = (now, timezone) => Temporal.Instant.from(iso(now)).toZonedDateTimeISO(timezone).toPlainDate();
-const activeSession = (alias = 's', now = '$2') => `${alias}.revoked_at IS NULL AND ${alias}.expires_at>${now}::timestamptz AND
-  ((${alias}.kind='child' AND EXISTS(SELECT 1 FROM family_people p WHERE p.household_id=${alias}.household_id AND p.id=${alias}.person_id)) OR
-   (${alias}.kind='parent' AND EXISTS(SELECT 1 FROM family_members m JOIN family_internal.auth_sessions a ON a.user_id::text=m.user_id
-     WHERE m.household_id=${alias}.household_id AND m.user_id=${alias}.user_id AND m.revoked_at IS NULL
-       AND a.id=${alias}.provider_session_id AND (a.not_after IS NULL OR a.not_after>${now}::timestamptz))))`;
 
 function mobilePrincipal(principal) {
   requireValue(principal?.authType === 'mobile' && principal.household?.id, 403, 'mobile_required', 'Use the signed-in Family Frame app.');

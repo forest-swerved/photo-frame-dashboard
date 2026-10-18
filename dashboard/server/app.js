@@ -2,10 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { ApiError, json, readJson, requireValue, textField, timezoneField, uuidField, versionField } from './errors.js';
 import { createPool, one, transaction } from './database.js';
 import { authenticate, assertSameOrigin, cookieValue, FRAME_COOKIE, requireAdmin, requireHousehold } from './auth.js';
-import { authGateway, createAuthContext } from './supabase-auth.js';
+import { authGateway, confirmedAccountEmail, createAuthContext } from './supabase-auth.js';
 import { digest } from './credentials.js';
 import { enforcePairRateLimit } from './pair-rate-limit.js';
-import { claimHousehold, createChore, createFramePair, createInvite, createPerson, changeChore, changePerson, householdSnapshot, joinHousehold, redeemFramePair, sessionData, setCompletion } from './household.js';
+import { claimHousehold, createChore, createFramePair, createInvite, createPerson, changeChore, changePerson, householdSnapshot, joinHousehold, redeemFramePair, revokeHouseholdMember, sessionData, setCompletion } from './household.js';
 import { calendarConnection, calendarSnapshot, connectCalendar, removeCalendar, selectCalendars } from './calendar-service.js';
 import { createMobileSession, createMobilePair, redeemMobilePair, mobileSessionData, mobileDevices, revokeMobile } from './mobile.js';
 import { registerPush, notificationPreferences, notificationInbox, markNotificationRead, processNotifications } from './notifications.js';
@@ -34,7 +34,7 @@ export async function dispatch(request, db, principal, route, options = {}) {
   const url = new URL(request.url);
   if (route === 'session' && method === 'GET') return json(await sessionData(db, principal));
   if (route === 'claim' && method === 'POST') return json(await claimHousehold(db, principal, await readJson(request), options.env));
-  if (route === 'join' && method === 'POST') return json(await joinHousehold(db, principal, await readJson(request)));
+  if (route === 'join' && method === 'POST') return json(await joinHousehold(db, principal, await readJson(request), { getVerifiedEmail: () => confirmedAccountEmail(request, principal, options) }));
   requireHousehold(principal);
   if (route === 'mobile/sessions' && method === 'POST') return json(await createMobileSession(db, principal, await readJson(request)), 201);
   if (route === 'mobile/pairings' && method === 'POST') return json(await createMobilePair(db, principal, await readJson(request), options.env), 201);
@@ -54,6 +54,7 @@ export async function dispatch(request, db, principal, route, options = {}) {
   }
   if (route === 'household' && method === 'GET') return json(await householdSnapshot(db, principal, url.searchParams.get('date')));
   if (route === 'invites' && method === 'POST') return json(await createInvite(db, principal, await readJson(request)), 201);
+  if (route === 'child-invites' && method === 'POST') return json(await createInvite(db, principal, { ...await readJson(request), role: 'child' }), 201);
   if (route === 'frame-pairs' && method === 'POST') return json(await createFramePair(db, principal, await readJson(request), options.env), 201);
   if (route === 'devices' && method === 'GET') return json(await deviceList(db, principal));
   const device = /^devices\/([^/]+)$/.exec(route);
@@ -65,15 +66,11 @@ export async function dispatch(request, db, principal, route, options = {}) {
   }
   if (route === 'members' && method === 'GET') {
     requireAdmin(principal);
-    return json({ members: (await db.query('SELECT user_id,name,email,role,joined_at FROM family_members WHERE household_id=$1 AND revoked_at IS NULL ORDER BY joined_at', [principal.household.id])).rows.map(row => ({ id: row.user_id, name: row.name, email: row.email, role: row.role, joinedAt: row.joined_at })) });
+    return json({ members: (await db.query('SELECT user_id,name,email,role,person_id,joined_at FROM family_members WHERE household_id=$1 AND revoked_at IS NULL ORDER BY joined_at', [principal.household.id])).rows.map(row => ({ id: row.user_id, name: row.name, email: row.email, role: row.role, personId: row.person_id || null, joinedAt: row.joined_at })) });
   }
   const member = /^members\/([^/]+)$/.exec(route);
   if (member && method === 'DELETE') {
-    requireAdmin(principal);
-    requireValue(member[1] !== principal.user.id, 422, 'cannot_remove_owner', 'The administrator cannot remove their own access.');
-    const changed = await db.query("UPDATE family_members SET revoked_at=now() WHERE household_id=$1 AND user_id=$2 AND role='member' AND revoked_at IS NULL RETURNING user_id", [principal.household.id, member[1]]);
-    requireValue(changed.rowCount > 0, 404, 'not_found', 'That family member does not exist.');
-    return json({ deleted: true });
+    return json(await revokeHouseholdMember(db, principal, member[1]));
   }
   if (route === 'people' && method === 'POST') return json(await createPerson(db, principal, await readJson(request)), 201);
   const person = /^people\/([^/]+)$/.exec(route);
@@ -120,6 +117,7 @@ export async function handleRequest(request, options = {}) {
     route = apiPath(request);
     if (!['GET', 'HEAD'].includes(request.method)) assertSameOrigin(request);
     if (route === 'health' && request.method === 'GET') return json({ ok: true });
+    if (['mobile/pairings','mobile/pairings/redeem'].includes(route) && request.method === 'POST') throw new ApiError(410, 'child_accounts_required', 'Children now use their own email accounts and a parent invitation.');
     db = options.db || createPool(options.env);
     if (route === 'mobile/jobs/notifications' && request.method === 'GET') {
       const env = options.env || process.env;
@@ -145,7 +143,7 @@ export async function handleRequest(request, options = {}) {
     }
     if (!options.authenticate && request.headers.get('authorization')?.startsWith('Bearer ') && !['GET', 'HEAD'].includes(request.method)) authContext = (options.createAuthContext || createAuthContext)(request, options);
     const principal = await (options.authenticate || authenticate)(request, db, { ...options, authContext });
-    const response = await dispatch(request, db, principal, route, options);
+    const response = await dispatch(request, db, principal, route, { ...options, ...(authContext ? { authContext } : {}) });
     return authContext ? authContext.finish(response) : response;
   } catch (error) {
     const known = error instanceof ApiError;

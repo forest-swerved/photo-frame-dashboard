@@ -81,11 +81,13 @@ export async function authenticate(request, db, options = {}) {
     requireValue(cookieClaims && cookieClaims.sub === claims.sub && cookieClaims.session_id === claims.session_id,
       401, 'session_required', 'Please sign in again before making changes.');
   }
-  const row = await one(db, `SELECT m.role, h.id AS household_id, h.title, h.timezone
+  const row = await one(db, `SELECT m.role,m.person_id,p.name AS person_name,h.id AS household_id,h.title,h.timezone
     FROM family_members m JOIN family_households h ON h.id=m.household_id
-    WHERE m.user_id=$1 AND m.revoked_at IS NULL`, [claims.sub]);
+    LEFT JOIN family_people p ON p.household_id=m.household_id AND p.id=m.person_id
+    WHERE m.user_id=$1 AND m.revoked_at IS NULL AND (m.role<>'child' OR p.id IS NOT NULL)`, [claims.sub]);
   return { authType: 'user', actor: `user:${claims.sub}`, role: row?.role || null,
-    user: userDto(claims), sessionId: claims.session_id, household: row ? householdDto(row) : null };
+    user: { ...userDto(claims), ...(row?.role === 'child' ? { name: row.person_name } : {}) }, personId: row?.person_id || null,
+    sessionId: claims.session_id, household: row ? householdDto(row) : null };
 }
 
 function householdDto(row) { return { id: row.household_id, title: row.title, timezone: row.timezone }; }

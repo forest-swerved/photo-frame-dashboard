@@ -86,16 +86,48 @@ final class APIClient {
     private func clearLoginCookies() {
         session.configuration.httpCookieStorage?.cookies?.forEach { session.configuration.httpCookieStorage?.deleteCookie($0) }
     }
-    func parentLogin(email: String, password: String) async throws -> MobileCredential {
+    func accountSignIn(email: String, password: String, invitation: String = "") async throws -> AccountOutcome {
         clearLoginCookies()
-        defer { clearLoginCookies() }
-        let _: Acknowledgement = try await send("/api/auth/sign-in/email", method: "POST", body: encoded(["email": email, "password": password]), wrapped: false, authenticated: false)
+        do {
+            let _: Acknowledgement = try await send("/api/auth/sign-in/email", method: "POST", body: encoded(["email": email, "password": password]), wrapped: false, authenticated: false)
+        } catch let error as APIError where error.code == "email_not_confirmed" {
+            return .confirmationRequired
+        } catch { clearLoginCookies(); throw error }
+        return try await finishAccount(invitation: invitation)
+    }
+    func createAccount(name: String, email: String, password: String, invitation: String = "") async throws -> AccountOutcome {
+        clearLoginCookies()
+        struct SignupResult: Decodable { let confirmationRequired: Bool? }
+        let result: SignupResult = try await send("/api/auth/sign-up/email", method: "POST", body: encoded(["name": name, "email": email, "password": password]), wrapped: false, authenticated: false)
+        if result.confirmationRequired == true { return .confirmationRequired }
+        return try await finishAccount(invitation: invitation)
+    }
+    func confirmAccount(email: String, code: String, invitation: String = "") async throws -> AccountOutcome {
+        let _: Acknowledgement = try await send("/api/auth/verify-email", method: "POST", body: encoded(["email": email, "token": code]), wrapped: false, authenticated: false)
+        return try await finishAccount(invitation: invitation)
+    }
+    func resendConfirmation(email: String) async throws {
+        let _: Acknowledgement = try await send("/api/auth/resend-verification", method: "POST", body: encoded(["email": email]), wrapped: false, authenticated: false)
+    }
+    func joinFamily(invitation: String) async throws -> AccountOutcome { try await finishAccount(invitation: invitation) }
+    private func finishAccount(invitation: String) async throws -> AccountOutcome {
         struct AuthToken: Decodable { let token: String }
         let auth: AuthToken = try await send("/api/auth/token", wrapped: false, authenticated: false)
-        return try await send("/api/mobile/sessions", method: "POST", body: Data("{}".utf8), authorization: "Bearer \(auth.token)", authenticated: false)
+        if !invitation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let _: Acknowledgement = try await send("/api/join", method: "POST", body: encoded(["token": invitation.trimmingCharacters(in: .whitespacesAndNewlines)]), authorization: "Bearer \(auth.token)", authenticated: false)
+        }
+        do {
+            let credential: MobileCredential = try await send("/api/mobile/sessions", method: "POST", body: Data("{}".utf8), authorization: "Bearer \(auth.token)", authenticated: false)
+            clearLoginCookies()
+            return .authenticated(credential)
+        } catch let error as APIError where error.status == 403 && error.code == "membership_required" {
+            // Keep only the ephemeral BFF cookie so the verified account can accept an invitation.
+            return .invitationRequired
+        }
     }
-    func childPair(code: String) async throws -> MobileCredential {
-        try await send("/api/mobile/pairings/redeem", method: "POST", body: encoded(["code": code]), authenticated: false)
+    func cancelAccountOnboarding() async {
+        let _: Acknowledgement? = try? await send("/api/auth/sign-out", method: "POST", body: Data("{}".utf8), wrapped: false, authenticated: false)
+        clearLoginCookies()
     }
     func serviceStatus() async throws -> MobileServiceStatus { try await send("/api/mobile/status") }
     func currentSession() async throws -> MobileSession { try await send("/api/mobile/session") }
@@ -113,8 +145,9 @@ final class APIClient {
     func deleteChore(_ chore: Chore) async throws {
         let _: Acknowledgement = try await send("/api/chores/\(chore.id)?expectedVersion=\(chore.version)", method: "DELETE")
     }
-    func createPairing(personID: String, label: String) async throws -> ChildPairing {
-        try await send("/api/mobile/pairings", method: "POST", body: encoded(["personId": personID, "label": label]))
+    func createChildInvitation(personID: String, email: String) async throws -> ChildInvitation {
+        struct ChildInviteRequest: Encodable { let role = "child"; let personId: String; let email: String; let expiresInHours = 24 }
+        return try await send("/api/invites", method: "POST", body: encoded(ChildInviteRequest(personId: personID, email: email)))
     }
     func devices() async throws -> [MobileDevice] { let result: MobileDevices = try await send("/api/mobile/devices"); return result.devices }
     func revokeDevice(id: String) async throws { let _: Acknowledgement = try await send("/api/mobile/devices/\(id)", method: "DELETE") }

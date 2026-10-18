@@ -32,12 +32,20 @@ codes, and 15-minute access tokens. Configure custom SMTP for users outside the
 Supabase organization team. The current confirmation email template contains
 `{{ .Token }}`. Never put credentials or confirmation links into dashboard URLs.
 
-Keep provider administration separate from a reusable application migration:
-`dashboard/server/schema.sql` is the table source applied as its owner, while this
-folder's administrative migration records only the private session boundary.
+Keep provider administration separate from reusable application migrations:
+`dashboard/server/schema.sql` and its additive SQL files are applied as their owner.
+The private-session-boundary migration uses the project administrator; the mobile
+and child-account migrations are owner SQL and must use `family_frame_server`.
 
 For the mobile/notification upgrade, temporarily restore CREATE on public to the same
 server owner, run the owner migration and revoke CREATE afterward (including on failure).
 The versioned mobile migration is owner SQL; it must not be executed as the CLI
 administrator. The new completion trigger is SECURITY INVOKER and owned by that server
 role. Keep both managed Auth access and broad role membership restricted as before.
+
+The child-account upgrade adds role/profile/email constraints to the existing
+twenty-table model. A child invitation requires the intended account's confirmed
+email from the provider before linking its user ID to the profile. Browser and
+native authorization recheck that stored membership; notifications also recheck
+the provider session. Existing anonymous child sessions and pairing codes are
+revoked by the owner migration. Frame pairing is unchanged.

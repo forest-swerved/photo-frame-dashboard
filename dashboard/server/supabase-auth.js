@@ -117,6 +117,20 @@ function emailField(value) {
   return email;
 }
 
+export async function confirmedAccountEmail(request, principal, options = {}) {
+  const authorization = request.headers.get('authorization') || '';
+  requireValue(principal.authType === 'user' && /^Bearer \S+$/.test(authorization), 403, 'user_required', 'Sign in to accept this invitation.');
+  const context = options.authContext || (options.createAuthContext || createAuthContext)(request, options);
+  // getUser validates with the provider. JWT metadata and generic confirmed_at
+  // do not establish that this particular email address has been confirmed.
+  const { data, error } = await context.client.auth.getUser(authorization.slice(7));
+  if (error) throw providerError(error);
+  const user = data?.user;
+  requireValue(user?.id === principal.user.id && typeof user.email_confirmed_at === 'string'
+    && Number.isFinite(Date.parse(user.email_confirmed_at)), 403, 'email_not_confirmed', 'Confirm the invited email address before joining.');
+  return emailField(user.email).trim().toLowerCase();
+}
+
 function passwordField(value) {
   requireValue(typeof value === 'string' && value.length >= 1 && value.length <= 1024, 422, 'invalid_password', 'Enter your password.');
   return value;

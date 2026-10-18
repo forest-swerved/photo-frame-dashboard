@@ -166,9 +166,28 @@ struct NotificationPreferences: Codable, Equatable {
     }
 }
 
-struct ChildPairing: Decodable {
-    let code: String
+enum AccountStage: Equatable {
+    case entry
+    case confirmEmail(String)
+    case joinFamily(String)
+    var email: String? {
+        switch self { case .entry: return nil; case .confirmEmail(let email), .joinFamily(let email): return email }
+    }
+}
+
+enum AccountOutcome {
+    case authenticated(MobileCredential)
+    case confirmationRequired
+    case invitationRequired
+}
+
+struct ChildInvitation: Decodable {
+    let id: String
+    let token: String
     let expiresAt: String
+    let personId: String
+    let email: String
+    let role: String
 }
 
 struct MobileDevice: Decodable, Identifiable {
