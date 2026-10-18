@@ -1,6 +1,16 @@
 import { userToken, clearAuthCache } from './auth.js';
 
 let frameMode = false;
+let frameAccess = null;
+export function setFrameAccess(value) {
+  frameAccess = value && typeof value.token === 'string' && Number.isFinite(Date.parse(value.expiresAt)) ? { ...value } : null;
+}
+export function frameAccessStatus() {
+  if (frameAccess && Date.parse(frameAccess.expiresAt) <= Date.now()) frameAccess = null;
+  if (!frameAccess) return null;
+  const { scope, personId, expiresAt } = frameAccess;
+  return { scope, personId, expiresAt };
+}
 
 export class ApiError extends Error {
   constructor(message, status, code, details, requestId) {
@@ -11,11 +21,12 @@ export class ApiError extends Error {
 
 // A paired frame authenticates exclusively with a first-party HttpOnly cookie.
 // Its credential is never available to JavaScript or written to browser storage.
-export function setFrameMode(value) { frameMode = value === true; }
+export function setFrameMode(value) { frameMode = value === true; if (!frameMode) frameAccess = null; }
 
 export async function request(path, options = {}) {
   const { method = 'GET', body, authenticated = true } = options;
   const headers = { Accept: 'application/json' };
+  if (frameMode && frameAccessStatus()) headers['X-Family-Authorization'] = frameAccess.token;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 25000);

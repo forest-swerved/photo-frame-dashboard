@@ -2,6 +2,8 @@ import { request, setFrameMode } from './api.js';
 import { authClient, clearAuthCache } from './auth.js';
 import { escapeHtml as h, color, dateInZone, dateFormatter, addDays, dateLabel, weekday, calendarRange, calendarEventsByDay, calendarDayIsKnown, timeLabel, choreUrgency, orderChores, completionBody, mergeCompletion, reconcileHousehold, mutationId } from './model.js';
 import { createRenderer } from './render.js';
+import { scheduledItems, mergeOccurrence, occurrenceDetails } from './occurrences.js';
+import { createWorkbench } from './workbench.js';
 
 const app = document.querySelector('#family-app');
 const dialog = document.querySelector('#family-dialog');
@@ -9,12 +11,13 @@ const notice = document.querySelector('#family-notice');
 const paintApp = createRenderer(app);
 const noEvents = [];
 const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const views = ['today', 'calendar', 'chores', 'setup'];
+const views = ['today', 'calendar', 'chores', 'activity', 'setup'];
 const icons = {
   today: '<path d="M3 10 12 3l9 7M5 9v12h14V9M9 21v-8h6v8"/>',
   calendar: '<rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/>',
   chores: '<rect x="3" y="3" width="18" height="18" rx="4"/><path d="m7 12 3 3 7-7"/>',
   setup: '<path d="M4 6h10M18 6h2M4 12h3M11 12h9M4 18h10M18 18h2"/><circle cx="16" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="16" cy="18" r="2"/>',
+  activity: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M9 21h6"/>',
 };
 const S = {
   booting: true, session: null, snapshot: null, calendar: null, connection: null, devices: [], members: [],
@@ -33,6 +36,9 @@ let queuedCalendar = null;
 let calendarGeneration = 0;
 let paintedView = null;
 let pointerActive = false;
+const workbench = createWorkbench({ snapshot: () => S.snapshot, session: () => S.session, epoch: () => generation,
+  members: () => S.members, zone, today, frame, field, button, openDialog, dialog, toast, render,
+  reload: loadHousehold, reloadSetup: loadSetup, reboot: boot });
 
 if (location.hash.startsWith('#invite=')) {
   try { S.inviteToken = decodeURIComponent(location.hash.slice(8)); } catch { /* Invalid token stays blank. */ }
@@ -42,6 +48,8 @@ if (location.hash.startsWith('#invite=')) {
 
 function icon(name) { return `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.today}</svg>`; }
 function admin() { return S.session?.role === 'admin'; }
+function choreManager() { return admin() || S.snapshot?.capabilities?.manageChores === true; }
+function routines() { return S.snapshot?.routines || S.snapshot?.chores || []; }
 function frame() { return S.session?.authType === 'frame'; }
 function zone() { return S.snapshot?.household?.timezone || S.session?.household?.timezone || 'America/Denver'; }
 function today() { return dateInZone(new Date(), zone()); }
@@ -84,7 +92,7 @@ function updateStamp(value) {
 }
 
 function shell(content) {
-  const labels = { today: 'Today', calendar: 'Calendar', chores: 'Chores', setup: 'Setup' };
+  const labels = { today: 'Today', calendar: 'Calendar', chores: 'Chores', activity: 'Activity', setup: 'Setup' };
   return `<div class="family-shell" data-key="family-shell">
     <aside class="sidebar"><a class="brand" href="#today" aria-label="${h(title())} home"><span class="brand-mark">f<span>f</span></span><span class="brand-name">${h(title())}<small>A little more together.</small></span></a>
       <nav aria-label="Main navigation">${views.map(view => `<a class="nav-item ${S.view === view ? 'active' : ''}" data-key="nav-${view}" href="#${view}" ${S.view === view ? 'aria-current="page"' : ''}>${icon(view)}<span>${labels[view]}</span></a>`).join('')}</nav>
@@ -138,8 +146,8 @@ function eventList(date, limit = Infinity) {
   return `<p class="quiet-empty">${calendarDayIsKnown(S.calendar, date) ? 'No events on this day.' : 'Events will appear when this day has synced.'}</p>`;
 }
 
-function scheduledChores() { return orderChores((S.snapshot?.chores || []).filter(chore => chore.weekdays.includes(weekday(S.snapshot.date))), S.snapshot?.date || today(), zone()); }
-function done(chore) { return chore.completion?.date === S.snapshot?.date && chore.completion.completed === true; }
+function scheduledChores() { return scheduledItems(S.snapshot, zone()) || orderChores((S.snapshot?.chores || []).filter(chore => chore.weekdays.includes(weekday(S.snapshot.date))), S.snapshot?.date || today(), zone()); }
+function done(chore) { return chore.status ? chore.status === 'completed' : chore.completion?.date === S.snapshot?.date && chore.completion.completed === true; }
 function choreRow(chore, showPerson = true) {
   const key = `${chore.id}:${S.snapshot.date}`;
   const pending = S.pending.has(key);
@@ -148,8 +156,9 @@ function choreRow(chore, showPerson = true) {
   const urgency = choreUrgency(chore, S.snapshot.date, zone());
   const deadline = chore.dueTime ? `${urgency === 'overdue' ? 'Overdue · ' : urgency === 'soon' ? 'Due soon · ' : ''}Due ${timeLabel(chore.dueTime)}` : '';
   return `<div class="chore-row ${done(chore) ? 'is-done' : ''} ${pending ? 'is-pending' : ''} is-${urgency}" data-key="chore-${h(key)}">
-    <button type="button" class="chore-toggle" data-action="complete-chore" data-id="${h(chore.id)}" aria-pressed="${done(chore)}" aria-label="${done(chore) ? 'Reopen' : 'Complete'} ${h(chore.title)}${deadline ? `. ${h(deadline)}` : ''}" ${pending ? 'aria-disabled="true" aria-busy="true"' : ''}><span class="check-box" aria-hidden="true">${done(chore) ? '✓' : ''}</span><span><strong>${h(chore.title)}</strong>${showPerson ? `<small>${h(profileLabel(chore.personId))}</small>` : ''}${deadline ? `<small class="chore-deadline">${h(deadline)}</small>` : ''}${pending ? '<small class="save-status">Saving…</small>' : ''}</span></button>
-    ${admin() ? button('Edit', 'edit-chore', 'text-button', `data-id="${h(chore.id)}" aria-label="Edit ${h(chore.title)}"`) : ''}
+    <button type="button" class="chore-toggle" data-action="complete-chore" data-id="${h(chore.id)}" aria-pressed="${chore.status === 'submitted' || done(chore)}" aria-label="${chore.status === 'submitted' ? 'Withdraw submission for' : done(chore) ? 'Reopen' : chore.requiresApproval && !choreManager() ? 'Submit for approval:' : 'Complete'} ${h(chore.title)}${deadline ? `. ${h(deadline)}` : ''}" ${pending || chore.status === 'skipped' ? 'aria-disabled="true"' : ''} ${pending ? 'aria-busy="true"' : ''}><span class="check-box" aria-hidden="true">${done(chore) ? '✓' : chore.status === 'submitted' ? '…' : chore.status === 'skipped' ? '–' : ''}</span><span><strong>${h(chore.title)}</strong>${showPerson ? `<small>${h(profileLabel(chore.personId))}</small>` : ''}${deadline ? `<small class="chore-deadline">${h(deadline)}</small>` : ''}${pending ? '<small class="save-status">Saving…</small>' : ''}</span></button>
+    ${choreManager() ? button('Edit routine', 'edit-chore', 'text-button', `data-id="${h(chore.choreId || chore.id)}" aria-label="Edit ${h(chore.title)}"`) : ''}
+    ${occurrenceDetails(chore, choreManager(), pending)}
     ${conflict ? `<div class="write-feedback" role="alert">Changed on another device. The latest state is shown. ${button('Retry my change', 'retry-completion', 'text-button', `data-id="${h(chore.id)}"`)}</div>` : failure ? `<div class="write-feedback" role="alert">${h(failure)} ${button('Retry', 'retry-completion', 'text-button', `data-id="${h(chore.id)}"`)}</div>` : ''}
   </div>`;
 }
@@ -176,9 +185,10 @@ function choresView() {
   if (!S.snapshot) return '<section class="panel">Loading shared chores…</section>';
   const chores = scheduledChores();
   const lanes = [...people(), ...(chores.some(chore => !chore.personId) ? [{ id: null, name: 'Anyone', color: '#8c7859' }] : [])];
-  return `<div class="section-heading chores-heading" data-key="chores-heading"><div><p class="eyebrow">${h(dateLabel(S.snapshot.date))}</p><h2>Everyone has a part.</h2></div>${admin() ? button('+ Add a chore', 'add-chore') : '<span class="soft-label">Tap a chore to complete it</span>'}</div>
-    ${lanes.length ? `<div class="person-lanes" data-key="person-lanes">${lanes.map(profile => { const list = chores.filter(chore => chore.personId === profile.id || (!chore.personId && profile.id === null)); return `<section class="panel person-lane" data-key="person-${h(profile.id || 'anyone')}"><header>${avatar(profile)}<div><h2>${h(profile.name)}</h2><p>${list.length ? `${list.filter(done).length} of ${list.length} complete` : 'No chores today'}</p></div></header>${list.length ? `<div class="chore-list">${list.map(chore => choreRow(chore, false)).join('')}</div>` : `<p class="quiet-empty">No chores are scheduled for today.</p>${admin() ? button('Add a chore', 'add-chore', 'button button-small', `data-person-id="${h(profile.id)}" aria-label="Add a chore for ${h(profile.name)}"`) : ''}`}</section>`; }).join('')}</div>` : `<section class="panel">${empty('Nothing assigned today', admin() ? 'Add a recurring chore and choose the days it should appear.' : 'Your family administrator can add recurring chores.', admin() ? button('Add a chore', 'add-chore') : '')}</section>`}
-    ${admin() && S.snapshot.chores.length ? `<section class="panel all-chores" data-key="all-chores"><div class="section-heading"><div><p class="eyebrow">Your routine</p><h2>All recurring chores</h2></div></div><div class="definition-list">${S.snapshot.chores.map(chore => `<div data-key="definition-${h(chore.id)}"><span><strong>${h(chore.title)}</strong><small>${h(profileLabel(chore.personId))} · ${chore.weekdays.length === 7 ? 'Every day' : h(chore.weekdays.map(day => days[day]).join(', '))}</small></span>${button('Edit', 'edit-chore', 'text-button', `data-id="${h(chore.id)}"`)}</div>`).join('')}</div></section>` : ''}`;
+  return `<div class="section-heading chores-heading" data-key="chores-heading"><div><p class="eyebrow">${h(dateLabel(S.snapshot.date))}</p><h2>Everyone has a part.</h2></div>${choreManager() ? button('+ Add a chore', 'add-chore') : '<span class="soft-label">Tap a chore to complete it</span>'}</div>
+    ${lanes.length ? `<div class="person-lanes" data-key="person-lanes">${lanes.map(profile => { const list = chores.filter(chore => chore.personId === profile.id || (!chore.personId && profile.id === null)); return `<section class="panel person-lane" data-key="person-${h(profile.id || 'anyone')}"><header>${avatar(profile)}<div><h2>${h(profile.name)}</h2><p>${list.length ? `${list.filter(done).length} of ${list.length} complete` : 'No chores today'}</p></div></header>${list.length ? `<div class="chore-list">${list.map(chore => choreRow(chore, false)).join('')}</div>` : `<p class="quiet-empty">No chores are scheduled for today.</p>${choreManager() ? button('Add a chore', 'add-chore', 'button button-small', `data-person-id="${h(profile.id)}" aria-label="Add a chore for ${h(profile.name)}"`) : ''}`}</section>`; }).join('')}</div>` : `<section class="panel">${empty('Nothing assigned today', admin() ? 'Add a recurring chore and choose the days it should appear.' : 'Your family administrator can add recurring chores.', admin() ? button('Add a chore', 'add-chore') : '')}</section>`}
+    <div class="chore-tools">${button('Chore history', 'chore-history', 'button button-secondary')}${choreManager() ? button('Holidays & chore breaks', 'chore-breaks', 'button button-secondary') : ''}</div>
+    ${choreManager() && routines().length ? `<section class="panel all-chores" data-key="all-chores"><div class="section-heading"><div><p class="eyebrow">Your routines</p><h2>All chore routines</h2></div></div><div class="definition-list">${routines().map(chore => `<div data-key="definition-${h(chore.id)}"><span><strong>${h(chore.title)}</strong><small>${h(profileLabel(chore.personId))} · ${chore.scheduleType === 'one_off' ? `Once on ${h(chore.scheduledDate)}` : chore.weekdays.length === 7 ? 'Every day' : h(chore.weekdays.map(day => days[day]).join(', '))} · ${chore.required === false ? 'Optional' : 'Required'}</small></span>${button('Edit', 'edit-chore', 'text-button', `data-id="${h(chore.id)}"`)}</div>`).join('')}</div></section>` : ''}`;
 }
 
 function profileCards() {
@@ -197,24 +207,28 @@ function deviceSettings() {
 }
 
 function inviteSettings() {
-  return `<section class="panel setup-card"><div class="section-heading"><div><p class="eyebrow">Share the little things</p><h2>Invite family</h2></div></div><h3>A child's own account</h3><p class="supporting">Choose a profile and the child's own email. They create a password, confirm that exact email, then accept your private invitation. Children can view the shared calendar and complete only their own chores.</p><form data-form="create-child-invite" class="form-stack"><label class="field"><span>Child profile</span><select name="personId" aria-label="Child profile" required><option value="">Choose a profile</option>${people().map(profile => `<option value="${h(profile.id)}">${h(profile.name)}</option>`).join('')}</select></label>${field('Child email', 'email', '', { type: 'email', max: 254 })}${formError()}<button class="button" type="submit" ${people().length ? '' : 'disabled'}>Create child invitation</button></form><p class="supporting">For another adult, create a family-member invitation. Family members can view the shared calendar and complete family chores.</p>${button('Create an invitation', 'create-invite', 'button button-secondary')}${S.generatedInvite ? `<div class="share-result">${S.generatedInvite.role === 'child' ? `<strong>For ${h(profileLabel(S.generatedInvite.personId))}</strong><small>${h(S.generatedInvite.email)}</small>` : ''}<label class="field"><span>Invitation link · share privately</span><input readonly data-share-value value="${h(`${location.origin}/family.html#invite=${encodeURIComponent(S.generatedInvite.token)}`)}"></label>${button('Copy invitation', 'copy-invite', 'text-button')}<small>Expires ${h(new Date(S.generatedInvite.expiresAt).toLocaleString())}</small></div>` : ''}<div class="device-list">${S.members.map(member => `<div><span><strong>${h(member.name || member.email || 'Family member')}</strong><small>${h(member.role === 'admin' ? 'Administrator' : member.role === 'child' ? `Child · ${profileLabel(member.personId)}` : 'Family member')}</small></span>${['member','child'].includes(member.role) && member.id !== S.session.user.id ? button('Remove', 'remove-member', 'text-button danger-text', `data-id="${h(member.id)}" data-label="${h(member.name || member.email || 'This person')}"`) : ''}</div>`).join('')}</div></section>`;
+  return `<section class="panel setup-card"><div class="section-heading"><div><p class="eyebrow">Share the little things</p><h2>Invite family</h2></div></div><h3>A child's own account</h3><p class="supporting">Choose a profile and the child's own email. They create a password, confirm that exact email, then accept your private invitation. Children can view the shared calendar and complete only their own chores.</p><form data-form="create-child-invite" class="form-stack"><label class="field"><span>Child profile</span><select name="personId" aria-label="Child profile" required><option value="">Choose a profile</option>${people().map(profile => `<option value="${h(profile.id)}">${h(profile.name)}</option>`).join('')}</select></label>${field('Child email', 'email', '', { type: 'email', max: 254 })}${formError()}<button class="button" type="submit" ${people().length ? '' : 'disabled'}>Create child invitation</button></form><p class="supporting">For another adult, create a family-member invitation. Family members can view the shared calendar and complete family chores.</p>${button('Create an invitation', 'create-invite', 'button button-secondary')}${S.generatedInvite ? `<div class="share-result">${S.generatedInvite.role === 'child' ? `<strong>For ${h(profileLabel(S.generatedInvite.personId))}</strong><small>${h(S.generatedInvite.email)}</small>` : ''}<label class="field"><span>Invitation link · share privately</span><input readonly data-share-value value="${h(`${location.origin}/family.html#invite=${encodeURIComponent(S.generatedInvite.token)}`)}"></label>${button('Copy invitation', 'copy-invite', 'text-button')}<small>Expires ${h(new Date(S.generatedInvite.expiresAt).toLocaleString())}</small></div>` : ''}<div class="device-list">${S.members.map(member => `<div><span><strong>${h(member.name || member.email || 'Family member')}</strong><small>${h(member.role === 'admin' ? 'Administrator' : member.role === 'child' ? `Child · ${profileLabel(member.personId)}` : 'Family member')}</small></span>${member.role === 'member' ? button('Permissions', 'member-capabilities', 'text-button', `data-id="${h(member.id)}"`) : ''}${['member','child'].includes(member.role) && member.id !== S.session.user.id ? button('Remove', 'remove-member', 'text-button danger-text', `data-id="${h(member.id)}" data-label="${h(member.name || member.email || 'This person')}"`) : ''}</div>`).join('')}</div></section>`;
 }
 
 function setupView() {
-  if (frame()) return `<section class="panel frame-settings"><p class="eyebrow">Connected to ${h(title())}</p><h2>Your frame is paired.</h2><p>This display can view your calendar and complete family chores. Manage people, recurring chores and your Apple connection from an administrator's phone.</p><p class="soft-label">Timezone: ${h(zone())}</p>${button('Remove this frame connection', 'unpair-local', 'button button-secondary danger-text')}</section>`;
+  if (frame()) return `<section class="panel frame-settings"><p class="eyebrow">Connected to ${h(title())}</p><h2>Your frame is paired.</h2><p>This display can view your calendar and complete family chores. Manage people, recurring chores and your Apple connection from an administrator's phone.</p><p class="soft-label">Timezone: ${h(zone())}</p>${button('Remove this frame connection', 'unpair-local', 'button button-secondary danger-text')}</section>${workbench.unlockPanel()}`;
   const account = `<section class="panel setup-card"><p class="eyebrow">Your account</p><h2>${h(S.session?.user?.name || 'Family member')}</h2><p class="supporting">${h(S.session?.user?.email || '')} · ${admin() ? 'Administrator' : S.session?.role === 'child' ? 'Child account' : 'Family member'}</p>${button('Sign out', 'sign-out', 'button button-secondary')}</section>`;
-  if (!admin()) return `<div class="setup-grid">${account}<section class="panel setup-card"><h2>You're part of the family.</h2><p class="supporting">You can view the shared calendar and complete chores. Your administrator manages assignments, profiles and connections.</p></section></div>`;
-  return `<div class="setup-grid"><section class="panel setup-card"><p class="eyebrow">The basics</p><h2>Your household</h2><form data-form="settings" class="form-stack">${field('Household name', 'title', title(), { max: 80 })}${field('Timezone', 'timezone', zone(), { max: 80, extra: 'list="timezones"' })}<datalist id="timezones">${['America/Denver', 'America/Los_Angeles', 'America/Chicago', 'America/New_York', 'America/Phoenix', 'Europe/London', 'UTC'].map(value => `<option value="${value}"></option>`).join('')}</datalist><p class="field-help">Calendar times and recurring chore days use this timezone.</p>${formError()}<button class="button button-secondary" type="submit">Save household</button></form></section>${profileCards()}${appleSettings()}${deviceSettings()}${inviteSettings()}${account}</div>`;
+  if (!admin()) return `<div class="setup-grid">${account}${workbench.unlockPanel()}<section class="panel setup-card"><h2>You're part of the family.</h2><p class="supporting">You can view the shared calendar and complete chores. Your administrator manages assignments, profiles and connections.</p></section></div>`;
+  return `<div class="setup-grid"><section class="panel setup-card"><p class="eyebrow">The basics</p><h2>Your household</h2><form data-form="settings" class="form-stack">${field('Household name', 'title', title(), { max: 80 })}${field('Timezone', 'timezone', zone(), { max: 80, extra: 'list="timezones"' })}<datalist id="timezones">${['America/Denver', 'America/Los_Angeles', 'America/Chicago', 'America/New_York', 'America/Phoenix', 'Europe/London', 'UTC'].map(value => `<option value="${value}"></option>`).join('')}</datalist><p class="field-help">Calendar times and recurring chore days use this timezone.</p>${formError()}<button class="button button-secondary" type="submit">Save household</button></form></section>${profileCards()}${appleSettings()}${deviceSettings()}${inviteSettings()}${workbench.unlockPanel()}${account}</div>`;
 }
 
 function entryView() {
   let authForm;
-  if (S.authMode === 'verify') {
+  if (S.authMode === 'recover') {
+    authForm = `<p class="eyebrow">Account recovery</p><h2>Reset your password.</h2><p class="supporting">Request a recovery email, then enter its code or paste its full recovery link here.</p><form data-form="request-password-reset" class="form-stack">${field('Account email', 'email', S.verificationEmail, { type: 'email', autocomplete: 'email' })}${formError()}<button type="submit" class="button">Send recovery email</button></form><p class="form-switch">Already have the email? ${button('Enter recovery details', 'auth-mode', 'text-button', 'data-mode="reset"')}</p><p class="form-switch">${button('Back to sign in', 'auth-mode', 'text-button', 'data-mode="sign-in"')}</p>`;
+  } else if (S.authMode === 'reset') {
+    authForm = `<p class="eyebrow">Account recovery</p><h2>Choose a new password.</h2><p class="supporting">Use the recovery code and account email, or paste the full recovery link. Links are verified by this app’s server.</p><form data-form="reset-password" class="form-stack">${field('Account email (for code)', 'email', S.verificationEmail, { type: 'email', autocomplete: 'email', required: false })}${field('Recovery email code', 'token', '', { required: false, max: 10, autocomplete: 'one-time-code', extra: 'inputmode="numeric" pattern="[0-9]{6,10}"' })}${field('Or full recovery link', 'recoveryLink', '', { type: 'url', required: false, max: 3000 })}${field('New password', 'password', '', { type: 'password', autocomplete: 'new-password', max: 128, extra: 'minlength="12"' })}${field('Confirm new password', 'confirmPassword', '', { type: 'password', autocomplete: 'new-password', max: 128, extra: 'minlength="12"' })}${formError()}<button type="submit" class="button">Reset password</button></form><p class="field-help">Other sign-ins will end. Sign in again after resetting.</p><p class="form-switch">${button('Back to sign in', 'auth-mode', 'text-button', 'data-mode="sign-in"')}</p>`;
+  } else if (S.authMode === 'verify') {
     authForm = `<p class="eyebrow">One more step</p><h2>Confirm your email.</h2><p class="supporting">Check the confirmation email for your account. Enter its code, or paste the full confirmation link below. Your account gains family access only after you join or claim a household.</p><div class="segmented verification-tabs" role="group" aria-label="Email confirmation method">${button('Enter code', 'verification-method', `segment ${S.verificationMethod === 'code' ? 'selected' : ''}`, `data-method="code" aria-pressed="${S.verificationMethod === 'code'}"`)}${button('Paste link', 'verification-method', `segment ${S.verificationMethod === 'link' ? 'selected' : ''}`, `data-method="link" aria-pressed="${S.verificationMethod === 'link'}"`)}</div><form data-form="verify-email" class="form-stack">${field('Email', 'email', S.verificationEmail, { type: 'email', autocomplete: 'email' })}${S.verificationMethod === 'code' ? field('Email confirmation code', 'token', '', { max: 10, autocomplete: 'one-time-code', extra: 'inputmode="numeric" pattern="[0-9]{6,10}"' }) : field('Full confirmation link from the email', 'confirmationLink', '', { type: 'url', autocomplete: 'off', max: 3000 })}<p class="field-help">${S.verificationMethod === 'code' ? 'Use the code from the confirmation email. If it contains a link instead, choose Paste link.' : 'The link is checked by our server. This page does not open or follow it.'}</p>${formError()}<button class="button" type="submit">Confirm email</button>${button('Resend confirmation email', 'resend-verification', 'text-button')}</form><p class="form-switch">Already confirmed? ${button('Back to sign in', 'auth-mode', 'text-button', 'data-mode="sign-in"')}</p>`;
   } else if (S.authMode === 'sign-up') {
     authForm = `<p class="eyebrow">A place for your people</p><h2>Create your account</h2><form data-form="sign-up" class="form-stack">${field('Your name', 'name', '', { autocomplete: 'name', max: 100 })}${field('Email', 'email', S.verificationEmail, { type: 'email', autocomplete: 'email' })}${field('Password', 'password', '', { type: 'password', autocomplete: 'new-password', max: 128, extra: 'minlength="12"' })}${formError()}<button class="button" type="submit">Create account</button></form><p class="form-switch">Already have an account? ${button('Sign in', 'auth-mode', 'text-button', 'data-mode="sign-in"')}</p>`;
   } else {
-    authForm = `<p class="eyebrow">Welcome home</p><h2>Your family, together.</h2><p class="supporting">A shared calendar. A little teamwork. More room for the good stuff.</p><form data-form="sign-in" class="form-stack">${field('Email', 'email', S.verificationEmail, { type: 'email', autocomplete: 'email' })}${field('Password', 'password', '', { type: 'password', autocomplete: 'current-password', max: 128 })}${formError()}<button class="button" type="submit">Sign in</button></form><p class="form-switch">New here? ${button('Create an account', 'auth-mode', 'text-button', 'data-mode="sign-up"')}</p><p class="form-switch">Waiting to confirm your email? ${button('Confirm email', 'auth-mode', 'text-button', 'data-mode="verify"')}</p>`;
+    authForm = `<p class="eyebrow">Welcome home</p><h2>Your family, together.</h2><p class="supporting">A shared calendar. A little teamwork. More room for the good stuff.</p><form data-form="sign-in" class="form-stack">${field('Email', 'email', S.verificationEmail, { type: 'email', autocomplete: 'email' })}${field('Password', 'password', '', { type: 'password', autocomplete: 'current-password', max: 128 })}${formError()}<button class="button" type="submit">Sign in</button></form><p class="form-switch">${button('Forgot your password?', 'auth-mode', 'text-button', 'data-mode="recover"')}</p><p class="form-switch">New here? ${button('Create an account', 'auth-mode', 'text-button', 'data-mode="sign-up"')}</p><p class="form-switch">Waiting to confirm your email? ${button('Confirm email', 'auth-mode', 'text-button', 'data-mode="verify"')}</p>`;
   }
   const pairForm = `<p class="supporting">On an administrator's phone, open Setup and create a pairing code. Enter that code here to connect this display.</p><form data-form="redeem-pair" class="form-stack">${field('Six-digit pairing code', 'code', '', { max: 6, extra: 'inputmode="numeric" pattern="[0-9]{6}"' })}${formError()}<button class="button" type="submit">Pair this frame</button></form>`;
   const content = S.entryPair ? `<div class="auth-card"><p class="eyebrow">A place on your wall</p><h2>Bring your<br>family home.</h2>${pairForm}<p class="form-switch">Using your phone? ${button('Sign in to your account', 'show-account-entry', 'text-button')}</p></div>` : `<div class="auth-card">${authForm}</div><details class="pair-entry"><summary>Setting up your photo frame?</summary>${pairForm}</details>`;
@@ -235,7 +249,7 @@ function render(force = false) {
   if (S.booting) markup = '<main id="main-content" class="initial-state"><p class="eyebrow">Family Frame</p><h1>Opening your dashboard…</h1><p>Checking your family connection.</p></main>';
   else if (!S.session) markup = entryView();
   else if (!S.session.household) markup = joinView();
-  else markup = shell(({ today: todayView, calendar: calendarView, chores: choresView, setup: setupView })[S.view]());
+  else markup = shell(({ today: todayView, calendar: calendarView, chores: choresView, activity: workbench.activityView, setup: setupView })[S.view]());
   paintApp(markup);
   if (S.session?.household && paintedView !== S.view) {
     const main = app.querySelector('.main-content');
@@ -249,7 +263,8 @@ async function loadHousehold() {
   const epoch = generation;
   const data = await request(`/api/household?date=${today()}`);
   if (epoch !== generation) return;
-  const snapshot = reconcileHousehold(S.snapshot, data);
+  let snapshot = reconcileHousehold(S.snapshot, data);
+  for (const item of S.snapshot?.occurrences || []) snapshot = mergeOccurrence(snapshot, item);
   if (JSON.stringify(snapshot) !== JSON.stringify(S.snapshot)) S.snapshot = snapshot;
   if (S.session) { S.session.household = data.household; S.session.role = data.role; }
   S.error = '';
@@ -320,6 +335,7 @@ async function boot() {
   S.setupBusy = false;
   queuedCalendar = null;
   S.snapshot = null; S.calendar = null; S.connection = null; S.devices = []; S.members = [];
+  workbench.reset();
   S.generatedInvite = null; S.pairing = null;
   S.pending.clear(); S.conflicts.clear(); S.failures.clear(); S.attempts.clear();
   S.booting = true;
@@ -335,7 +351,7 @@ async function boot() {
       if (epoch !== generation) return;
       S.booting = false;
       render(true);
-      await Promise.allSettled([loadCalendar(), S.view === 'setup' ? loadSetup() : Promise.resolve()]);
+      await Promise.allSettled([loadCalendar(), S.view === 'setup' ? loadSetup() : S.view === 'activity' ? workbench.loadActivity() : Promise.resolve()]);
     }
   } catch (error) {
     if (error.status === 401) {
@@ -353,9 +369,11 @@ async function refresh() {
 }
 
 function dataFailure(error) {
+  if (error.code === 'invalid_unlock' && frame()) { workbench.reset(); boot(); return; }
   if (error.status === 401 || error.status === 403) {
     generation++;
     clearAuthCache();
+    workbench.reset();
     S.session = null; S.snapshot = null; S.calendar = null; S.connection = null; S.devices = []; S.members = [];
     S.generatedInvite = null; S.pairing = null;
     S.pending.clear(); S.conflicts.clear(); S.failures.clear(); S.attempts.clear();
@@ -374,28 +392,36 @@ async function saveCompletion(chore, desired) {
   const previous = S.attempts.get(key);
   // Reuse the original idempotency key after an uncertain network response.
   // An explicit conflict retry instead uses the newly displayed server version.
-  const body = S.failures.has(key) && previous?.completed === desired ? previous : completionBody(chore, date, desired, mutationId());
+  const occurrence = !!chore.status;
+  const body = S.failures.has(key) && previous?.completed === desired ? previous : occurrence
+    ? { completed: desired, expectedVersion: chore.version, mutationId: mutationId() } : completionBody(chore, date, desired, mutationId());
+  const epoch = generation;
   S.attempts.set(key, body);
   S.pending.set(key, desired);
   S.conflicts.delete(key);
   S.failures.delete(key);
   render(true);
   try {
-    const result = await request(`/api/chores/${idPath(chore.id)}/completions/${date}`, { method: 'PUT', body });
-    if (S.snapshot?.date === date) S.snapshot.chores = mergeCompletion(S.snapshot.chores, result, date);
+    const result = await request(occurrence ? `/api/chore-occurrences/${idPath(chore.id)}/completion` : `/api/chores/${idPath(chore.id)}/completions/${date}`, { method: 'PUT', body });
+    if (epoch !== generation) return;
+    if (occurrence) S.snapshot = mergeOccurrence(S.snapshot, result.occurrence || result);
+    else if (S.snapshot?.date === date) S.snapshot.chores = mergeCompletion(S.snapshot.chores, result, date);
     const current = S.snapshot?.chores.find(item => item.id === chore.id)?.completion;
-    toast(current?.version > result.version ? 'Your change was saved earlier. A newer update from another device is shown.' : desired ? 'Chore completed. Saved for the family.' : 'Chore reopened. Saved for the family.');
+    toast(current?.version > result.version ? 'Your change was saved earlier. A newer update from another device is shown.' : (result.occurrence || result).status === 'submitted' ? 'Submitted. Waiting for parent approval.' : desired ? 'Chore completed. Saved for the family.' : 'Chore reopened. Saved for the family.');
     S.attempts.delete(key);
+    if (occurrence) await loadHousehold().catch(dataFailure);
   } catch (error) {
+    if (epoch !== generation) return;
     if (error.status === 401 || error.status === 403) { dataFailure(error); return; }
     if (error.status === 409 && error.details?.current) {
-      if (S.snapshot?.date === date) S.snapshot.chores = mergeCompletion(S.snapshot.chores, error.details.current, date);
+      if (occurrence) S.snapshot = mergeOccurrence(S.snapshot, error.details.current);
+      else if (S.snapshot?.date === date) S.snapshot.chores = mergeCompletion(S.snapshot.chores, error.details.current, date);
       S.conflicts.set(key, desired);
       S.attempts.delete(key);
     } else {
       S.failures.set(key, `${errorMessage(error)} Your change has not been confirmed.`);
     }
-  } finally { S.pending.delete(key); render(); }
+  } finally { if (epoch === generation) { S.pending.delete(key); render(); } }
 }
 
 function openDialog(titleText, contents, onSubmit) {
@@ -411,17 +437,6 @@ function editPerson(profile) {
   openDialog(profile ? 'Edit family profile' : 'Add family profile', `<div class="form-stack">${field('Name', 'name', profile?.name || '', { max: 80, autocomplete: 'name' })}${field('Profile color', 'color', color(profile?.color), { type: 'color' })}<div class="dialog-actions">${profile ? button('Delete profile', 'delete-person', 'text-button danger-text', `data-id="${h(profile.id)}"`) : ''}<button type="submit" class="button">${profile ? 'Save profile' : 'Add profile'}</button></div></div>`, async form => {
     await request(`/api/people${profile ? `/${idPath(profile.id)}` : ''}`, { method: profile ? 'PATCH' : 'POST', body: { name: form.get('name').trim(), color: form.get('color'), ...(profile ? { expectedVersion: profile.version } : {}) } });
     dialog.close(); toast('Family profile saved.');
-    try { await loadHousehold(); } catch (error) { dataFailure(error); }
-  });
-}
-
-function editChore(chore, personId = null) {
-  const assignedPersonId = chore ? chore.personId : personId;
-  openDialog(chore ? 'Edit recurring chore' : 'Add recurring chore', `<div class="form-stack">${field('Chore', 'title', chore?.title || '', { max: 100 })}<label class="field"><span>Assigned to</span><select name="personId"><option value="">Anyone</option>${people().map(profile => `<option value="${h(profile.id)}" ${assignedPersonId === profile.id ? 'selected' : ''}>${h(profile.name)}</option>`).join('')}</select></label>${field('Due by (optional)', 'dueTime', chore?.dueTime || '', { type: 'time', required: false })}<label class="field"><span>Remind before</span><select name="reminderMinutes" aria-label="Remind before">${[...new Set([0, 5, 15, 30, 60, chore?.reminderMinutes ?? 15])].sort((a, b) => a - b).map(minutes => `<option value="${minutes}" ${(chore?.reminderMinutes ?? 15) === minutes ? 'selected' : ''}>${minutes ? `${minutes} minutes` : 'No early reminder'}</option>`).join('')}</select></label><p class="field-help">Due times use ${h(zone())}. Set a due time to enable due-soon and overdue notifications in the iOS app.</p><fieldset class="weekday-picker"><legend>Repeats on</legend>${days.map((day, index) => `<label><input type="checkbox" name="weekdays" value="${index}" ${(chore?.weekdays || [0, 1, 2, 3, 4, 5, 6]).includes(index) ? 'checked' : ''}><span>${day}</span></label>`).join('')}</fieldset><p class="field-help">Each day has its own completion. Editing this routine does not reset past completions.</p><div class="dialog-actions">${chore ? button('Delete chore', 'delete-chore', 'text-button danger-text', `data-id="${h(chore.id)}"`) : ''}<button class="button" type="submit">${chore ? 'Save chore' : 'Add chore'}</button></div></div>`, async form => {
-    const weekdays = form.getAll('weekdays').map(Number);
-    if (!weekdays.length) throw new Error('Choose at least one day.');
-    await request(`/api/chores${chore ? `/${idPath(chore.id)}` : ''}`, { method: chore ? 'PATCH' : 'POST', body: { title: form.get('title').trim(), personId: form.get('personId') || null, weekdays, dueTime: form.get('dueTime') || null, reminderMinutes: Number(form.get('reminderMinutes')), ...(chore ? { expectedVersion: chore.version } : {}) } });
-    dialog.close(); toast('Recurring chore saved.');
     try { await loadHousehold(); } catch (error) { dataFailure(error); }
   });
 }
@@ -446,12 +461,29 @@ async function submitForm(event, run) {
     if (errorBox) { errorBox.textContent = `${errorMessage(error)}${error.status === 409 ? ' Another device changed this item. Close this form, refresh, and try again.' : ''}`; errorBox.hidden = false; }
   } finally {
     delete form.dataset.submitting;
-    if (submit?.isConnected) { submit.disabled = false; submit.textContent = oldLabel; }
+    if (submit?.isConnected) { submit.disabled = !!form.dataset.reviewRequired; submit.textContent = form.dataset.reviewRequired ? 'Close and review before retrying' : oldLabel; }
     if (pendingRender && !edited()) render();
   }
 }
 
 const forms = {
+  'request-password-reset': async form => {
+    S.verificationEmail = form.get('email').trim();
+    const result = await (await authClient()).requestPasswordReset({ email: S.verificationEmail });
+    if (result.error) throw new Error(result.error.message);
+    S.message = 'If the account can receive a recovery email, it has been requested. Check your inbox.';
+    S.authMode = 'reset'; render(true);
+  },
+  'reset-password': async (form, element) => {
+    const password = form.get('password'), confirmation = form.get('confirmPassword');
+    if (password.length < 12 || password !== confirmation) throw new Error('Use matching passwords of at least 12 characters.');
+    const recoveryLink = form.get('recoveryLink').trim(), token = form.get('token').trim(), email = form.get('email').trim();
+    if ((!recoveryLink && (!email || !token)) || (recoveryLink && token)) throw new Error('Use either a full recovery link or the email and recovery code.');
+    for (const name of ['password', 'confirmPassword', 'token', 'recoveryLink']) { element.querySelector(`[name="${name}"]`).value = ''; form.delete(name); }
+    const result = await (await authClient()).resetPassword(recoveryLink ? { recoveryLink, password } : { email, token, password });
+    if (result.error) throw new Error(result.error.message);
+    S.authMode = 'sign-in'; S.verificationEmail = email; S.message = 'Password reset. Sign in with your new password.'; render(true);
+  },
   'sign-in': async (form, element) => {
     setFrameMode(false);
     const auth = await authClient();
@@ -519,6 +551,7 @@ const forms = {
 
 async function action(name, element) {
   const id = element.dataset.id;
+  if (await workbench.action(name, element)) return;
   if (name === 'refresh') return refresh();
   if (name === 'show-account-entry') { S.entryPair = false; render(true); return; }
   if (name === 'auth-mode') { const email = app.querySelector('[name="email"]'); if (email) S.verificationEmail = email.value.trim(); S.authMode = element.dataset.mode; S.error = ''; S.message = ''; return render(true); }
@@ -541,13 +574,13 @@ async function action(name, element) {
   }
   if (name === 'add-person') return editPerson();
   if (name === 'edit-person') return editPerson(person(id));
-  if (name === 'add-chore') return editChore(undefined, person(element.dataset.personId)?.id || null);
-  if (name === 'edit-chore') return editChore(S.snapshot.chores.find(chore => chore.id === id));
+  if (name === 'add-chore') return workbench.editRoutine(undefined, person(element.dataset.personId)?.id || '');
+  if (name === 'edit-chore') return workbench.editRoutine(routines().find(chore => chore.id === id));
   if (name === 'complete-chore' || name === 'retry-completion') {
-    const chore = S.snapshot.chores.find(item => item.id === id);
+    const chore = scheduledChores().find(item => item.id === id);
     if (!chore) return;
     const key = `${id}:${S.snapshot.date}`;
-    const desired = name === 'retry-completion' ? (S.conflicts.has(key) ? S.conflicts.get(key) : S.attempts.get(key)?.completed) : !done(chore);
+    const desired = name === 'retry-completion' ? (S.conflicts.has(key) ? S.conflicts.get(key) : S.attempts.get(key)?.completed) : chore.status === 'submitted' ? false : !done(chore);
     return saveCompletion(chore, desired);
   }
   if (name === 'delete-person') {
@@ -555,7 +588,7 @@ async function action(name, element) {
     return confirmAction('Delete this profile?', `${profile.name}'s chores will become unassigned. This does not delete their sign-in account.`, 'Delete profile', async () => { await request(`/api/people/${idPath(id)}?expectedVersion=${profile.version}`, { method: 'DELETE' }); toast('Profile deleted. Its chores are now unassigned.'); try { await loadHousehold(); } catch (error) { dataFailure(error); } });
   }
   if (name === 'delete-chore') {
-    const chore = S.snapshot.chores.find(item => item.id === id);
+    const chore = routines().find(item => item.id === id);
     return confirmAction('Delete this recurring chore?', `“${chore.title}” will stop appearing. Past completions are retained.`, 'Delete chore', async () => { await request(`/api/chores/${idPath(id)}?expectedVersion=${chore.version}`, { method: 'DELETE' }); toast('Recurring chore deleted.'); try { await loadHousehold(); } catch (error) { dataFailure(error); } });
   }
   if (name === 'create-invite') { element.disabled = true; try { S.generatedInvite = await request('/api/invites', { method: 'POST', body: {} }); render(true); } finally { if (element.isConnected) element.disabled = false; } return; }
@@ -570,6 +603,7 @@ async function action(name, element) {
   if (name === 'unpair-local') return confirmAction('Remove this frame connection?', 'This display will stop showing your family data. An administrator can pair it again with a new code.', 'Remove connection', async () => { await request('/api/frame-session', { method: 'DELETE', authenticated: false }); setFrameMode(false); S.session = null; S.snapshot = null; S.calendar = null; await boot(); });
   if (name === 'sign-out') {
     generation++;
+    workbench.reset();
     const auth = await authClient();
     const result = await auth.signOut();
     if (result.error) throw new Error(result.error.message || 'Could not sign out. Try again.');
@@ -607,18 +641,19 @@ window.addEventListener('hashchange', () => {
   if (dialog.open) dialog.close();
   S.view = next;
   render(true);
-  if (S.session?.household) { if (next === 'setup') loadSetup(); else loadCalendar(); }
+  if (S.session?.household) { if (next === 'setup') loadSetup(); else if (next === 'activity') workbench.loadActivity(); else loadCalendar(); }
 });
 window.addEventListener('online', () => refresh());
 document.addEventListener('visibilitychange', () => { if (!document.hidden && S.session?.household) refresh(); });
 setInterval(() => {
   paintClock();
+  if (frame() && workbench.accessExpired()) { workbench.reset(); boot(); return; }
   if (S.session?.household && S.snapshot && S.snapshot.date !== today() && !pollBusy) { pollBusy = true; refresh().finally(() => { pollBusy = false; }); }
 }, 1000);
 setInterval(async () => {
   if (document.hidden || !S.session?.household || pollBusy || dialog.open) return;
   pollBusy = true;
-  try { await loadHousehold(); await loadCalendar(); } catch (error) { dataFailure(error); }
+  try { await loadHousehold(); await loadCalendar(); if (S.view === 'activity') await workbench.loadActivity(); } catch (error) { dataFailure(error); }
   finally { pollBusy = false; }
 }, 20000);
 boot();

@@ -195,7 +195,28 @@ fieldset { min-width: 0; }
 .form-stack .button { justify-self: start; }
 .field { display: grid; gap: 8px; min-width: 0; }
 .field > span, .weekday-picker legend { font-size: 12px; font-weight: 600; color: var(--ink); }
-.field input, .field select { width: 100%; min-height: 48px; padding: 12px 13px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); color: var(--ink); font-size: 16px; }
+.field input, .field select, .field textarea { width: 100%; min-height: 48px; padding: 12px 13px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); color: var(--ink); font-size: 16px; }
+.field textarea { resize: vertical; line-height: 1.5; }
+.chore-tools, .occurrence-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.chore-tools { margin: 22px 0; }
+.occurrence-info { flex-basis: 100%; padding-left: 34px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.occurrence-info > p, .occurrence-info details, .occurrence-controls { flex-basis: 100%; }
+.occurrence-info > p { font-size: 13px; color: var(--muted); }
+.occurrence-info details { margin: 5px 0; font-size: 14px; }
+.occurrence-info summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; font-weight: 600; }
+.chore-instructions { white-space: pre-wrap; line-height: 1.6; margin: 8px 0; }
+.subtask-list, .history-list { list-style: none; padding: 0; margin: 12px 0; }
+.subtask-list button { display: flex; gap: 10px; align-items: center; text-align: left; border: 0; background: none; color: var(--ink); min-height: 48px; width: 100%; padding: 8px 0; }
+.status-submitted { background: var(--warning-tint); color: var(--warning); }
+.status-completed { background: var(--complete-tint); color: var(--complete); }
+.is-skipped .chore-toggle { opacity: .6; }
+.break-list > div, .history-list li { border-top: 1px solid var(--line); padding: 14px 0; line-height: 1.6; }
+.history-list span, .history-list small { display: block; color: var(--muted); }
+.activity-item { border-top: 1px solid var(--line); padding: 18px 0; display: flex; flex-wrap: wrap; gap: 12px; }
+.activity-item > div:first-child { flex: 1; min-width: 200px; }
+.activity-item p { line-height: 1.6; margin: 7px 0; }
+.activity-item small { color: var(--muted); }
+.activity-item.unread { border-left: 4px solid var(--cyan-ink); padding-left: 15px; }
 .field input[readonly] { font-size: 12px; background: var(--surface-soft); }
 .field input[type='color'] { width: 90px; padding: 5px; }
 .field-help { font-size: 11px; color: var(--muted); line-height: 1.6; margin-top: -8px; }
@@ -294,7 +315,7 @@ dialog::backdrop { background: rgba(17, 17, 17, .45); }
   .family-shell { display: block; height: auto; min-height: 100vh; }
   .sidebar { position: fixed; left: 0; right: 0; bottom: 0; height: auto; border-right: 0; border-top: 1px solid var(--line); background: var(--surface); padding: 8px 12px max(9px, env(safe-area-inset-bottom)); z-index: 20; }
   .brand, .sidebar-bottom { display: none; }
-  .sidebar nav { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .sidebar nav { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
   .nav-item { min-height: 53px; padding: 7px 4px; flex-direction: column; gap: 5px; border-radius: 9px; font-size: 10px; }
   .nav-item svg { width: 21px; height: 21px; }
   .main-content { padding: 25px 19px 105px; overflow: visible; }
@@ -423,5 +444,8 @@ dialog::backdrop { background: rgba(17, 17, 17, .45); }
   .frame-display .month-event { font-size: 14px; }
   .frame-display .month-day small, .frame-display .footnote { font-size: 13px; }
   .frame-display .write-feedback { font-size: 16px; }
+  .frame-display .occurrence-info { padding-left: 44px; }
+  .frame-display .occurrence-info .badge, .frame-display .occurrence-info > p { font-size: 14px; }
+  .frame-display .occurrence-info details, .frame-display .subtask-list button { font-size: 18px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } }
