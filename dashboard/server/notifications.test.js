@@ -2,8 +2,20 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import { jwtVerify } from 'jose';
-import { APNS_HOSTS, apnsConfiguration, classifyApnsResult, providerToken, sendApns } from './apns.js';
-import { choreOccurrences, frameIsOffline, lockScreenPayload, notificationText, occurrenceInstant, preferencesDto, quietUntil, registerPush, validatePreferences } from './notifications.js';
+import { APNS_HOSTS, apnsConfiguration, classifyApnsResult, preflightApns, providerToken, sendApns } from './apns.js';
+import { choreOccurrences, frameIsOffline, lockScreenPayload, notificationText, occurrenceInstant, preferencesDto, processNotifications, quietUntil, registerPush, validatePreferences } from './notifications.js';
+import { handleRequest } from './app.js';
+
+function signingKey() {
+  const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  return { pem: privateKey.export({ type: 'pkcs8', format: 'pem' }), publicKey };
+}
+function scopedApnsFixture() {
+  const sandbox = signingKey(), production = signingKey();
+  return { sandbox, production, env: { FAMILY_APNS_TEAM_ID: 'ABCDEFGHIJ', FAMILY_APNS_TOPIC: 'com.example.family-frame',
+    FAMILY_APNS_SANDBOX_KEY_ID: 'SANDBOX001', FAMILY_APNS_SANDBOX_PRIVATE_KEY: sandbox.pem,
+    FAMILY_APNS_PRODUCTION_KEY_ID: 'PRODKEY001', FAMILY_APNS_PRODUCTION_PRIVATE_KEY: production.pem } };
+}
 
 test('deadline occurrences follow household weekdays, cross-midnight lead times, and DST', () => {
   const chore = { due_time: '00:05:00', reminder_minutes: 15, weekdays: [0], created_at: '2026-01-01T00:00:00Z' };
@@ -79,6 +91,87 @@ test('APNs JWT is ES256, correctly scoped, cached, and refreshed inside Apple to
   assert.throws(() => apnsConfiguration({}), error => error.code === 'push_not_configured');
   await assert.rejects(sendApns({ token: 'a'.repeat(64), environment: 'https://attacker.example', payload: {} }, env), error => error.status === 422);
   await assert.rejects(providerToken({ ...env, FAMILY_APNS_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\ninvalid' }), error => error.code === 'push_not_configured');
+});
+
+test('topic-specific APNs environments select their own signing key and retain both cached JWTs', async () => {
+  const { env, sandbox, production } = scopedApnsFixture();
+  const now = new Date('2026-10-17T12:00:00Z');
+  const tokens = {};
+  for (const [environment, key] of Object.entries({ sandbox, production })) {
+    const config = apnsConfiguration(env, environment);
+    assert.equal(config.keyId, env[`FAMILY_APNS_${environment.toUpperCase()}_KEY_ID`]);
+    assert.equal(config.privateKey, key.pem);
+    tokens[environment] = await providerToken(env, now, environment);
+    const verified = await jwtVerify(tokens[environment], key.publicKey, { algorithms: ['ES256'], issuer: env.FAMILY_APNS_TEAM_ID });
+    assert.equal(verified.protectedHeader.kid, config.keyId);
+    assert.equal(verified.payload.iat, now.getTime() / 1000);
+  }
+  const later = new Date(now.getTime() + 20 * 60_000);
+  await preflightApns(env, later);
+  // ES256 creates a new signature when signing again, so equality verifies that
+  // alternating environments and readiness checks actually reuse both tokens.
+  for (const environment of ['sandbox', 'production', 'sandbox', 'production']) {
+    assert.equal(await providerToken(env, later, environment), tokens[environment]);
+  }
+  const replacement = signingKey();
+  const rotated = { ...env, FAMILY_APNS_SANDBOX_KEY_ID: 'SANDBOX002', FAMILY_APNS_SANDBOX_PRIVATE_KEY: replacement.pem };
+  const rotatedToken = await providerToken(rotated, later, 'sandbox');
+  assert.notEqual(rotatedToken, tokens.sandbox);
+  assert.equal((await jwtVerify(rotatedToken, replacement.publicKey)).protectedHeader.kid, 'SANDBOX002');
+  assert.equal(await providerToken(rotated, later, 'production'), tokens.production, 'Rotating one environment must not evict the other environment.');
+});
+
+test('APNs scoped credentials never mix partial pairs or fall back to the other environment', async () => {
+  const { env, production } = scopedApnsFixture();
+  const legacy = { FAMILY_APNS_TEAM_ID: env.FAMILY_APNS_TEAM_ID, FAMILY_APNS_TOPIC: env.FAMILY_APNS_TOPIC,
+    FAMILY_APNS_KEY_ID: 'LEGACY0001', FAMILY_APNS_PRIVATE_KEY: production.pem };
+  assert.equal(apnsConfiguration(legacy, 'sandbox').keyId, 'LEGACY0001');
+  assert.equal(apnsConfiguration(legacy, 'production').keyId, 'LEGACY0001');
+  await preflightApns(legacy);
+  assert.equal((await jwtVerify(await providerToken(legacy, new Date(), 'sandbox'), production.publicKey)).protectedHeader.kid, 'LEGACY0001');
+  assert.equal(apnsConfiguration({ ...legacy, ...env }, 'sandbox').keyId, 'SANDBOX001');
+  assert.equal(apnsConfiguration({ ...legacy, ...env }, 'production').keyId, 'PRODKEY001');
+  assert.equal(apnsConfiguration({ ...legacy, FAMILY_APNS_SANDBOX_KEY_ID: '', FAMILY_APNS_SANDBOX_PRIVATE_KEY: '' }, 'sandbox').keyId, 'LEGACY0001');
+  for (const environment of ['sandbox', 'production']) {
+    const prefix = `FAMILY_APNS_${environment.toUpperCase()}`;
+    for (const partial of [{ [`${prefix}_KEY_ID`]: env[`${prefix}_KEY_ID`] }, { [`${prefix}_PRIVATE_KEY`]: env[`${prefix}_PRIVATE_KEY`] }]) {
+      assert.throws(() => apnsConfiguration({ ...legacy, ...partial }, environment), error => error.code === 'push_not_configured');
+    }
+  }
+  const onlySandbox = { ...env, FAMILY_APNS_PRODUCTION_KEY_ID: undefined, FAMILY_APNS_PRODUCTION_PRIVATE_KEY: undefined };
+  assert.equal(apnsConfiguration(onlySandbox, 'sandbox').keyId, 'SANDBOX001');
+  assert.throws(() => apnsConfiguration(onlySandbox, 'production'), error => error.code === 'push_not_configured');
+  await assert.rejects(preflightApns(onlySandbox), error => error.code === 'push_not_configured');
+});
+
+test('notification readiness validates both real signing keys and stops before leasing with incomplete APNs setup', async () => {
+  const { env } = scopedApnsFixture();
+  let leases = 0;
+  const client = { release() {}, async query(sql) {
+    if (sql.includes('SELECT id FROM family_notification_deliveries')) leases++;
+    return { rows: [] };
+  } };
+  const db = { connect: async () => client, query: async () => ({ rows: [] }) };
+  for (const invalid of [
+    { ...env, FAMILY_APNS_SANDBOX_KEY_ID: undefined, FAMILY_APNS_SANDBOX_PRIVATE_KEY: undefined },
+    { ...env, FAMILY_APNS_PRODUCTION_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\ninvalid' },
+  ]) {
+    const result = await processNotifications(db, { env: invalid });
+    assert.equal(result.pushConfigured, false);
+    assert.equal(leases, 0);
+    const status = await handleRequest(new Request('https://family.example/api/mobile/status'), {
+      db, env: invalid, authenticate: async () => ({ authType: 'mobile', household: { id: 'fixture' } }),
+    });
+    assert.equal(status.status, 200);
+    assert.equal((await status.json()).data.pushConfigured, false);
+  }
+  const result = await processNotifications(db, { env });
+  assert.equal(result.pushConfigured, true);
+  assert.equal(leases, 1);
+  const status = await handleRequest(new Request('https://family.example/api/mobile/status'), {
+    db, env, authenticate: async () => ({ authType: 'mobile', household: { id: 'fixture' } }),
+  });
+  assert.equal((await status.json()).data.pushConfigured, true);
 });
 
 test('push registration refuses non-mobile principals and validates client inputs before any DB access', async () => {
