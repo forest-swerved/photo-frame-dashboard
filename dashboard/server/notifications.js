@@ -3,7 +3,7 @@ import { Temporal } from '@js-temporal/polyfill';
 import { ApiError, requireValue, uuidField } from './errors.js';
 import { decryptCredentials, digest, encryptCredentials, keyedDigest } from './credentials.js';
 import { one, transaction } from './database.js';
-import { classifyApnsResult, providerToken, sendApns } from './apns.js';
+import { classifyApnsResult, preflightApns, sendApns } from './apns.js';
 import { activeMobileSessionSql as activeSession } from './mobile.js';
 
 const preferenceColumns = Object.freeze({ pushEnabled: 'push_enabled', choreCompleted: 'chore_completed', choreReopened: 'chore_reopened',
@@ -321,7 +321,7 @@ export async function processNotifications(db, { env = process.env, now = new Da
   for (const household of households) counts.eventsCreated += await scanHousehold(db, household, now);
   counts.inboxCreated = await fanOut(db, now);
   if (!send) {
-    try { await providerToken(env); } catch { counts.pushConfigured = false; return counts; }
+    try { await preflightApns(env, now); } catch { counts.pushConfigured = false; return counts; }
   }
   const leases = await claimDeliveries(db, now);
   // Bound a cron request to at most four waves of three six-second APNs requests.

@@ -114,12 +114,25 @@ provider calendar refresh remains driven by dashboard/app reads. Frame offline a
 use a fifteen-minute grace above the five-minute heartbeat write interval. Initial
 scans establish a baseline rather than flooding users with historical overdue alerts.
 
-Configure the server-only `FAMILY_APNS_TEAM_ID`, `FAMILY_APNS_KEY_ID`,
-`FAMILY_APNS_PRIVATE_KEY` and `FAMILY_APNS_TOPIC` from the actual Apple Developer
-team. Never put the `.p8` key in source or the app. Debug installs use sandbox APNs;
-TestFlight/Release uses production. `/api/mobile/status` reports missing Apple setup
-separately from iOS permission or token registration. Without Apple credentials, the
-inbox/scheduler still work but no push delivery is claimed.
+Configure the server-only shared `FAMILY_APNS_TEAM_ID` and `FAMILY_APNS_TOPIC`,
+then separate topic-specific key pairs: `FAMILY_APNS_SANDBOX_KEY_ID` /
+`FAMILY_APNS_SANDBOX_PRIVATE_KEY` and `FAMILY_APNS_PRODUCTION_KEY_ID` /
+`FAMILY_APNS_PRODUCTION_PRIVATE_KEY`. Scope both Apple keys to the actual app topic
+(`com.swerved.familyframe`); the sandbox and production keys remain distinct.
+Never put either `.p8` key in source or the app. Debug installs use sandbox APNs;
+TestFlight/Release uses production, and each installation selects its own environment's
+credentials. Legacy `FAMILY_APNS_KEY_ID` / `FAMILY_APNS_PRIVATE_KEY` remain a fallback
+for an environment with neither scoped value configured, for existing team-wide keys.
+Setting either scoped value requires its complete pair; a partial pair never falls
+back to the other environment or the legacy key. Both pairs may be empty to select
+the legacy fallback.
+
+The worker and `/api/mobile/status` validate signing in both environments. Incomplete
+Apple setup leaves the inbox/scheduler working but takes no push-delivery leases and
+reports `pushConfigured:false`. Readiness is separate from iOS permission, token
+registration, provider acceptance and actual device delivery. Provider JWTs are cached
+in two bounded environment slots, so alternating sandbox and production deliveries
+reuse the correct token rather than regenerate it on every send.
 
 ### Additive schema upgrade
 

@@ -9,7 +9,7 @@ import { claimHousehold, createChore, createFramePair, createInvite, createPerso
 import { calendarConnection, calendarSnapshot, connectCalendar, removeCalendar, selectCalendars } from './calendar-service.js';
 import { createMobileSession, createMobilePair, redeemMobilePair, mobileSessionData, mobileDevices, revokeMobile } from './mobile.js';
 import { registerPush, notificationPreferences, notificationInbox, markNotificationRead, processNotifications } from './notifications.js';
-import { apnsConfiguration } from './apns.js';
+import { preflightApns } from './apns.js';
 
 export function apiPath(request) {
   const url = new URL(request.url);
@@ -43,7 +43,12 @@ export async function dispatch(request, db, principal, route, options = {}) {
   if (mobileDevice && method === 'DELETE') return json(await revokeMobile(db, principal, mobileDevice[1]));
   if (route.startsWith('mobile/')) {
     requireValue(principal.authType === 'mobile', 403, 'mobile_required', 'Use the Family Frame iOS app.');
-    if (route === 'mobile/status' && method === 'GET') { let pushConfigured = false; try { apnsConfiguration(options.env || process.env); pushConfigured = true; } catch { /* Report missing provider setup without exposing configuration. */ } return json({ pushConfigured, schedulingConfigured: Boolean((options.env || process.env).CRON_SECRET), serverTime: new Date().toISOString() }); }
+    if (route === 'mobile/status' && method === 'GET') {
+      let pushConfigured = false;
+      try { await preflightApns(options.env || process.env); pushConfigured = true; }
+      catch { /* Report missing provider setup without exposing configuration. */ }
+      return json({ pushConfigured, schedulingConfigured: Boolean((options.env || process.env).CRON_SECRET), serverTime: new Date().toISOString() });
+    }
     if (route === 'mobile/session' && method === 'GET') return json(mobileSessionData(principal));
     if (route === 'mobile/session' && method === 'DELETE') return json(await revokeMobile(db, principal, principal.mobileSessionId));
     if (route === 'mobile/push-installations' && method === 'POST') return json(await registerPush(db, principal, await readJson(request), options.env));
