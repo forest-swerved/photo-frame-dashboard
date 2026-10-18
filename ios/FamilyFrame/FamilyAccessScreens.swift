@@ -34,7 +34,8 @@ struct FrameAccessScreen: View {
                     if scope == "child" {
                         Picker("Child", selection: $personID) { Text("Choose a child").tag(""); ForEach(model.snapshot?.people ?? []) { Text($0.name).tag($0.id) } }
                     }
-                } else { Text("Unlock your own profile.").foregroundStyle(Brand.cyanInk) }
+                } else if model.canManageChores { Text("Unlock parent chore controls.").foregroundStyle(Brand.cyanInk) }
+                else { Text("Unlock your own profile.").foregroundStyle(Brand.cyanInk) }
                 Button { Task { await generate() } } label: { if generating { ProgressView() } else { Text("Create one-time unlock code") } }
                     .frame(minHeight: 44).disabled(generating || model.isStale || (scope == "child" && selectedPerson == nil))
             } footer: { Text("Use the code within 5 minutes. It works once and unlocks that scope for 10 minutes. Creating another code replaces your previous code.") }
@@ -45,13 +46,14 @@ struct FrameAccessScreen: View {
                         if valid {
                             Text(code.code).font(.system(.largeTitle, design: .monospaced).weight(.bold)).tracking(6).textSelection(.enabled).privacySensitive().accessibilityLabel("Unlock code, " + code.code.map(String.init).joined(separator: ", "))
                             Text("Enter this code in the frame's unlock screen.").font(.subheadline)
-                            Text("Expires (Dates.relative(code.expiresAt)).").font(.caption).foregroundStyle(Brand.muted)
+                            Text("Expires \(Dates.relative(code.expiresAt)).").font(.caption).foregroundStyle(Brand.muted)
                         } else { Text("Code expired. Create a new code when you're ready.").foregroundStyle(Brand.muted) }
                     } header: { Text(code.scope == "parent" ? "Parent controls" : "Child profile") }
                 }
             }
             if let error { Text(error).foregroundStyle(Brand.red) }
         }.navigationTitle("Unlock the frame").navigationBarTitleDisplayMode(.inline)
+            .onAppear { if !model.canManageInternet && model.canManageChores { scope = "parent" } }
             .onChange(of: scope) { _, _ in code = nil }.onChange(of: personID) { _, _ in code = nil }
             .onDisappear { code = nil }
     }

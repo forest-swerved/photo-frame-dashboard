@@ -18,6 +18,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var isSigningIn = false
     @Published private(set) var lastMutationNeedsReview = false
+    @Published private(set) var accountDeletionNeedsReview = false
     @Published private(set) var changingChores: Set<String> = []
     @Published var message: String?
     @Published private(set) var refreshIssue: String?
@@ -26,6 +27,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var hasLoadedActivity = false
     @Published var selectedTab = 0
     @Published var openedOccurrence: ChoreOccurrence?
+    let internet: InternetModel
     private let api: any FamilyAPI
     private let keychain: any CredentialStoring
     private let cache: any DashboardCaching
@@ -78,7 +80,9 @@ final class AppModel: ObservableObject {
     init(api: (any FamilyAPI)? = nil, keychain: any CredentialStoring = SecureStore(),
          cache: any DashboardCaching = DashboardCache(), now: @escaping () -> Date = Date.init,
          observesPush: Bool = true) {
-        self.api = api ?? APIClient(); self.keychain = keychain; self.cache = cache; self.now = now
+        let client = api ?? APIClient()
+        self.api = client; self.internet = InternetModel(api: client); self.keychain = keychain; self.cache = cache; self.now = now
+        self.internet.authenticationFailed = { [weak self] reason in await self?.forgetSession(reason: reason) }
         if observesPush { NotificationController.shared.onToken = { [weak self] token in await self?.registerPush(token) } }
     }
     func start() async {
@@ -121,6 +125,7 @@ final class AppModel: ObservableObject {
         catch { message = error.localizedDescription; return false }
     }
     private func continueAccount(_ outcome: AccountOutcome, email: String) async throws {
+        accountDeletionNeedsReview = false
         switch outcome {
         case .authenticated(let credential): try accept(credential); accountStage = .entry; await refresh(includePreferences: true)
         case .confirmationRequired: accountStage = .confirmEmail(email)
@@ -179,6 +184,7 @@ final class AppModel: ObservableObject {
                 throw APIError(status: 401, code: "session_changed", message: "This app's access changed. Sign in again.")
             }
             session = current
+            internet.bind(current)
             if var credential, credential.session != current { credential.session = current; try keychain.save(credential); self.credential = credential }
         } catch { await failedHouseholdRefresh(error, generation: started); return }
         // Each pane publishes independently. A slow calendar never gates fresh chores.
@@ -186,7 +192,8 @@ final class AppModel: ObservableObject {
         async let events: Void = refreshCalendar(generation: started)
         async let activity: Void = refreshActivity(generation: started)
         async let settings: Void = refreshSettings(generation: started, preferences: includePreferences, status: includeStatus)
-        _ = await (household, events, activity, settings)
+        async let network: Void = internet.refresh()
+        _ = await (household, events, activity, settings, network)
         guard started == generation, !Task.isCancelled else { return }
         persistCache()
         if let token = NotificationController.shared.currentToken { await registerPush(token) }
@@ -365,7 +372,11 @@ final class AppModel: ObservableObject {
                 current.occurrences = occurrences; current.chores = occurrences.filter { !$0.isSkipped }.map(\.legacy); snapshot = current
             }
             persistCache(); changingChores.remove(occurrence.id); UISelectionFeedbackGenerator().selectionChanged()
-            Task { await refresh() }; return true
+            Task {
+                async let household: Void = refresh()
+                async let rewards: Void = internet.refresh(celebrateRewards: result.status == "completed" && result.required)
+                _ = await (household, rewards)
+            }; return true
         } catch { await failedChoreMutation(error, generation: started); return false }
     }
     private func failedChoreMutation(_ error: Error, generation started: Int) async {
@@ -439,12 +450,15 @@ final class AppModel: ObservableObject {
             let read = Dictionary(uniqueKeysWithValues: notifications.compactMap { item in item.readAt.map { (item.id, $0) } })
             notifications = inbox.map { item in var current = item; current.readAt = current.readAt ?? read[item.id]; return current }
             hasLoadedActivity = true; activityMessage = nil; persistCache()
-            selectedTab = 3
+            selectedTab = 4
             guard let item = inbox.first(where: { $0.id == id }) else { return }
             switch item.target {
             case "today": selectedTab = 0
             case "chores": selectedTab = 1
-            case "devices": selectedTab = 3 // Devices tab is added with the Internet contract.
+            case "devices":
+                selectedTab = 3; await internet.refresh()
+                guard started == generation else { return }
+                if let sessionID = item.sessionId, let networkSession = internet.sessions.first(where: { $0.id == sessionID }) { internet.openedSession = networkSession }
             default: break
             }
             if let occurrenceID = item.occurrenceId,
@@ -452,7 +466,7 @@ final class AppModel: ObservableObject {
             await markRead(item)
         } catch {
             guard started == generation else { return }
-            selectedTab = 3
+            selectedTab = 4
             if (error as? APIError)?.isAuthenticationFailure == true { await forgetSession(reason: error.localizedDescription) }
             else { activityMessage = "This update could not be loaded. Refresh Activity while online." }
         }
@@ -470,8 +484,38 @@ final class AppModel: ObservableObject {
             await forgetSession(reason: nil); accountStage = .entry; return true
         } catch { if started == generation { message = error.localizedDescription }; return false }
     }
+    var canDeleteAccount: Bool {
+        if session != nil { return session?.authType == "mobile" }
+        if case .joinFamily = accountStage { return true }
+        return false
+    }
+    func deleteAccount(password: String, confirmation: String) async -> Bool {
+        guard canDeleteAccount, !isSigningIn, !password.isEmpty, password.count <= 1024, confirmation == "DELETE MY ACCOUNT" else { return false }
+        let started = generation; isSigningIn = true; accountDeletionNeedsReview = false
+        defer { isSigningIn = false }
+        do {
+            try await api.deleteAccount(password: password); guard started == generation else { return false }
+            await forgetSession(reason: nil); accountStage = .entry; return true
+        } catch {
+            guard started == generation else { return false }
+            let failure = error as? APIError
+            accountDeletionNeedsReview = failure.map { $0.status == 0 || $0.status >= 500 } ?? true
+            if failure?.isAuthenticationFailure == true { await forgetSession(reason: "Sign in again to verify your account before retrying deletion."); accountStage = .entry }
+            else { message = accountDeletionNeedsReview ? "Account deletion could not be confirmed. Sign in again to check your account before retrying. Any remaining account can be deleted without joining a family." : error.localizedDescription }
+            return false
+        }
+    }
+    func transferOwnership(userID: String) async -> Bool {
+        guard isAdmin, !isStale else { return false }; let started = generation
+        do {
+            try await api.transferOwnership(userID: userID); guard started == generation else { return false }
+            message = nil; await refresh(includePreferences: true); return generation == started
+        } catch { if started == generation { message = error.localizedDescription }; return false }
+    }
     func frameAccessCode(scope: String, personID: String?) async throws -> FrameAccessCode {
-        guard session != nil, !isStale, scope == "child" && (session?.isChild == true ? personID == session?.personId : canManageInternet) || scope == "parent" && canManageInternet else {
+        let permitted = scope == "child" && (session?.isChild == true ? personID != nil && personID == session?.personId : canManageInternet)
+            || scope == "parent" && (canManageChores || canManageInternet)
+        guard session != nil, !isStale, permitted else {
             throw APIError(status: 403, code: "parent_required", message: "Your account cannot unlock those frame controls.")
         }
         let started = generation
@@ -526,6 +570,8 @@ final class AppModel: ObservableObject {
         message = reason
     }
     private func clearDashboard() {
+        internet.bind(nil)
+        accountDeletionNeedsReview = false
         snapshot = nil; calendar = nil; calendarAgenda = []; agendaCache = CalendarAgendaCache(); calendarReadAt = nil; confirmedOccurrences = [:]; openedOccurrence = nil; notifications = []; preferences = nil; deliveryStatus = nil; lastUpdated = nil
         hasRequestedPreferences = false; hasRequestedStatus = false
         changingChores = []; registeredPushKey = nil; isStale = true; refreshIssue = nil; calendarMessage = nil; activityMessage = nil; hasLoadedActivity = false; selectedTab = 0

@@ -21,7 +21,7 @@ private final class MemoryDashboardCache: DashboardCaching {
 }
 
 @MainActor
-private final class Deferred<Value> {
+final class Deferred<Value> {
     private var continuation: CheckedContinuation<Value, Error>?
     private(set) var waiting = false
     func wait() async throws -> Value {
@@ -32,7 +32,7 @@ private final class Deferred<Value> {
 }
 
 @MainActor
-private final class DashboardAPI: FamilyAPI {
+final class DashboardAPI: FamilyAPI {
     var mobileToken: String?
     var current: MobileSession
     var data: HouseholdSnapshot
@@ -49,11 +49,22 @@ private final class DashboardAPI: FamilyAPI {
     var markReadHandler: (() async throws -> Void)?
     var frameCodeHandler: ((String, String?) async throws -> FrameAccessCode)?
     var resetPasswordHandler: (() async throws -> Void)?
+    var deleteAccountHandler: (() async throws -> Void)?
+    var transferHandler: (() async throws -> Void)?
+    var signInHandler: (() async throws -> AccountOutcome)?
+    var deletionCalls = 0, transferCalls = 0
     var markReadCalls = 0, frameCodeCalls = 0, memberCalls = 0
     var occurrenceHandler: ((ChoreOccurrence, Bool) async throws -> ChoreOccurrence)?
     var actionHandler: ((String, OccurrenceAction) async throws -> ChoreOccurrence)?
     var occurrenceCalls = 0, actionCalls = 0, breakCalls = 0
     var historyPersonID: String?
+    var internetData: InternetSnapshot?
+    var internetHandler: (() async throws -> InternetSnapshot)?
+    var redeemHandler: (() async throws -> InternetSession)?
+    var grantHandler: (() async throws -> InternetSession)?
+    var internetActionHandler: ((String, InternetSessionAction) async throws -> InternetSession)?
+    var resolveHandler: (() async throws -> RewardCredit)?
+    var internetCalls = 0, redeemCalls = 0, grantCalls = 0, internetActionCalls = 0, internetManagementCalls = 0
     init(session: MobileSession, data: HouseholdSnapshot) { self.current = session; self.data = data }
     func currentSession() async throws -> MobileSession { sessionCalls += 1; return try await sessionHandler?() ?? current }
     func household(date: String) async throws -> HouseholdSnapshot { householdCalls += 1; return try await householdHandler?() ?? data }
@@ -86,7 +97,7 @@ private final class DashboardAPI: FamilyAPI {
     func createChoreBreak(_ draft: ChoreBreakDraft) async throws -> ChoreBreak { breakCalls += 1; throw unexpected }
     func revokeChoreBreak(_ item: ChoreBreak, reason: String, mutationID: String) async throws -> ChoreBreak { breakCalls += 1; throw unexpected }
     private var unexpected: APIError { APIError(status: 0, code: "unexpected_test_call", message: "No account calls belong in dashboard state tests.") }
-    func accountSignIn(email: String, password: String, invitation: String) async throws -> AccountOutcome { throw unexpected }
+    func accountSignIn(email: String, password: String, invitation: String) async throws -> AccountOutcome { guard let signInHandler else { throw unexpected }; return try await signInHandler() }
     func createAccount(name: String, email: String, password: String, invitation: String) async throws -> AccountOutcome { throw unexpected }
     func confirmAccount(email: String, code: String, invitation: String) async throws -> AccountOutcome { throw unexpected }
     func resendConfirmation(email: String) async throws { throw unexpected }
@@ -98,6 +109,21 @@ private final class DashboardAPI: FamilyAPI {
     func createFrameAccessCode(scope: String, personID: String?) async throws -> FrameAccessCode { frameCodeCalls += 1; guard let frameCodeHandler else { throw unexpected }; return try await frameCodeHandler(scope, personID) }
     func members() async throws -> [FamilyMember] { memberCalls += 1; throw unexpected }
     func changeMemberCapabilities(_ id: String, capabilities: ParentCapabilities) async throws -> MemberCapabilitiesResult { throw unexpected }
+    func internet() async throws -> InternetSnapshot {
+        internetCalls += 1
+        if let internetHandler { return try await internetHandler() }
+        return internetData ?? InternetSnapshot(serverTime: "2026-10-17T18:00:00Z", timezone: current.household.timezone, role: current.role, capabilities: ParentCapabilities(manageChores: current.isAdmin, manageInternet: current.isAdmin), integration: InternetIntegration(state: "unconfigured", managementHost: "frame.test", managementAccessVerifiedAt: nil, lastCheckedAt: nil, error: nil), policies: [], credits: [], devices: [], sessions: [], progress: [])
+    }
+    func redeemInternet(creditID: String, deviceID: String, mutationID: String) async throws -> InternetSession { redeemCalls += 1; guard let redeemHandler else { throw unexpected }; return try await redeemHandler() }
+    func grantInternet(personID: String, deviceID: String, minutes: Int?, allDay: Bool, reason: String?, mutationID: String) async throws -> InternetSession { grantCalls += 1; guard let grantHandler else { throw unexpected }; return try await grantHandler() }
+    func changeInternetSession(_ id: String, action: InternetSessionAction) async throws -> InternetSession { internetActionCalls += 1; guard let internetActionHandler else { throw unexpected }; return try await internetActionHandler(id, action) }
+    func saveInternetDevice(_ draft: ManagedDeviceDraft, id: String?) async throws -> ManagedInternetDevice { internetManagementCalls += 1; throw unexpected }
+    func deleteInternetDevice(_ item: ManagedInternetDevice, mutationID: String) async throws { internetManagementCalls += 1; throw unexpected }
+    func saveInternetPolicy(_ personID: String, draft: RewardPolicyDraft) async throws -> RewardPolicy { internetManagementCalls += 1; throw unexpected }
+    func resolveInternetCredit(_ id: String, action: String, reason: String, mutationID: String) async throws -> RewardCredit { internetManagementCalls += 1; guard let resolveHandler else { throw unexpected }; return try await resolveHandler() }
+    func internetHistory() async throws -> [InternetHistoryItem] { throw unexpected }
+    func deleteAccount(password: String) async throws { deletionCalls += 1; guard let deleteAccountHandler else { throw unexpected }; try await deleteAccountHandler() }
+    func transferOwnership(userID: String) async throws { transferCalls += 1; guard let transferHandler else { throw unexpected }; try await transferHandler() }
 }
 
 @MainActor
@@ -141,7 +167,7 @@ final class AppModelTests: XCTestCase {
         var notification = FamilyNotification(id: "test-notification", kind: "chore_submitted", title: "Synthetic update", body: "Synthetic body", createdAt: "2026-10-17T18:00:00Z", readAt: nil, choreId: item.choreId, date: item.date)
         notification.occurrenceId = item.id; notification.target = "chores"; api.activityHandler = { [notification] }
         await model.start(); await model.openNotification(id: "untrusted-missing-id")
-        XCTAssertEqual(model.selectedTab, 3); XCTAssertNil(model.openedOccurrence); XCTAssertEqual(api.markReadCalls, 0)
+        XCTAssertEqual(model.selectedTab, 4); XCTAssertNil(model.openedOccurrence); XCTAssertEqual(api.markReadCalls, 0)
         await model.openNotification(id: notification.id)
         XCTAssertEqual(model.selectedTab, 1); XCTAssertEqual(model.openedOccurrence?.id, item.id); XCTAssertEqual(api.markReadCalls, 1)
         XCTAssertEqual(model.unreadCount, 0)
@@ -164,10 +190,68 @@ final class AppModelTests: XCTestCase {
         await model.signOut(); deferred.resolve(FrameAccessCode(code: "000000", scope: "child", personId: "fixture-child", expiresAt: "2026-10-17T18:05:00Z"))
         do { _ = try await code.value; XCTFail("A previous account's code cannot remain visible") } catch is CancellationError { } catch { XCTFail("Expected cancellation, got \(error)") }
     }
+    func testChoreOnlyCaregiverCanUnlockParentChoresButCannotUnlockAChildProfile() async {
+        let (model, api, _, _) = fixture(role: "member")
+        api.data.capabilities = ParentCapabilities(manageChores: true, manageInternet: false)
+        api.frameCodeHandler = { scope, person in
+            XCTAssertEqual(scope, "parent"); XCTAssertNil(person)
+            return FrameAccessCode(code: "000000", scope: "parent", personId: nil, expiresAt: "2099-01-01T00:00:00Z")
+        }
+        await model.start()
+        do { let code = try await model.frameAccessCode(scope: "parent", personID: nil); XCTAssertEqual(code.scope, "parent") } catch { XCTFail("Chore permission must allow its parent scope: \(error)") }
+        do { _ = try await model.frameAccessCode(scope: "child", personID: "fixture-child"); XCTFail("Child Internet scope still requires Internet management") } catch { XCTAssertEqual((error as? APIError)?.status, 403) }
+        XCTAssertEqual(api.frameCodeCalls, 1)
+        await attachLayout(NavigationStack { FrameAccessScreen() }.environmentObject(model), name: "Synthetic review - chore caregiver parent unlock")
+    }
     func testSuccessfulPasswordRecoveryClearsCredentialAndHousehold() async {
         let (model, api, store, cache) = fixture(); await model.start(); api.resetPasswordHandler = { }
         let reset = await model.resetPassword(email: "synthetic@example.test", token: "000000", recoveryLink: "", password: "test-only-password")
         XCTAssertTrue(reset); XCTAssertNil(model.session); XCTAssertNil(store.value); XCTAssertNil(cache.value); XCTAssertNil(model.snapshot)
+    }
+    func testAccountDeletionRequiresExactConfirmationAndClearsLocalAccessOnlyAfterAcknowledgment() async {
+        let (model, api, store, cache) = fixture(); await model.start(); api.deleteAccountHandler = { }
+        let missing = await model.deleteAccount(password: "test-only-password", confirmation: "DELETE")
+        XCTAssertFalse(missing); XCTAssertEqual(api.deletionCalls, 0); XCTAssertNotNil(model.session)
+        let deleted = await model.deleteAccount(password: "test-only-password", confirmation: "DELETE MY ACCOUNT")
+        XCTAssertTrue(deleted); XCTAssertNil(model.session); XCTAssertNil(model.snapshot); XCTAssertNil(store.value); XCTAssertNil(cache.value)
+        XCTAssertNil(model.internet.snapshot); XCTAssertEqual(model.accountStage, .entry); XCTAssertEqual(api.deletionCalls, 1)
+    }
+    func testOwnershipConflictDoesNotPretendAccountWasDeleted() async {
+        let (model, api, store, _) = fixture(); await model.start()
+        api.deleteAccountHandler = { throw APIError(status: 409, code: "ownership_transfer_required", message: "Transfer household ownership before deleting your account.") }
+        let result = await model.deleteAccount(password: "test-only-password", confirmation: "DELETE MY ACCOUNT")
+        XCTAssertFalse(result); XCTAssertNotNil(model.session); XCTAssertNotNil(store.value); XCTAssertFalse(model.accountDeletionNeedsReview)
+        XCTAssertEqual(model.message, "Transfer household ownership before deleting your account.")
+    }
+    func testUncertainDeletionCanBeRetriedFromVerifiedUnlinkedOnboardingWithoutFamilyJoin() async {
+        let (model, api, _, _) = fixture(); await model.start()
+        api.deleteAccountHandler = { throw APIError(status: 502, code: "identity_cleanup_pending", message: "Synthetic provider interruption") }
+        let uncertain = await model.deleteAccount(password: "test-only-password", confirmation: "DELETE MY ACCOUNT")
+        XCTAssertFalse(uncertain); XCTAssertTrue(model.accountDeletionNeedsReview)
+        await model.signOut(); api.signInHandler = { .invitationRequired }
+        let signedIn = await model.signIn(email: "synthetic@example.test", password: "test-only-password")
+        XCTAssertTrue(signedIn); XCTAssertNil(model.session); XCTAssertTrue(model.canDeleteAccount); XCTAssertFalse(model.accountDeletionNeedsReview)
+        XCTAssertEqual(model.accountStage, .joinFamily("synthetic@example.test"))
+        api.deleteAccountHandler = { }; let retried = await model.deleteAccount(password: "test-only-password", confirmation: "DELETE MY ACCOUNT")
+        XCTAssertTrue(retried); XCTAssertEqual(model.accountStage, .entry); XCTAssertEqual(api.deletionCalls, 2)
+    }
+    func testLateDeletionResponseCannotRestoreOrAffectSignedOutState() async {
+        let (model, api, store, _) = fixture(); await model.start()
+        let delayed = Deferred<Void>(); api.deleteAccountHandler = { try await delayed.wait() }
+        let deletion = Task { await model.deleteAccount(password: "test-only-password", confirmation: "DELETE MY ACCOUNT") }; await waitUntil { delayed.waiting }
+        await model.signOut(); delayed.resolve(()); let result = await deletion.value
+        XCTAssertFalse(result); XCTAssertNil(model.session); XCTAssertNil(store.value); XCTAssertNil(model.message); XCTAssertFalse(model.isSigningIn)
+    }
+    func testOwnershipTransferRequiresAdministratorAndRefreshesRole() async {
+        let (child, childAPI, _, _) = fixture(role: "child", personID: "test-child"); await child.start()
+        let denied = await child.transferOwnership(userID: "test-caregiver"); XCTAssertFalse(denied); XCTAssertEqual(childAPI.transferCalls, 0)
+        let (model, api, store, _) = fixture(); await model.start()
+        api.transferHandler = {
+            api.current = MobileSession(authenticated: true, authType: "mobile", role: "member", household: api.current.household, user: api.current.user, personId: nil)
+            api.data = HouseholdSnapshot(household: api.current.household, role: "member", date: "2026-10-17", people: [], chores: [], capabilities: ParentCapabilities(manageChores: false, manageInternet: false))
+        }
+        let result = await model.transferOwnership(userID: "test-caregiver")
+        XCTAssertTrue(result); XCTAssertFalse(model.isAdmin); XCTAssertFalse(model.canManageChores); XCTAssertEqual(store.value?.session.role, "member")
     }
     func testChildSubmissionDoesNotBecomeApprovedAfterOldSnapshotRefresh() async {
         let (model, api, _, _) = fixture(role: "child", personID: "fixture-child")
@@ -251,6 +335,50 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(model.isLoading); XCTAssertFalse(model.isStale); XCTAssertTrue(model.canChange)
         delayed.resolve(api.calendarData); await start.value
         XCTAssertFalse(model.isLoading)
+    }
+    func testFreshChoresStayEditableWhileInternetStatusIsSlow() async {
+        let (model, api, _, _) = fixture(); let delayed = Deferred<InternetSnapshot>()
+        api.internetHandler = { try await delayed.wait() }
+        let start = Task { await model.start() }; await waitUntil { delayed.waiting && model.snapshot != nil }
+        XCTAssertTrue(model.canChange); XCTAssertFalse(model.isStale); XCTAssertTrue(model.internet.isLoading)
+        delayed.resolve(InternetFixtures.snapshot(role: "admin", integration: "unconfigured")); await start.value
+        XCTAssertTrue(model.canChange)
+    }
+    func testInternetNotificationResolvesOwnedSessionFromAuthenticatedSnapshot() async {
+        let (model, api, _, _) = fixture(role: "child", personID: InternetFixtures.child)
+        let session = InternetFixtures.session(); api.internetData = InternetFixtures.snapshot(sessions: [session])
+        var notification = FamilyNotification(id: "test-session-update", kind: "session_started", title: "Synthetic session update", body: "Synthetic body", createdAt: InternetFixtures.time, readAt: nil, choreId: nil, date: nil)
+        notification.target = "devices"; notification.sessionId = session.id; api.activityHandler = { [notification] }
+        await model.start(); await model.openNotification(id: notification.id)
+        XCTAssertEqual(model.selectedTab, 3); XCTAssertEqual(model.internet.openedSession?.id, session.id)
+        XCTAssertEqual(api.markReadCalls, 1)
+    }
+    func testSyntheticInternetParentChildAndEditorLayouts() async {
+        let (parent, api, _, _) = fixture()
+        api.data.people = [Person(id: InternetFixtures.child, name: "Synthetic child", color: "#00748c", version: 1)]
+        api.internetData = InternetFixtures.snapshot(role: "admin", credits: [InternetFixtures.credit(status: "review")], sessions: [InternetFixtures.session()])
+        await parent.start(); parent.selectedTab = 3
+        await attachLayout(DashboardTabs().environmentObject(parent), name: "Synthetic Stage3 Devices - parent session and five tabs")
+        let starting = InternetFixtures.session(state: "starting", version: 2, observed: "unknown", end: nil, remaining: 3600)
+        api.internetData?.sessions = [starting]; await parent.internet.refresh()
+        await attachLayout(NavigationStack { InternetSessionDetail(network: parent.internet, original: starting) }.environmentObject(parent).environment(\.dynamicTypeSize, .accessibility1), name: "Synthetic Stage3 session details - accessible pending state")
+        let tablet = ManagedInternetDevice(id: "synthetic-tablet", name: "Synthetic iPad", kind: "tablet", personIds: [InternetFixtures.child], macAddresses: ["02:00:00:00:00:02"], version: 1, controlState: "unenrolled", online: nil, lastSeenAt: nil, managementAccessVerifiedAt: nil, allowApplePush: true)
+        await attachLayout(ManagedDeviceEditor(network: parent.internet, device: tablet).environmentObject(parent), name: "Synthetic Stage3 device editor - Apple notification transport")
+        let (child, childAPI, _, _) = fixture(role: "child", personID: InternetFixtures.child)
+        childAPI.data.people = api.data.people; childAPI.internetData = InternetFixtures.snapshot(credits: [InternetFixtures.credit()]); await child.start()
+        childAPI.data.occurrences = [occurrence(personID: InternetFixtures.child, status: "completed")]; await child.refresh()
+        await child.internet.refresh(celebrateRewards: true)
+        XCTAssertNotNil(child.internet.earnedReward); XCTAssertEqual(child.requiredCount, 1); XCTAssertEqual(child.completedCount, 1)
+        await attachLayout(NavigationStack { ChoresScreen() }.environmentObject(child), name: "Synthetic Stage3 child - earned reward now or later")
+        await attachLayout(RewardDevicePicker(network: child.internet, credit: InternetFixtures.credit()).environmentObject(child), name: "Synthetic Stage3 child - one device reward picker")
+    }
+    func testSyntheticAccountDeletionAndUnlinkedRecoveryLayouts() async {
+        let (model, api, _, _) = fixture(); await model.start()
+        await attachLayout(AccountDeletionScreen().environmentObject(model), name: "Synthetic Stage3 account deletion - password and exact confirmation")
+        await model.signOut(); api.signInHandler = { .invitationRequired }
+        _ = await model.signIn(email: "synthetic@example.test", password: "test-only-password")
+        XCTAssertTrue(model.canDeleteAccount)
+        await attachLayout(WelcomeScreen().environmentObject(model), name: "Synthetic Stage3 unlinked verified account - deletion without joining")
     }
     func testBackgroundRefreshDoesNotRepeatedlyFetchSettings() async {
         let (model, api, _, _) = fixture(); await model.start()

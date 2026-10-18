@@ -103,6 +103,7 @@ struct OccurrenceDetailScreen: View {
                     if current.requiresApproval { Text("A parent must approve this chore before it counts as done.").font(.footnote).foregroundStyle(Brand.muted) }
                 }
                 if !current.instructions.isEmpty { Section("Instructions") { Text(current.instructions).textSelection(.enabled) } }
+                RewardHomeCard(network: model.internet)
                 if !current.subtasks.isEmpty {
                     Section {
                         ForEach(current.subtasks) { step in

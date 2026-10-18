@@ -108,6 +108,7 @@ struct SettingsScreen: View {
     @ObservedObject private var notifications = NotificationController.shared
     @State private var confirmSignOut = false
     @State private var signingOut = false
+    @State private var deletingAccount = false
     var body: some View {
         List {
             Section {
@@ -141,12 +142,13 @@ struct SettingsScreen: View {
                 Section("Family access") {
                     NavigationLink("Invite a child account") { ChildInvitationScreen() }
                     NavigationLink("Caregiver permissions") { CaregiverAccessScreen() }
+                    NavigationLink("Transfer household ownership") { OwnershipTransferScreen() }
                     NavigationLink("Signed-in phones and tablets") { MobileDevicesScreen() }
                     Link("Parent invitations and frame setup", destination: APIClient.configuredURL)
                 }
             }
             if model.canManageChores { Section("Chore routines") { NavigationLink("Holidays and chore breaks") { ChoreBreaksScreen() } } }
-            if model.canManageInternet || model.session?.isChild == true { Section("Shared frame") { NavigationLink("Create a frame unlock code") { FrameAccessScreen() } } }
+            if model.canManageChores || model.canManageInternet || model.session?.isChild == true { Section("Shared frame") { NavigationLink("Create a frame unlock code") { FrameAccessScreen() } } }
             Section("Your household") {
                 LabeledContent("Timezone", value: model.session?.household.timezone ?? "")
                 if let last = model.lastUpdated { LabeledContent("Last refreshed", value: last.formatted(date: .abbreviated, time: .shortened)) }
@@ -156,9 +158,14 @@ struct SettingsScreen: View {
             Section {
                 Button(role: .destructive) { confirmSignOut = true } label: { if signingOut { ProgressView() } else { Text("Sign out this device") } }.disabled(signingOut)
             } footer: { Text("Signing out requests server revocation and removes this app's saved session and household cache.") }
+            Section("Your account") {
+                Link("Privacy policy", destination: APIClient.configuredURL.appendingPathComponent("privacy.html"))
+                Button("Permanently delete my account", role: .destructive) { deletingAccount = true }
+            }
             Section { Text("Family Frame · \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0")").font(.caption).foregroundStyle(Brand.muted) }
         }.navigationTitle("Settings").scrollContentBackground(.hidden).background(Brand.background)
             .task { await notifications.refreshStatus() }
+            .sheet(isPresented: $deletingAccount) { AccountDeletionScreen() }
             .confirmationDialog("Sign out this device?", isPresented: $confirmSignOut, titleVisibility: .visible) {
                 Button("Sign out", role: .destructive) { Task { signingOut = true; await model.signOut(); signingOut = false } }
                 Button("Cancel", role: .cancel) { }

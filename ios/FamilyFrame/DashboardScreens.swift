@@ -3,7 +3,7 @@ import SwiftUI
 struct TodayScreen: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
-        ScrollView {
+        RewardAwareScroll(network: model.internet) {
             LazyVStack(alignment: .leading, spacing: 20) {
                 StaleBanner()
                 FrameCard(accent: Brand.cyan) {
@@ -21,6 +21,8 @@ struct TodayScreen: View {
                     }
                     ProgressView(value: Double(model.completedCount), total: Double(max(model.requiredCount, 1))).tint(Color(hex: "4a6400")).padding(10).background(Brand.lime, in: Capsule())
                 }
+                RewardHomeCard(network: model.internet).id("earned-reward")
+                InternetHomeSessions(network: model.internet)
                 if let snapshot = model.snapshot, snapshot.occurrences != nil {
                     if model.approvalCount > 0 { Label("\(model.approvalCount) required \(model.approvalCount == 1 ? "chore" : "chores") waiting for parent approval", systemImage: "clock").font(.subheadline).foregroundStyle(Brand.magentaInk) }
                     ApprovalQueue()
@@ -116,9 +118,10 @@ struct ChoresScreen: View {
     @State private var selectedPerson: String?
     @State private var routinesVisible = false
     var body: some View {
-        ScrollView {
+        RewardAwareScroll(network: model.internet) {
             LazyVStack(alignment: .leading, spacing: 20) {
                 StaleBanner()
+                RewardHomeCard(network: model.internet).id("earned-reward")
                 if model.session?.isChild != true {
                     Picker("Chore view", selection: $routinesVisible) { Text("Today").tag(false); Text("Routines").tag(true) }.pickerStyle(.segmented)
                     ScrollView(.horizontal, showsIndicators: false) {

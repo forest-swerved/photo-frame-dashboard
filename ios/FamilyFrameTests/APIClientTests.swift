@@ -279,5 +279,101 @@ final class APIClientTests: XCTestCase {
         _ = try await api.changeMemberCapabilities("test-member", capabilities: ParentCapabilities(manageChores: true, manageInternet: false))
         XCTAssertEqual(requests, 2)
     }
+    private var networkSessionJSON: String {
+        #"{"id":"test-session","personId":"test-person","deviceId":"test-console","creditId":"test-credit","source":"reward","state":"starting","version":4,"desiredState":"allowed","observedState":"unknown","requestedAt":"2026-10-17T18:00:00Z","endsAt":null,"remainingSeconds":3600,"allDay":false}"#
+    }
+    @MainActor func testInternetRedemptionAcceptsPending202WithoutAnotherMutation() async throws {
+        let api = client(), mutation = UUID().uuidString.lowercased(); var requests = 0
+        let response = Data(("{\"data\":" + networkSessionJSON + "}").utf8)
+        MockProtocol.handler = { [self] request in
+            requests += 1; XCTAssertEqual(request.url?.path, "/api/internet/redeem"); XCTAssertEqual(request.httpMethod, "POST")
+            let payload = body(request); XCTAssertEqual(payload["creditId"] as? String, "test-credit"); XCTAssertEqual(payload["deviceId"] as? String, "test-console"); XCTAssertEqual(payload["mutationId"] as? String, mutation)
+            XCTAssertNil(payload["minutes"], "The server chooses minutes from the earned credit")
+            return (202, response)
+        }
+        let result = try await api.redeemInternet(creditID: "test-credit", deviceID: "test-console", mutationID: mutation)
+        XCTAssertEqual(result.state, "starting"); XCTAssertFalse(result.hasVerifiedAccess); XCTAssertTrue(result.hasPendingWindow); XCTAssertEqual(requests, 1)
+    }
+    @MainActor func testParentAllDayGrantAndVersionedNegativeTimeAdjustment() async throws {
+        let api = client(), mutation = UUID().uuidString.lowercased()
+        let response = Data(("{\"data\":" + networkSessionJSON + "}").utf8); var requests = 0
+        MockProtocol.handler = { [self] request in
+            requests += 1; let payload = body(request)
+            if request.url?.path == "/api/internet/grants" {
+                XCTAssertEqual(payload["allDay"] as? Bool, true); XCTAssertNil(payload["minutes"])
+                XCTAssertEqual(payload["personId"] as? String, "test-person"); XCTAssertEqual(payload["reason"] as? String, "Synthetic holiday")
+            } else {
+                XCTAssertEqual(request.url?.path, "/api/internet/sessions/test-session/actions")
+                XCTAssertEqual(payload["action"] as? String, "adjust"); XCTAssertEqual(payload["expectedVersion"] as? Int, 4); XCTAssertEqual(payload["deltaMinutes"] as? Int, -15)
+            }
+            XCTAssertEqual(request.httpMethod, "POST"); XCTAssertEqual(payload["mutationId"] as? String, mutation); return (202, response)
+        }
+        _ = try await api.grantInternet(personID: "test-person", deviceID: "test-console", minutes: nil, allDay: true, reason: "Synthetic holiday", mutationID: mutation)
+        _ = try await api.changeInternetSession("test-session", action: InternetSessionAction(action: "adjust", expectedVersion: 4, mutationId: mutation, deltaMinutes: -15))
+        XCTAssertEqual(requests, 2)
+    }
+    @MainActor func testManagedDevicePatchAndDeleteKeepVersionMutationAndNotificationTransport() async throws {
+        let api = client(), mutation = UUID().uuidString.lowercased()
+        let json = #"{"id":"test-tablet","name":"Synthetic tablet","kind":"tablet","personIds":["test-person"],"macAddresses":["02:00:00:00:00:01"],"version":2,"controlState":"unenrolled","allowApplePush":true}"#
+        MockProtocol.handler = { [self] request in
+            XCTAssertEqual(request.url?.path, "/api/internet/devices/test-tablet")
+            if request.httpMethod == "PATCH" {
+                let payload = body(request); XCTAssertEqual(payload["expectedVersion"] as? Int, 1); XCTAssertEqual(payload["mutationId"] as? String, mutation)
+                XCTAssertEqual(payload["allowApplePush"] as? Bool, true); XCTAssertEqual(payload["personIds"] as? [String], ["test-person"])
+                return (200, Data(("{\"data\":" + json + "}").utf8))
+            }
+            XCTAssertEqual(request.httpMethod, "DELETE")
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!
+            XCTAssertEqual(query.first(where: { $0.name == "expectedVersion" })?.value, "2"); XCTAssertEqual(query.first(where: { $0.name == "mutationId" })?.value, mutation)
+            return (200, Data(#"{"data":{"deleted":true}}"#.utf8))
+        }
+        var draft = ManagedDeviceDraft(name: "Synthetic tablet", kind: "tablet", personIds: ["test-person"], macAddresses: ["02:00:00:00:00:01"], mutationId: mutation, expectedVersion: 1); draft.allowApplePush = true
+        let result = try await api.saveInternetDevice(draft, id: "test-tablet"); XCTAssertEqual(result.allowApplePush, true)
+        try await api.deleteInternetDevice(result, mutationID: mutation)
+    }
+    @MainActor func testRewardPolicyClearsBedtimeAndReviewResolutionIncludesParentReason() async throws {
+        let api = client(), mutation = UUID().uuidString.lowercased(); var requests = 0
+        MockProtocol.handler = { [self] request in
+            requests += 1; let payload = body(request)
+            if request.url?.path == "/api/internet/policies/test-person" {
+                XCTAssertEqual(request.httpMethod, "PUT"); XCTAssertEqual(payload["expectedVersion"] as? Int, 0); XCTAssertTrue(payload["bedtime"] is NSNull)
+                return (200, Data(#"{"data":{"personId":"test-person","version":1,"rewardMinutes":60,"carryoverDays":7,"dailyLimitMinutes":180,"warningMinutes":5,"enabled":true}}"#.utf8))
+            }
+            XCTAssertEqual(request.url?.path, "/api/internet/credits/test-credit/resolve"); XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(payload["action"] as? String, "restore"); XCTAssertEqual(payload["reason"] as? String, "Synthetic provider review"); XCTAssertEqual(payload["mutationId"] as? String, mutation)
+            return (200, Data(#"{"data":{"id":"test-credit","personId":"test-person","earnedDate":"2026-10-17","minutes":60,"status":"available","expiresAt":"2026-10-25T06:00:00Z","policyVersion":1}}"#.utf8))
+        }
+        _ = try await api.saveInternetPolicy("test-person", draft: RewardPolicyDraft(expectedVersion: 0, rewardMinutes: 60, carryoverDays: 7, dailyLimitMinutes: 180, bedtime: nil, warningMinutes: 5, enabled: true))
+        _ = try await api.resolveInternetCredit("test-credit", action: "restore", reason: "Synthetic provider review", mutationID: mutation)
+        XCTAssertEqual(requests, 2)
+    }
+    @MainActor func testAccountDeletionSendsFreshPasswordConfirmationAndWorksWithoutMobileCredential() async throws {
+        let api = client(); api.mobileToken = nil; var paths: [String] = []
+        MockProtocol.handler = { [self] request in
+            paths.append(request.url!.path)
+            if request.url?.path == "/api/auth/token" {
+                XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+                return (200, Data(#"{"token":"verified-unlinked-account-proof"}"#.utf8))
+            }
+            XCTAssertEqual(request.url?.path, "/api/account/delete"); XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer verified-unlinked-account-proof", "Resolve the first-party BFF account identity without requiring family membership")
+            let payload = body(request); XCTAssertEqual(payload["password"] as? String, "test-only-password"); XCTAssertEqual(payload["confirmation"] as? String, "DELETE MY ACCOUNT")
+            XCTAssertNil(payload["email"]); XCTAssertNil(payload["userId"]); XCTAssertNil(payload["householdId"])
+            return (200, Data(#"{"data":{"deleted":true}}"#.utf8))
+        }
+        try await api.deleteAccount(password: "test-only-password")
+        XCTAssertEqual(paths, ["/api/auth/token", "/api/account/delete"], "Deletion must never claim/join a family or issue a mobile session")
+    }
+    @MainActor func testDeletionMustBeExplicitlyConfirmedByResponseAndTransferMustMatchRecipient() async throws {
+        let api = client()
+        MockProtocol.handler = { _ in (200, Data(#"{"data":{"deleted":false}}"#.utf8)) }
+        do { try await api.deleteAccount(password: "test-only-password"); XCTFail("Do not claim unconfirmed deletion") } catch let error as APIError { XCTAssertEqual(error.code, "deletion_unconfirmed") }
+        MockProtocol.handler = { [self] request in
+            XCTAssertEqual(request.url?.path, "/api/account/transfer-ownership"); XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(body(request)["userId"] as? String, "test-caregiver")
+            return (200, Data(#"{"data":{"transferred":true,"userId":"different-user"}}"#.utf8))
+        }
+        do { try await api.transferOwnership(userID: "test-caregiver"); XCTFail("Transfer recipient must match") } catch let error as APIError { XCTAssertEqual(error.code, "transfer_unconfirmed") }
+    }
 
 }

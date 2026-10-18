@@ -59,6 +59,17 @@ protocol FamilyAPI: AnyObject {
     func createFrameAccessCode(scope: String, personID: String?) async throws -> FrameAccessCode
     func members() async throws -> [FamilyMember]
     func changeMemberCapabilities(_ id: String, capabilities: ParentCapabilities) async throws -> MemberCapabilitiesResult
+    func internet() async throws -> InternetSnapshot
+    func redeemInternet(creditID: String, deviceID: String, mutationID: String) async throws -> InternetSession
+    func grantInternet(personID: String, deviceID: String, minutes: Int?, allDay: Bool, reason: String?, mutationID: String) async throws -> InternetSession
+    func changeInternetSession(_ id: String, action: InternetSessionAction) async throws -> InternetSession
+    func saveInternetDevice(_ draft: ManagedDeviceDraft, id: String?) async throws -> ManagedInternetDevice
+    func deleteInternetDevice(_ item: ManagedInternetDevice, mutationID: String) async throws
+    func saveInternetPolicy(_ personID: String, draft: RewardPolicyDraft) async throws -> RewardPolicy
+    func resolveInternetCredit(_ id: String, action: String, reason: String, mutationID: String) async throws -> RewardCredit
+    func internetHistory() async throws -> [InternetHistoryItem]
+    func deleteAccount(password: String) async throws
+    func transferOwnership(userID: String) async throws
 }
 
 @MainActor
@@ -235,6 +246,46 @@ final class APIClient: FamilyAPI {
     func members() async throws -> [FamilyMember] { let list: FamilyMemberList = try await send("/api/members"); return list.members }
     func changeMemberCapabilities(_ id: String, capabilities: ParentCapabilities) async throws -> MemberCapabilitiesResult {
         try await send("/api/members/\(id)/capabilities", method: "PATCH", body: encoded(capabilities))
+    }
+    func internet() async throws -> InternetSnapshot { try await send("/api/internet") }
+    func redeemInternet(creditID: String, deviceID: String, mutationID: String) async throws -> InternetSession {
+        try await send("/api/internet/redeem", method: "POST", body: encoded(["creditId": creditID, "deviceId": deviceID, "mutationId": mutationID]))
+    }
+    func grantInternet(personID: String, deviceID: String, minutes: Int?, allDay: Bool, reason: String?, mutationID: String) async throws -> InternetSession {
+        struct Grant: Encodable { let personId: String; let deviceId: String; let minutes: Int?; let allDay: Bool; let reason: String?; let mutationId: String }
+        return try await send("/api/internet/grants", method: "POST", body: encoded(Grant(personId: personID, deviceId: deviceID, minutes: minutes, allDay: allDay, reason: reason, mutationId: mutationID)))
+    }
+    func changeInternetSession(_ id: String, action: InternetSessionAction) async throws -> InternetSession { try await send("/api/internet/sessions/\(id)/actions", method: "POST", body: encoded(action)) }
+    func saveInternetDevice(_ draft: ManagedDeviceDraft, id: String?) async throws -> ManagedInternetDevice {
+        try await send(id.map { "/api/internet/devices/\($0)" } ?? "/api/internet/devices", method: id == nil ? "POST" : "PATCH", body: encoded(draft))
+    }
+    func deleteInternetDevice(_ item: ManagedInternetDevice, mutationID: String) async throws {
+        let _: Acknowledgement = try await send("/api/internet/devices/\(item.id)?expectedVersion=\(item.version)&mutationId=\(mutationID)", method: "DELETE")
+    }
+    func saveInternetPolicy(_ personID: String, draft: RewardPolicyDraft) async throws -> RewardPolicy { try await send("/api/internet/policies/\(personID)", method: "PUT", body: encoded(draft)) }
+    func resolveInternetCredit(_ id: String, action: String, reason: String, mutationID: String) async throws -> RewardCredit {
+        try await send("/api/internet/credits/\(id)/resolve", method: "POST", body: encoded(["action": action, "reason": reason, "mutationId": mutationID]))
+    }
+    func internetHistory() async throws -> [InternetHistoryItem] { let list: InternetHistoryList = try await send("/api/internet/history"); return list.history }
+    func deleteAccount(password: String) async throws {
+        struct Deleted: Decodable { let deleted: Bool }
+        var authorization: String?
+        if mobileToken == nil {
+            // Verified unlinked onboarding retains only the first-party BFF
+            // cookie. Exchange it for identity proof without joining a family
+            // or issuing a mobile credential, as with normal account exchange.
+            struct AuthToken: Decodable { let token: String }
+            let proof: AuthToken = try await send("/api/auth/token", wrapped: false, authenticated: false)
+            authorization = "Bearer \(proof.token)"
+        }
+        let result: Deleted = try await send("/api/account/delete", method: "POST", body: encoded(["password": password, "confirmation": "DELETE MY ACCOUNT"]), authorization: authorization)
+        guard result.deleted else { throw APIError(status: 0, code: "deletion_unconfirmed", message: "Account deletion was not confirmed. Sign in again to check your account before retrying.") }
+        clearLoginCookies()
+    }
+    func transferOwnership(userID: String) async throws {
+        struct Transferred: Decodable { let transferred: Bool; let userId: String }
+        let result: Transferred = try await send("/api/account/transfer-ownership", method: "POST", body: encoded(["userId": userID]))
+        guard result.transferred, result.userId == userID else { throw APIError(status: 0, code: "transfer_unconfirmed", message: "Ownership transfer was not confirmed. Refresh family access before trying again.") }
     }
 
 }
