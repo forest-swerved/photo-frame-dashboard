@@ -6,6 +6,7 @@ enum Brand {
     static let cyanInk = Color(hex: "00748c")
     static let lime = Color(hex: "c8ff00")
     static let magenta = Color(hex: "ff2ebc")
+    static let magentaInk = Color(hex: "a91675")
     static let ink = Color(hex: "111111")
     static let muted = Color(hex: "63636b")
     static let background = Color(hex: "f5f5f7")

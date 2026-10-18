@@ -30,6 +30,8 @@ protocol FamilyAPI: AnyObject {
     func createAccount(name: String, email: String, password: String, invitation: String) async throws -> AccountOutcome
     func confirmAccount(email: String, code: String, invitation: String) async throws -> AccountOutcome
     func resendConfirmation(email: String) async throws
+    func requestPasswordReset(email: String) async throws
+    func resetPassword(email: String, token: String, recoveryLink: String, password: String) async throws
     func joinFamily(invitation: String) async throws -> AccountOutcome
     func cancelAccountOnboarding() async
     func serviceStatus() async throws -> MobileServiceStatus
@@ -48,6 +50,15 @@ protocol FamilyAPI: AnyObject {
     func savePreferences(_ prefs: NotificationPreferences) async throws -> NotificationPreferences
     func notifications() async throws -> [FamilyNotification]
     func markRead(id: String) async throws
+    func setOccurrenceCompletion(_ occurrence: ChoreOccurrence, completed: Bool, mutationID: String) async throws -> ChoreOccurrence
+    func changeOccurrence(_ id: String, action: OccurrenceAction) async throws -> ChoreOccurrence
+    func choreHistory(from: String, to: String, personID: String?) async throws -> [ChoreHistoryItem]
+    func choreBreaks() async throws -> [ChoreBreak]
+    func createChoreBreak(_ draft: ChoreBreakDraft) async throws -> ChoreBreak
+    func revokeChoreBreak(_ item: ChoreBreak, reason: String, mutationID: String) async throws -> ChoreBreak
+    func createFrameAccessCode(scope: String, personID: String?) async throws -> FrameAccessCode
+    func members() async throws -> [FamilyMember]
+    func changeMemberCapabilities(_ id: String, capabilities: ParentCapabilities) async throws -> MemberCapabilitiesResult
 }
 
 @MainActor
@@ -137,6 +148,15 @@ final class APIClient: FamilyAPI {
     func resendConfirmation(email: String) async throws {
         let _: Acknowledgement = try await send("/api/auth/resend-verification", method: "POST", body: encoded(["email": email]), wrapped: false, authenticated: false)
     }
+    func requestPasswordReset(email: String) async throws {
+        clearLoginCookies()
+        let _: Acknowledgement = try await send("/api/auth/request-password-reset", method: "POST", body: encoded(["email": email]), wrapped: false, authenticated: false)
+    }
+    func resetPassword(email: String, token: String, recoveryLink: String, password: String) async throws {
+        defer { clearLoginCookies() }
+        let payload = recoveryLink.isEmpty ? ["email": email, "token": token, "password": password] : ["recoveryLink": recoveryLink, "password": password]
+        let _: Acknowledgement = try await send("/api/auth/reset-password", method: "POST", body: encoded(payload), wrapped: false, authenticated: false)
+    }
     func joinFamily(invitation: String) async throws -> AccountOutcome { try await finishAccount(invitation: invitation) }
     private func finishAccount(invitation: String) async throws -> AccountOutcome {
         struct AuthToken: Decodable { let token: String }
@@ -190,4 +210,31 @@ final class APIClient: FamilyAPI {
         let list: NotificationList = try await send("/api/mobile/notifications"); return list.notifications
     }
     func markRead(id: String) async throws { let _: Acknowledgement = try await send("/api/mobile/notifications/\(id)/read", method: "POST", body: Data("{}".utf8)) }
+    func setOccurrenceCompletion(_ occurrence: ChoreOccurrence, completed: Bool, mutationID: String) async throws -> ChoreOccurrence {
+        struct Change: Encodable { let completed: Bool; let expectedVersion: Int; let mutationId: String }
+        return try await send("/api/chore-occurrences/\(occurrence.id)/completion", method: "PUT", body: encoded(Change(completed: completed, expectedVersion: occurrence.version, mutationId: mutationID)))
+    }
+    func changeOccurrence(_ id: String, action: OccurrenceAction) async throws -> ChoreOccurrence {
+        try await send("/api/chore-occurrences/\(id)/actions", method: "POST", body: encoded(action))
+    }
+    func choreHistory(from: String, to: String, personID: String?) async throws -> [ChoreHistoryItem] {
+        var query = URLComponents(); query.queryItems = [URLQueryItem(name: "from", value: from), URLQueryItem(name: "to", value: to), URLQueryItem(name: "limit", value: "100")]
+        if let personID { query.queryItems?.append(URLQueryItem(name: "personId", value: personID)) }
+        let result: ChoreHistoryResponse = try await send("/api/chore-history?" + (query.percentEncodedQuery ?? "")); return result.history
+    }
+    func choreBreaks() async throws -> [ChoreBreak] { let result: ChoreBreaksResponse = try await send("/api/chore-exceptions"); return result.exceptions }
+    func createChoreBreak(_ draft: ChoreBreakDraft) async throws -> ChoreBreak { try await send("/api/chore-exceptions", method: "POST", body: encoded(draft)) }
+    func revokeChoreBreak(_ item: ChoreBreak, reason: String, mutationID: String) async throws -> ChoreBreak {
+        struct Revoke: Encodable { let expectedVersion: Int; let reason: String; let mutationId: String }
+        return try await send("/api/chore-exceptions/\(item.id)/revoke", method: "POST", body: encoded(Revoke(expectedVersion: item.version, reason: reason, mutationId: mutationID)))
+    }
+    func createFrameAccessCode(scope: String, personID: String?) async throws -> FrameAccessCode {
+        struct Request: Encodable { let scope: String; let personId: String? }
+        return try await send("/api/frame-access-codes", method: "POST", body: encoded(Request(scope: scope, personId: personID)))
+    }
+    func members() async throws -> [FamilyMember] { let list: FamilyMemberList = try await send("/api/members"); return list.members }
+    func changeMemberCapabilities(_ id: String, capabilities: ParentCapabilities) async throws -> MemberCapabilitiesResult {
+        try await send("/api/members/\(id)/capabilities", method: "PATCH", body: encoded(capabilities))
+    }
+
 }

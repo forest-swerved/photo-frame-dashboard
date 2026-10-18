@@ -23,7 +23,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var refreshIssue: String?
     @Published private(set) var calendarMessage: String?
     @Published private(set) var activityMessage: String?
+    @Published private(set) var hasLoadedActivity = false
     @Published var selectedTab = 0
+    @Published var openedOccurrence: ChoreOccurrence?
     private let api: any FamilyAPI
     private let keychain: any CredentialStoring
     private let cache: any DashboardCaching
@@ -39,17 +41,34 @@ final class AppModel: ObservableObject {
     private var preferencesRevision = 0
     private var agendaCache = CalendarAgendaCache()
     private var calendarReadAt: Date?
+    private var confirmedOccurrences: [String: ChoreOccurrence] = [:]
     private var credential: MobileCredential?
     private var generation = 0
     private var hasStarted = false
     private var registeredPushKey: String?
     private var isRegisteringPush = false
     var isAdmin: Bool { session?.isAdmin == true }
+    var canManageChores: Bool { session?.isChild != true && session != nil && (isAdmin || snapshot?.capabilities?.manageChores == true) }
+    var canManageInternet: Bool { session?.isChild != true && session != nil && (isAdmin || snapshot?.capabilities?.manageInternet == true) }
     var canChange: Bool { session != nil && !isStale && snapshot?.date == today }
     var zone: TimeZone { session?.household.timeZone ?? TimeZone(secondsFromGMT: 0)! }
     var today: String { Dates.day(now(), in: zone) }
     var visibleChores: [Chore] { snapshot?.todaysChores ?? [] }
-    var completedCount: Int { visibleChores.filter { $0.completion.completed }.count }
+    var visibleOccurrences: [ChoreOccurrence] {
+        (snapshot?.occurrences ?? []).filter { $0.date == snapshot?.date && (session?.isChild != true || $0.personId == session?.personId) }
+    }
+    var chorePeople: [Person] {
+        var people = snapshot?.people ?? []
+        for item in visibleOccurrences {
+            if let id = item.personId, !people.contains(where: { $0.id == id }) { people.append(Person(id: id, name: item.personName ?? "Family member", color: "#00748c", version: 1)) }
+        }
+        return people
+    }
+    var requiredOccurrences: [ChoreOccurrence] { visibleOccurrences.filter { $0.required && !$0.isSkipped } }
+    var requiredCount: Int { snapshot?.occurrences == nil ? visibleChores.count : requiredOccurrences.count }
+    var completedCount: Int { snapshot?.occurrences == nil ? visibleChores.filter { $0.completion.completed }.count : requiredOccurrences.filter(\.isDone).count }
+    var approvalCount: Int { requiredOccurrences.filter(\.isSubmitted).count }
+    var routines: [ChoreRoutine] { snapshot?.routines ?? (snapshot?.chores ?? []).map(ChoreRoutine.init(legacy:)) }
     var unreadCount: Int { notifications.filter { $0.readAt == nil }.count }
     var canViewChildSettings: Bool { session?.isChild != true }
     func confirmsCalendarAvailability(from: String, to: String) -> Bool {
@@ -208,7 +227,7 @@ final class AppModel: ObservableObject {
             // A response started before mark-as-read must not restore the badge.
             let read = Dictionary(uniqueKeysWithValues: notifications.compactMap { item in item.readAt.map { (item.id, $0) } })
             notifications = result.map { item in var current = item; current.readAt = current.readAt ?? read[item.id]; return current }
-            activityMessage = nil
+            activityMessage = nil; hasLoadedActivity = true
         } catch {
             guard started == generation, !(error is CancellationError), !Task.isCancelled else { return }
             if (error as? APIError)?.isAuthenticationFailure == true { await forgetSession(reason: error.localizedDescription); return }
@@ -232,9 +251,20 @@ final class AppModel: ObservableObject {
         catch { if started == generation && !Task.isCancelled { deliveryStatus = nil } }
     }
     private func mergeHousehold(_ incoming: HouseholdSnapshot) -> HouseholdSnapshot {
-        guard let existing = snapshot, existing.date == incoming.date else { return incoming }
-        let completions = Dictionary(uniqueKeysWithValues: existing.chores.map { ($0.id, $0.completion) })
         var merged = incoming
+        if let occurrences = incoming.occurrences {
+            merged.occurrences = occurrences.compactMap { occurrence in
+                let known = confirmedOccurrences[occurrence.id]
+                let current = known.map { $0.version > occurrence.version ? $0 : occurrence } ?? occurrence
+                return current.date == incoming.date ? current : nil
+            }
+            for occurrence in merged.occurrences ?? [] {
+                if occurrence.version >= (confirmedOccurrences[occurrence.id]?.version ?? 0) { confirmedOccurrences[occurrence.id] = occurrence }
+            }
+            merged.chores = (merged.occurrences ?? []).filter { !$0.isSkipped }.map(\.legacy)
+        }
+        guard let existing = snapshot, existing.date == incoming.date else { return merged }
+        let completions = Dictionary(uniqueKeysWithValues: existing.chores.map { ($0.id, $0.completion) })
         for index in merged.chores.indices {
             if let completion = completions[merged.chores[index].id], completion.version > merged.chores[index].completion.version {
                 merged.chores[index].completion = completion
@@ -284,24 +314,92 @@ final class AppModel: ObservableObject {
         }
     }
     func saveChore(_ draft: ChoreDraft, id: String?) async -> Bool {
-        guard isAdmin, canChange else { return false }
-        lastMutationNeedsReview = false
-        do { try await api.saveChore(draft, id: id); Task { await refresh() }; return true }
-        catch {
-            let failure = error as? APIError
-            lastMutationNeedsReview = failure.map { $0.isConflict || $0.status == 0 || $0.status >= 500 } ?? true
-            if lastMutationNeedsReview {
-                uncertaintyVersion += 1; isStale = true
-                message = failure?.isConflict == true ? "This chore changed elsewhere. Close this editor, refresh, and review the current chore before editing again." : "The save could not be confirmed. Close this editor and refresh to check whether it was saved before making another change."
-            } else { message = error.localizedDescription }
-            return false
-        }
+        guard canManageChores, canChange else { return false }
+        lastMutationNeedsReview = false; let started = generation
+        do { try await api.saveChore(draft, id: id); guard started == generation else { return false }; Task { await refresh() }; return true }
+        catch { await failedChoreMutation(error, generation: started); return false }
     }
     func deleteChore(_ chore: Chore) async -> Bool {
-        guard isAdmin, canChange else { return false }
-        do { try await api.deleteChore(chore); Task { await refresh() }; return true }
-        catch { uncertaintyVersion += 1; isStale = true; message = error.localizedDescription; return false }
+        guard canManageChores, canChange else { return false }
+        lastMutationNeedsReview = false; let started = generation
+        do { try await api.deleteChore(chore); guard started == generation else { return false }; Task { await refresh() }; return true }
+        catch { await failedChoreMutation(error, generation: started); return false }
     }
+    func currentOccurrence(_ original: ChoreOccurrence) -> ChoreOccurrence {
+        let current = snapshot?.occurrences?.first(where: { $0.id == original.id })
+        let confirmed = confirmedOccurrences[original.id]
+        return [original, current, confirmed].compactMap { $0 }.max(by: { $0.version < $1.version }) ?? original
+    }
+    func canChangeOccurrence(_ occurrence: ChoreOccurrence) -> Bool {
+        canChange && occurrence.date == today && (session?.isChild != true || occurrence.personId == session?.personId)
+    }
+    func toggleOccurrence(_ occurrence: ChoreOccurrence) async -> Bool {
+        guard canChangeOccurrence(occurrence), occurrence.canComplete, !changingChores.contains(occurrence.id) else { return false }
+        return await mutateOccurrence(occurrence) {
+            try await self.api.setOccurrenceCompletion(occurrence, completed: !occurrence.completion.completed, mutationID: UUID().uuidString.lowercased())
+        }
+    }
+    func actOnOccurrence(_ occurrence: ChoreOccurrence, action: String, reason: String? = nil, toDate: String? = nil, dueTime: String? = nil, steps: [String]? = nil) async -> Bool {
+        guard canChangeOccurrence(occurrence), !changingChores.contains(occurrence.id), action == "subtasks" || canManageChores else { return false }
+        let request = OccurrenceAction(action: action, expectedVersion: occurrence.version, mutationId: UUID().uuidString.lowercased(), reason: reason, toDate: toDate, dueTime: dueTime, completedSubtaskIds: steps)
+        return await mutateOccurrence(occurrence, expectedDate: toDate) { try await self.api.changeOccurrence(occurrence.id, action: request) }
+    }
+    private func mutateOccurrence(_ occurrence: ChoreOccurrence, expectedDate: String? = nil, operation: () async throws -> ChoreOccurrence) async -> Bool {
+        changingChores.insert(occurrence.id); lastMutationNeedsReview = false; let started = generation, sourceDay = snapshot?.date
+        defer { changingChores.remove(occurrence.id) }
+        do {
+            let result = try await operation()
+            guard started == generation else { return false }
+            guard result.id == occurrence.id, result.choreId == occurrence.choreId, result.date == (expectedDate ?? occurrence.date) else {
+                throw APIError(status: 0, code: "invalid_response", message: "The chore change could not be confirmed. Refresh before trying again.")
+            }
+            if result.version >= (confirmedOccurrences[result.id]?.version ?? 0) { confirmedOccurrences[result.id] = result }
+            if snapshot?.date == sourceDay, let current = snapshot { snapshot = mergeHousehold(current) }
+            // An acknowledgment may arrive after midnight or a reschedule. Only
+            // the current day's matching occurrence is ever updated on screen.
+            if snapshot?.date == sourceDay, var current = snapshot, var occurrences = current.occurrences {
+                if let index = occurrences.firstIndex(where: { $0.id == result.id }) {
+                    if result.date == current.date { if result.version >= occurrences[index].version { occurrences[index] = result } }
+                    else { occurrences.remove(at: index) }
+                }
+                current.occurrences = occurrences; current.chores = occurrences.filter { !$0.isSkipped }.map(\.legacy); snapshot = current
+            }
+            persistCache(); changingChores.remove(occurrence.id); UISelectionFeedbackGenerator().selectionChanged()
+            Task { await refresh() }; return true
+        } catch { await failedChoreMutation(error, generation: started); return false }
+    }
+    private func failedChoreMutation(_ error: Error, generation started: Int) async {
+        guard generation == started, !(error is CancellationError) else { return }
+        if (error as? APIError)?.isAuthenticationFailure == true { await forgetSession(reason: error.localizedDescription); return }
+        let failure = error as? APIError
+        lastMutationNeedsReview = failure.map { $0.isConflict || $0.status == 0 || $0.status >= 500 } ?? true
+        if lastMutationNeedsReview { uncertaintyVersion += 1; isStale = true }
+        message = lastMutationNeedsReview ? "This change could not be confirmed or the chore changed elsewhere. Refresh and review its current state before trying again." : error.localizedDescription
+    }
+    func loadChoreHistory(from: String, to: String, personID: String?) async throws -> [ChoreHistoryItem] {
+        let started = generation
+        do {
+            let result = try await api.choreHistory(from: from, to: to, personID: session?.isChild == true ? session?.personId : personID)
+            guard started == generation else { throw CancellationError() }; return result
+        } catch { guard started == generation else { throw CancellationError() }; throw error }
+    }
+    func loadChoreBreaks() async throws -> [ChoreBreak] {
+        guard canManageChores else { throw APIError(status: 403, code: "parent_required", message: "A parent with chore permission must manage chore breaks.") }
+        let started = generation
+        do { let result = try await api.choreBreaks(); guard started == generation else { throw CancellationError() }; return result }
+        catch { guard started == generation else { throw CancellationError() }; throw error }
+    }
+    func createChoreBreak(_ draft: ChoreBreakDraft) async -> Bool {
+        guard canManageChores, canChange else { return false }; lastMutationNeedsReview = false; let started = generation
+        do { _ = try await api.createChoreBreak(draft); guard started == generation else { return false }; Task { await refresh() }; return true }
+        catch { await failedChoreMutation(error, generation: started); return false }
+    }
+    func revokeChoreBreak(_ item: ChoreBreak, reason: String) async -> Bool {
+        guard canManageChores, canChange else { return false }; lastMutationNeedsReview = false; let started = generation
+        do { _ = try await api.revokeChoreBreak(item, reason: reason, mutationID: UUID().uuidString.lowercased()); guard started == generation else { return false }; Task { await refresh() }; return true }
+        catch { await failedChoreMutation(error, generation: started); return false }
+    }
+    func deleteRoutine(_ routine: ChoreRoutine) async -> Bool { await deleteChore(routine.legacy) }
     func inviteChild(_ person: Person, email: String) async throws -> ChildInvitation {
         guard isAdmin else { throw APIError(status: 403, code: "admin_required", message: "Only a parent administrator can invite a child account.") }
         return try await api.createChildInvitation(personID: person.id, email: email.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -329,6 +427,67 @@ final class AppModel: ObservableObject {
             if let i = notifications.firstIndex(where: { $0.id == item.id }) { notifications[i].readAt = ISO8601DateFormatter().string(from: Date()) }
             persistCache()
         } catch { if started == generation { message = error.localizedDescription } }
+    }
+    func openNotification(id: String) async {
+        guard session != nil else { return }
+        let started = generation
+        do {
+            // The push supplies only an opaque lookup key. Navigation and detail
+            // are accepted exclusively from this account's authenticated inbox.
+            let inbox = try await api.notifications()
+            guard started == generation else { return }
+            let read = Dictionary(uniqueKeysWithValues: notifications.compactMap { item in item.readAt.map { (item.id, $0) } })
+            notifications = inbox.map { item in var current = item; current.readAt = current.readAt ?? read[item.id]; return current }
+            hasLoadedActivity = true; activityMessage = nil; persistCache()
+            selectedTab = 3
+            guard let item = inbox.first(where: { $0.id == id }) else { return }
+            switch item.target {
+            case "today": selectedTab = 0
+            case "chores": selectedTab = 1
+            case "devices": selectedTab = 3 // Devices tab is added with the Internet contract.
+            default: break
+            }
+            if let occurrenceID = item.occurrenceId,
+               let occurrence = visibleOccurrences.first(where: { $0.id == occurrenceID }) { openedOccurrence = occurrence }
+            await markRead(item)
+        } catch {
+            guard started == generation else { return }
+            selectedTab = 3
+            if (error as? APIError)?.isAuthenticationFailure == true { await forgetSession(reason: error.localizedDescription) }
+            else { activityMessage = "This update could not be loaded. Refresh Activity while online." }
+        }
+    }
+    func requestPasswordReset(email: String) async -> Bool {
+        let started = generation
+        do { try await api.requestPasswordReset(email: email.trimmingCharacters(in: .whitespacesAndNewlines)); return started == generation }
+        catch { if started == generation { message = error.localizedDescription }; return false }
+    }
+    func resetPassword(email: String, token: String, recoveryLink: String, password: String) async -> Bool {
+        let started = generation
+        do {
+            try await api.resetPassword(email: email.trimmingCharacters(in: .whitespacesAndNewlines), token: token, recoveryLink: recoveryLink.trimmingCharacters(in: .whitespacesAndNewlines), password: password)
+            guard started == generation else { return false }
+            await forgetSession(reason: nil); accountStage = .entry; return true
+        } catch { if started == generation { message = error.localizedDescription }; return false }
+    }
+    func frameAccessCode(scope: String, personID: String?) async throws -> FrameAccessCode {
+        guard session != nil, !isStale, scope == "child" && (session?.isChild == true ? personID == session?.personId : canManageInternet) || scope == "parent" && canManageInternet else {
+            throw APIError(status: 403, code: "parent_required", message: "Your account cannot unlock those frame controls.")
+        }
+        let started = generation
+        do { let result = try await api.createFrameAccessCode(scope: scope, personID: personID); guard started == generation else { throw CancellationError() }; return result }
+        catch { guard started == generation else { throw CancellationError() }; throw error }
+    }
+    func familyMembers() async throws -> [FamilyMember] {
+        guard isAdmin else { throw APIError(status: 403, code: "admin_required", message: "Only a parent administrator can change caregiver access.") }
+        let started = generation
+        do { let result = try await api.members(); guard started == generation else { throw CancellationError() }; return result }
+        catch { guard started == generation else { throw CancellationError() }; throw error }
+    }
+    func changeCaregiver(_ id: String, capabilities: ParentCapabilities) async -> Bool {
+        guard isAdmin, !isStale else { return false }; let started = generation
+        do { _ = try await api.changeMemberCapabilities(id, capabilities: capabilities); return started == generation }
+        catch { if started == generation { message = "Caregiver access was not confirmed. Refresh and review before trying again." }; return false }
     }
     func registerPush(_ token: String) async {
         guard let session else { return }
@@ -367,8 +526,8 @@ final class AppModel: ObservableObject {
         message = reason
     }
     private func clearDashboard() {
-        snapshot = nil; calendar = nil; calendarAgenda = []; agendaCache = CalendarAgendaCache(); calendarReadAt = nil; notifications = []; preferences = nil; deliveryStatus = nil; lastUpdated = nil
+        snapshot = nil; calendar = nil; calendarAgenda = []; agendaCache = CalendarAgendaCache(); calendarReadAt = nil; confirmedOccurrences = [:]; openedOccurrence = nil; notifications = []; preferences = nil; deliveryStatus = nil; lastUpdated = nil
         hasRequestedPreferences = false; hasRequestedStatus = false
-        changingChores = []; registeredPushKey = nil; isStale = true; refreshIssue = nil; calendarMessage = nil; activityMessage = nil; selectedTab = 0
+        changingChores = []; registeredPushKey = nil; isStale = true; refreshIssue = nil; calendarMessage = nil; activityMessage = nil; hasLoadedActivity = false; selectedTab = 0
     }
 }

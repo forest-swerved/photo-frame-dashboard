@@ -56,4 +56,30 @@ final class ModelTests: XCTestCase {
         XCTAssertTrue(json["quietStart"] is NSNull); XCTAssertTrue(json["quietEnd"] is NSNull)
         XCTAssertNil(json["previewDetails"]); XCTAssertNil(json["timezone"])
     }
+    func testRichRoutineDraftEncodesRequiredApprovalAndOneTimeSchedule() throws {
+        var draft = ChoreDraft(title: "Synthetic one-time task", personId: "child-person", weekdays: Array(0...6), dueTime: "17:00", reminderMinutes: 15, expectedVersion: 5)
+        draft.required = false; draft.requiresApproval = true; draft.instructions = "Synthetic instructions"
+        draft.subtasks = [ChoreStep(id: "test-step", title: "Synthetic step")]
+        draft.scheduleType = "one_off"; draft.scheduledDate = "2026-10-18"
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(draft)) as? [String: Any])
+        XCTAssertEqual(json["required"] as? Bool, false); XCTAssertEqual(json["requiresApproval"] as? Bool, true)
+        XCTAssertEqual(json["scheduleType"] as? String, "one_off"); XCTAssertEqual(json["scheduledDate"] as? String, "2026-10-18")
+        XCTAssertEqual((json["subtasks"] as? [[String: Any]])?.first?["id"] as? String, "test-step")
+        draft.scheduleType = "weekly"; draft.scheduledDate = nil
+        let weekly = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(draft)) as? [String: Any])
+        XCTAssertTrue(weekly["scheduledDate"] is NSNull, "Switching back to weekly must clear the old one-time date")
+    }
+    func testLegacySnapshotAndExplicitEmptyOccurrencesRemainDistinct() throws {
+        let legacy = #"{"household":{"id":"test-home","title":"Synthetic home","timezone":"America/Denver"},"role":"admin","date":"2026-10-18","people":[],"chores":[]}"#
+        let old = try JSONDecoder().decode(HouseholdSnapshot.self, from: Data(legacy.utf8))
+        let modern = try JSONDecoder().decode(HouseholdSnapshot.self, from: Data((String(legacy.dropLast()) + ",\"occurrences\":[]}").utf8))
+        XCTAssertNil(old.occurrences); XCTAssertEqual(modern.occurrences?.count, 0)
+    }
+    func testAccountPreferencesDefaultNewKindsAndPreserveExplicitOff() throws {
+        let prefs = try JSONDecoder().decode(NotificationPreferences.self, from: Data(#"{"pushEnabled":false,"rewards":false}"#.utf8))
+        XCTAssertFalse(prefs.pushEnabled); XCTAssertFalse(prefs.rewards); XCTAssertTrue(prefs.internetSessions)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(prefs)) as? [String: Any])
+        XCTAssertEqual(json["rewards"] as? Bool, false); XCTAssertEqual(json["internetSessions"] as? Bool, true)
+        XCTAssertNil(json["timezone"], "Household timezone is server-owned")
+    }
 }

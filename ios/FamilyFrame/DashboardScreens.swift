@@ -17,18 +17,27 @@ struct TodayScreen: View {
                     }
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text("\(model.completedCount)").font(.largeTitle.bold())
-                        Text("of \(model.visibleChores.count) chores done today").font(.subheadline).foregroundStyle(Brand.muted)
+                        Text("of \(model.requiredCount) \(model.snapshot?.occurrences == nil ? "chores" : "required chores") done today").font(.subheadline).foregroundStyle(Brand.muted)
                     }
-                    ProgressView(value: Double(model.completedCount), total: Double(max(model.visibleChores.count, 1))).tint(Color(hex: "4a6400")).padding(10).background(Brand.lime, in: Capsule())
+                    ProgressView(value: Double(model.completedCount), total: Double(max(model.requiredCount, 1))).tint(Color(hex: "4a6400")).padding(10).background(Brand.lime, in: Capsule())
                 }
-                if let snapshot = model.snapshot {
+                if let snapshot = model.snapshot, snapshot.occurrences != nil {
+                    if model.approvalCount > 0 { Label("\(model.approvalCount) required \(model.approvalCount == 1 ? "chore" : "chores") waiting for parent approval", systemImage: "clock").font(.subheadline).foregroundStyle(Brand.magentaInk) }
+                    ApprovalQueue()
+                    ForEach(model.chorePeople.filter { model.session?.isChild != true || $0.id == model.session?.personId }) { person in
+                        PersonOccurrencesCard(person: person, occurrences: model.visibleOccurrences.filter { $0.personId == person.id })
+                    }
+                    let shared = model.visibleOccurrences.filter { $0.personId == nil }
+                    if !shared.isEmpty { PersonOccurrencesCard(person: nil, occurrences: shared) }
+                    if model.chorePeople.isEmpty && shared.isEmpty { FrameCard(accent: Brand.lime) { EmptyState(symbol: "checklist", title: "Nothing scheduled today", detail: model.canManageChores ? "Add a routine or a one-time chore from Chores." : "Your scheduled chores will appear here.") } }
+                } else if let snapshot = model.snapshot {
                     ForEach(visiblePeople(snapshot)) { person in
                         PersonChoresCard(person: person, chores: snapshot.todaysChores.filter { $0.personId == person.id })
                     }
                     let shared = snapshot.todaysChores.filter { $0.personId == nil }
                     if !shared.isEmpty { PersonChoresCard(person: nil, chores: shared) }
                     if snapshot.people.isEmpty && shared.isEmpty {
-                        FrameCard(accent: Brand.lime) { EmptyState(symbol: "checklist", title: "Room for good habits", detail: model.isAdmin ? "Create a chore from the Chores tab to get started." : "Your household hasn't added any chores yet.") }
+                        FrameCard(accent: Brand.lime) { EmptyState(symbol: "checklist", title: "Room for good habits", detail: model.canManageChores ? "Create a chore from the Chores tab to get started." : "Your household hasn't added any chores yet.") }
                     }
                 } else if model.isLoading { ProgressView("Loading your household…").frame(maxWidth: .infinity).padding() }
                 FrameCard(accent: Brand.magenta) {
@@ -102,54 +111,60 @@ struct ChoreRow: View {
 
 struct ChoresScreen: View {
     @EnvironmentObject var model: AppModel
-    @State private var editing: Chore?
+    @State private var editing: ChoreRoutine?
     @State private var adding = false
-    @State private var selectedPerson: String? = nil
+    @State private var selectedPerson: String?
+    @State private var routinesVisible = false
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 20) {
                 StaleBanner()
-                if let snapshot = model.snapshot {
-                    if model.session?.isChild != true {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack {
-                                filterPill("Everyone", id: nil)
-                                ForEach(snapshot.people) { person in filterPill(person.name, id: person.id) }
-                            }
-                        }
-                    }
-                    ForEach(snapshot.people.filter { (selectedPerson == nil || $0.id == selectedPerson) && (model.session?.isChild != true || $0.id == model.session?.personId) }) { person in
-                        choreSection(person.name, accent: Color(hex: person.color), chores: snapshot.chores.filter { $0.personId == person.id })
-                    }
-                    let unassigned = snapshot.chores.filter { $0.personId == nil }
-                    if selectedPerson == nil && !unassigned.isEmpty { choreSection("Family chores", accent: Brand.lime, chores: unassigned) }
-                    if snapshot.chores.isEmpty && snapshot.people.isEmpty {
-                        FrameCard(accent: Brand.lime) { EmptyState(symbol: "checklist", title: "Your household's routines", detail: "A parent can add chores and assign them to each person.") }
+                if model.session?.isChild != true {
+                    Picker("Chore view", selection: $routinesVisible) { Text("Today").tag(false); Text("Routines").tag(true) }.pickerStyle(.segmented)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack { filterPill("Everyone", id: nil); ForEach(model.chorePeople) { person in filterPill(person.name, id: person.id) } }
                     }
                 }
+                if routinesVisible && model.session?.isChild != true { routinesList }
+                else if let snapshot = model.snapshot, snapshot.occurrences != nil {
+                    ApprovalQueue()
+                    ForEach(model.chorePeople.filter { (selectedPerson == nil || $0.id == selectedPerson) && (model.session?.isChild != true || $0.id == model.session?.personId) }) { person in
+                        PersonOccurrencesCard(person: person, occurrences: model.visibleOccurrences.filter { $0.personId == person.id })
+                    }
+                    let shared = model.visibleOccurrences.filter { $0.personId == nil }
+                    if selectedPerson == nil && !shared.isEmpty { PersonOccurrencesCard(person: nil, occurrences: shared) }
+                    if model.visibleOccurrences.isEmpty && model.chorePeople.isEmpty { FrameCard { EmptyState(symbol: "checklist", title: "Nothing scheduled today", detail: "Your routines generate a saved chore list for each day.") } }
+                } else if let snapshot = model.snapshot {
+                    ForEach(snapshot.people.filter { selectedPerson == nil || $0.id == selectedPerson }) { person in
+                        PersonChoresCard(person: person, chores: snapshot.todaysChores.filter { $0.personId == person.id })
+                    }
+                    let shared = snapshot.todaysChores.filter { $0.personId == nil }
+                    if selectedPerson == nil && !shared.isEmpty { PersonChoresCard(person: nil, chores: shared) }
+                }
+                NavigationLink { ChoreHistoryScreen() } label: { Label("Chore history", systemImage: "clock.arrow.circlepath").font(.headline).frame(minHeight: 44) }
+                if model.canManageChores { NavigationLink { ChoreBreaksScreen() } label: { Label("Holidays and chore breaks", systemImage: "sun.max").font(.headline).frame(minHeight: 44) } }
             }.padding(20).frame(maxWidth: 1000).frame(maxWidth: .infinity)
         }.background(Brand.background).navigationTitle(model.session?.isChild == true ? "My chores" : "Chores")
             .refreshable { await model.refresh() }
-            .toolbar { if model.isAdmin { ToolbarItem(placement: .topBarTrailing) { Button { adding = true } label: { Label("Add chore", systemImage: "plus") }.disabled(!model.canChange) } } }
-            .sheet(isPresented: $adding) { ChoreEditor(chore: nil) }
-            .sheet(item: $editing) { ChoreEditor(chore: $0) }
+            .toolbar { if model.canManageChores { ToolbarItem(placement: .topBarTrailing) { Button { adding = true } label: { Label("Add chore", systemImage: "plus") }.disabled(!model.canChange) } } }
+            .sheet(isPresented: $adding) { ChoreEditor(routine: nil) }
+            .sheet(item: $editing) { ChoreEditor(routine: $0) }
     }
-    private func filterPill(_ name: String, id: String?) -> some View {
-        Button { selectedPerson = id } label: { Text(name).font(.subheadline.weight(.semibold)).padding(.horizontal, 18).padding(.vertical, 11).background(selectedPerson == id ? Brand.lime : Color.white, in: Capsule()).foregroundStyle(Brand.ink).overlay { Capsule().stroke(Brand.line, lineWidth: 1) } }.buttonStyle(.plain).accessibilityAddTraits(selectedPerson == id ? .isSelected : []).accessibilityValue(selectedPerson == id ? "Selected" : "Not selected")
-    }
-    private func choreSection(_ name: String, accent: Color, chores: [Chore]) -> some View {
-        FrameCard(accent: accent) {
-            Text(name).font(.title2.bold()).accessibilityAddTraits(.isHeader)
-            if chores.isEmpty { Text("No chores assigned yet.").foregroundStyle(Brand.muted) }
-            ForEach(chores) { chore in
+    private var routinesList: some View {
+        ForEach(model.routines.filter { selectedPerson == nil || $0.personId == selectedPerson }) { routine in
+            FrameCard(accent: routine.required ? Brand.cyan : Brand.lime) {
                 HStack {
-                    ChoreRow(chore: chore, allowCompletion: chore.applies(on: model.snapshot?.date ?? model.today))
-                    if model.isAdmin { Button { editing = chore } label: { Image(systemName: "pencil").frame(width: 44, height: 44) }.accessibilityLabel("Edit \(chore.title)").disabled(!model.canChange) }
+                    Text(routine.title).font(.headline); Spacer()
+                    if model.canManageChores { Button { editing = routine } label: { Image(systemName: "pencil").frame(width: 44, height: 44) }.accessibilityLabel("Edit \(routine.title)").disabled(!model.canChange) }
                 }
-                Text(chore.weekdays.sorted().map { ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][$0] }.joined(separator: " · ")).font(.caption).foregroundStyle(Brand.muted).padding(.leading, 56)
-                if chore.id != chores.last?.id { Divider() }
+                Text(routine.scheduleType == "one_off" ? "One time · \(routine.scheduledDate.map(Dates.dayLabel) ?? "Date unavailable")" : routine.weekdays.filter { (0...6).contains($0) }.sorted().map { ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][$0] }.joined(separator: " · ")).font(.subheadline).foregroundStyle(Brand.muted)
+                Text((routine.required ? "Required" : "Optional") + (routine.requiresApproval ? " · parent approval" : "")).font(.subheadline).foregroundStyle(Brand.cyanInk)
+                if !routine.instructions.isEmpty { Text(routine.instructions).font(.subheadline).foregroundStyle(Brand.muted).lineLimit(3) }
             }
         }
+    }
+    private func filterPill(_ name: String, id: String?) -> some View {
+        Button { selectedPerson = id } label: { Text(name).font(.subheadline.weight(.semibold)).padding(.horizontal, 18).frame(minHeight: 44).background(selectedPerson == id ? Brand.lime : Color.white, in: Capsule()).foregroundStyle(Brand.ink).overlay { Capsule().stroke(Brand.line, lineWidth: 1) } }.buttonStyle(.plain).accessibilityAddTraits(selectedPerson == id ? .isSelected : [])
     }
 }
 
@@ -264,11 +279,12 @@ struct ActivityScreen: View {
             LazyVStack(spacing: 16) {
                 StaleBanner()
                 if let message = model.activityMessage { Text(message).font(.subheadline).foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading) }
-                if model.notifications.isEmpty {
+                if model.notifications.isEmpty && !model.hasLoadedActivity && model.activityMessage == nil { ProgressView("Loading Activity…") }
+                if model.notifications.isEmpty && model.hasLoadedActivity && model.activityMessage == nil {
                     FrameCard(accent: Brand.magenta) { EmptyState(symbol: "bell.badge", title: "You're all caught up", detail: "Chore updates and reminders will appear here. You can choose which ones reach your phone in Settings.") }
                 }
                 ForEach(model.notifications) { item in
-                    Button { Task { await model.markRead(item) } } label: {
+                    Button { Task { await model.openNotification(id: item.id) } } label: {
                         FrameCard(accent: item.readAt == nil ? Brand.magenta : Brand.line) {
                             HStack(alignment: .top) {
                                 Image(systemName: item.kind.contains("chore") ? "checklist" : "bell").foregroundStyle(Brand.cyanInk).frame(width: 24)
@@ -279,7 +295,7 @@ struct ActivityScreen: View {
                                 }
                             }
                         }
-                    }.buttonStyle(.plain).accessibilityHint(item.readAt == nil ? "Marks this activity as read" : "Read activity")
+                    }.buttonStyle(.plain).accessibilityHint("Opens the related chore or family update and marks this activity as read")
                 }
             }.padding(20).frame(maxWidth: 1000).frame(maxWidth: .infinity)
         }.background(Brand.background).navigationTitle("Activity").refreshable { await model.refresh() }

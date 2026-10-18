@@ -4,6 +4,7 @@ import SwiftUI
 struct FamilyFrameApp: App {
     @UIApplicationDelegateAdaptor(FamilyAppDelegate.self) var delegate
     @StateObject private var model = AppModel()
+    @ObservedObject private var notifications = NotificationController.shared
     @Environment(\.scenePhase) private var phase
     var body: some Scene {
         WindowGroup {
@@ -21,8 +22,10 @@ struct FamilyFrameApp: App {
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .familyNotificationReceived)) { _ in Task { await model.refresh() } }
-            .onReceive(NotificationCenter.default.publisher(for: .familyNotificationOpened)) { _ in
-                model.selectedTab = 3; Task { await model.refresh() }
+            .task(id: (notifications.openedNotificationID ?? "") + "|" + (model.session?.cacheIdentity ?? "")) {
+                if let id = notifications.openedNotificationID, model.session != nil {
+                    await model.openNotification(id: id); notifications.consumeOpenedNotification(id)
+                }
             }
             .alert("Family Frame", isPresented: Binding(get: { model.message != nil }, set: { if !$0 { model.message = nil } })) {
                 Button("OK") { model.message = nil }
@@ -43,6 +46,7 @@ struct DashboardTabs: View {
             NavigationStack { ActivityScreen() }.tabItem { Label("Activity", systemImage: "bell.fill") }.badge(model.unreadCount).tag(3)
             NavigationStack { SettingsScreen() }.tabItem { Label("Settings", systemImage: "gearshape.fill") }.tag(4)
         }
+        .sheet(item: $model.openedOccurrence) { OccurrenceDetailScreen(original: $0) }
     }
 }
 
@@ -56,6 +60,7 @@ struct WelcomeScreen: View {
     @State private var confirmationCode = ""
     @State private var invitation = ""
     @State private var confirmationNotice: String?
+    @State private var recovering = false
     @FocusState private var focus: Field?
     enum Field: Hashable { case name, email, password, confirmPassword, code, invitation }
     var body: some View {
@@ -88,6 +93,7 @@ struct WelcomeScreen: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
             if let focus { reader.scrollTo(focus, anchor: .center) }
         }
+        .sheet(isPresented: $recovering) { PasswordRecoveryScreen(email: email) }
         }
     }
     private var accountEntry: some View {
@@ -109,6 +115,7 @@ struct WelcomeScreen: View {
             Button { submitAccount() } label: {
                 if model.isSigningIn { ProgressView().tint(.white) } else { Text(creating ? "Create my account" : "Sign in to Family Frame") }
             }.buttonStyle(PrimaryButton()).disabled(!entryValid || model.isSigningIn)
+            if !creating { Button("Forgot your password?") { focus = nil; recovering = true }.font(.subheadline).frame(minHeight: 44).disabled(model.isSigningIn) }
             Link("Open the web dashboard", destination: APIClient.configuredURL).font(.footnote).foregroundStyle(Brand.cyanInk)
         }
     }

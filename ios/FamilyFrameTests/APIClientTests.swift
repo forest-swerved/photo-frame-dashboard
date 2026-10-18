@@ -183,4 +183,101 @@ final class APIClientTests: XCTestCase {
         catch { XCTFail("Cancellation must not be shown as an offline failure: \(error)") }
     }
 
+    private var occurrenceJSON: String {
+        #"{"id":"daily-task","choreId":"routine-task","date":"2026-10-18","originalDate":"2026-10-18","title":"Synthetic chore","required":true,"instructions":"Synthetic instructions","subtasks":[],"requiresApproval":true,"status":"submitted","version":9,"completion":{"date":"2026-10-18","completed":true,"version":4},"definitionSource":"routine","routineVersion":3}"#
+    }
+    @MainActor func testOccurrenceCompletionUsesFullOccurrenceVersionRatherThanCompletionVersion() async throws {
+        let api = client(), id = UUID().uuidString.lowercased()
+        let occurrence = try JSONDecoder().decode(ChoreOccurrence.self, from: Data(occurrenceJSON.utf8))
+        let response = Data(("{\"data\":" + occurrenceJSON + "}").utf8)
+        MockProtocol.handler = { [self] request in
+            XCTAssertEqual(request.url?.path, "/api/chore-occurrences/daily-task/completion")
+            XCTAssertEqual(request.httpMethod, "PUT")
+            let payload = body(request)
+            XCTAssertEqual(payload["expectedVersion"] as? Int, 9)
+            XCTAssertEqual(payload["mutationId"] as? String, id)
+            XCTAssertEqual(payload["completed"] as? Bool, false)
+            return (200, response)
+        }
+        let result = try await api.setOccurrenceCompletion(occurrence, completed: false, mutationID: id)
+        XCTAssertEqual(result.id, occurrence.id)
+    }
+    @MainActor func testRescheduleIncludesExplicitNullDeadlineAndVersionedReason() async throws {
+        let api = client(), id = UUID().uuidString.lowercased()
+        let response = Data(("{\"data\":" + occurrenceJSON + "}").utf8)
+        MockProtocol.handler = { [self] request in
+            XCTAssertEqual(request.url?.path, "/api/chore-occurrences/daily-task/actions")
+            XCTAssertEqual(request.httpMethod, "POST")
+            let payload = body(request)
+            XCTAssertEqual(payload["action"] as? String, "reschedule")
+            XCTAssertEqual(payload["expectedVersion"] as? Int, 9)
+            XCTAssertEqual(payload["mutationId"] as? String, id)
+            XCTAssertEqual(payload["toDate"] as? String, "2026-10-19")
+            XCTAssertEqual(payload["reason"] as? String, "Synthetic reason")
+            XCTAssertTrue(payload["dueTime"] is NSNull)
+            return (200, response)
+        }
+        _ = try await api.changeOccurrence("daily-task", action: OccurrenceAction(action: "reschedule", expectedVersion: 9, mutationId: id, reason: "Synthetic reason", toDate: "2026-10-19"))
+    }
+    @MainActor func testHistoryUsesBoundedQueryAndChoreBreakRevocationUsesCAS() async throws {
+        let api = client(), id = UUID().uuidString.lowercased()
+        let breakJSON = #"{"id":"test-break","fromDate":"2026-10-18","toDateExclusive":"2026-10-20","reason":"Synthetic holiday","version":2}"#
+        var requests = 0
+        MockProtocol.handler = { [self] request in
+            requests += 1
+            if request.url?.path == "/api/chore-history" {
+                let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!
+                XCTAssertEqual(query.first(where: { $0.name == "limit" })?.value, "100")
+                XCTAssertEqual(query.first(where: { $0.name == "personId" })?.value, "synthetic person")
+                XCTAssertEqual(query.first(where: { $0.name == "to" })?.value, "2026-10-21")
+                return (200, Data(#"{"data":{"history":[]}}"#.utf8))
+            }
+            XCTAssertEqual(request.url?.path, "/api/chore-exceptions/test-break/revoke")
+            XCTAssertEqual(request.httpMethod, "POST")
+            let payload = body(request)
+            XCTAssertEqual(payload["expectedVersion"] as? Int, 2)
+            XCTAssertEqual(payload["reason"] as? String, "Synthetic removal")
+            XCTAssertEqual(payload["mutationId"] as? String, id)
+            return (200, Data(("{\"data\":" + breakJSON + "}").utf8))
+        }
+        _ = try await api.choreHistory(from: "2026-10-01", to: "2026-10-21", personID: "synthetic person")
+        let item = try JSONDecoder().decode(ChoreBreak.self, from: Data(breakJSON.utf8))
+        _ = try await api.revokeChoreBreak(item, reason: "Synthetic removal", mutationID: id)
+        XCTAssertEqual(requests, 2)
+    }
+    @MainActor func testPasswordRecoveryUsesOnlyProofAndDoesNotCreateAMobileSession() async throws {
+        let api = client(); var requests = 0
+        MockProtocol.handler = { [self] request in
+            requests += 1
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+            let payload = body(request)
+            if request.url?.path == "/api/auth/request-password-reset" { XCTAssertEqual(payload["email"] as? String, "synthetic@example.test") }
+            else {
+                XCTAssertEqual(request.url?.path, "/api/auth/reset-password")
+                XCTAssertEqual(payload["token"] as? String, "000000"); XCTAssertEqual(payload["password"] as? String, "test-only-password")
+                XCTAssertNil(payload["role"]); XCTAssertNil(payload["recoveryLink"])
+            }
+            return (200, Data("{}".utf8))
+        }
+        try await api.requestPasswordReset(email: "synthetic@example.test")
+        try await api.resetPassword(email: "synthetic@example.test", token: "000000", recoveryLink: "", password: "test-only-password")
+        XCTAssertEqual(requests, 2)
+    }
+    @MainActor func testFrameUnlockUsesSelectedScopeAndCaregiverPermissionsAreExplicit() async throws {
+        let api = client(); var requests = 0
+        MockProtocol.handler = { [self] request in
+            requests += 1; let payload = body(request)
+            if request.url?.path == "/api/frame-access-codes" {
+                XCTAssertEqual(request.httpMethod, "POST"); XCTAssertEqual(payload["scope"] as? String, "child"); XCTAssertEqual(payload["personId"] as? String, "test-person")
+                return (201, Data(#"{"data":{"code":"000000","scope":"child","personId":"test-person","expiresAt":"2099-01-01T00:00:00Z"}}"#.utf8))
+            }
+            XCTAssertEqual(request.url?.path, "/api/members/test-member/capabilities"); XCTAssertEqual(request.httpMethod, "PATCH")
+            XCTAssertEqual(payload["manageChores"] as? Bool, true); XCTAssertEqual(payload["manageInternet"] as? Bool, false)
+            return (200, Data(#"{"data":{"id":"test-member","capabilities":{"manageChores":true,"manageInternet":false}}}"#.utf8))
+        }
+        _ = try await api.createFrameAccessCode(scope: "child", personID: "test-person")
+        _ = try await api.changeMemberCapabilities("test-member", capabilities: ParentCapabilities(manageChores: true, manageInternet: false))
+        XCTAssertEqual(requests, 2)
+    }
+
 }

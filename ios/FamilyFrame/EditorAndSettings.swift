@@ -4,82 +4,101 @@ import UserNotifications
 struct ChoreEditor: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
-    let chore: Chore?
+    let routine: ChoreRoutine?
     @State private var title: String
     @State private var personID: String
     @State private var days: Set<Int>
     @State private var hasDeadline: Bool
     @State private var dueDate = Date()
     @State private var reminder: Int
+    @State private var required: Bool
+    @State private var requiresApproval: Bool
+    @State private var instructions: String
+    @State private var subtasks: [ChoreStep]
+    @State private var scheduleType: String
+    @State private var scheduledDate = Date()
     @State private var saving = false
     @State private var confirmDelete = false
     @State private var saveBlocked = false
     @State private var saveMessage: String?
-    init(chore: Chore?) {
-        self.chore = chore
-        _title = State(initialValue: chore?.title ?? "")
-        _personID = State(initialValue: chore?.personId ?? "")
-        _days = State(initialValue: Set(chore?.weekdays ?? Array(0...6)))
-        _hasDeadline = State(initialValue: chore?.dueTime != nil)
-        _reminder = State(initialValue: chore?.reminderMinutes ?? 15)
+    init(routine: ChoreRoutine?) {
+        self.routine = routine
+        _title = State(initialValue: routine?.title ?? ""); _personID = State(initialValue: routine?.personId ?? "")
+        _days = State(initialValue: Set(routine?.weekdays ?? Array(0...6))); _hasDeadline = State(initialValue: routine?.dueTime != nil)
+        _reminder = State(initialValue: routine?.reminderMinutes ?? 15); _required = State(initialValue: routine?.required ?? true)
+        _requiresApproval = State(initialValue: routine?.requiresApproval ?? false); _instructions = State(initialValue: routine?.instructions ?? "")
+        _subtasks = State(initialValue: routine?.subtasks ?? []); _scheduleType = State(initialValue: routine?.scheduleType ?? "weekly")
     }
     var body: some View {
         NavigationStack {
             Form {
                 Section("The chore") {
                     TextField("What needs doing?", text: $title).textInputAutocapitalization(.sentences).accessibilityLabel("Chore title")
-                    if title.count > 100 { Text("Use 100 characters or fewer.").font(.caption).foregroundStyle(Brand.red) }
                     Picker("Assigned to", selection: $personID) {
-                        Text("Family / unassigned").tag("")
-                        ForEach(model.snapshot?.people ?? []) { person in Text(person.name).tag(person.id) }
+                        Text("Family / unassigned").tag(""); ForEach(model.snapshot?.people ?? []) { Text($0.name).tag($0.id) }
+                    }
+                    Toggle("Required chore", isOn: $required)
+                    Toggle("Parent approval required", isOn: $requiresApproval)
+                }
+                Section("Schedule") {
+                    Picker("Frequency", selection: $scheduleType) { Text("Repeating weekdays").tag("weekly"); Text("One time").tag("one_off") }
+                    if scheduleType == "one_off" {
+                        DatePicker("On", selection: $scheduledDate, displayedComponents: .date).environment(\.timeZone, model.zone)
+                    } else {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 64))], spacing: 12) {
+                            ForEach(0..<7) { day in
+                                Button { if days.contains(day) { days.remove(day) } else { days.insert(day) } } label: {
+                                    Text(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][day]).font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity, minHeight: 44).background(days.contains(day) ? Brand.lime : Brand.background, in: RoundedRectangle(cornerRadius: 10)).foregroundStyle(Brand.ink)
+                                }.buttonStyle(.plain).accessibilityAddTraits(days.contains(day) ? .isSelected : [])
+                            }
+                        }
+                        if days.isEmpty { Text("Choose at least one day.").font(.caption).foregroundStyle(Brand.red) }
                     }
                 }
-                Section("Repeat on") {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 64))], spacing: 12) {
-                        ForEach(0..<7) { day in
-                            Button { if days.contains(day) { days.remove(day) } else { days.insert(day) } } label: {
-                                Text(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][day]).font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity).padding(.vertical, 12).background(days.contains(day) ? Brand.lime : Brand.background, in: RoundedRectangle(cornerRadius: 10)).foregroundStyle(Brand.ink)
-                            }.buttonStyle(.plain).accessibilityAddTraits(days.contains(day) ? .isSelected : [])
-                        }
-                    }.padding(.vertical, 4)
-                    if days.isEmpty { Text("Choose at least one day.").font(.caption).foregroundStyle(Brand.red) }
-                }
                 Section {
-                    Toggle("Set a daily deadline", isOn: $hasDeadline)
+                    Toggle("Set a deadline", isOn: $hasDeadline)
                     if hasDeadline {
                         DatePicker("Due by", selection: $dueDate, displayedComponents: .hourAndMinute).environment(\.timeZone, model.zone)
                         Stepper("Remind \(reminder) minutes before", value: $reminder, in: 0...1440, step: 5)
                     }
-                } header: { Text("Timing") } footer: {
-                    Text("Deadlines follow \(model.session?.household.timezone ?? "the household timezone"), even when a phone travels. Parents and kids choose which reminders they receive in Notifications.")
-                }
+                } header: { Text("Timing") } footer: { Text("Dates and deadlines follow \(model.session?.household.timezone ?? "the household timezone"), even when a phone travels.") }
+                Section("Instructions") { TextField("Explain what a good job looks like", text: $instructions, axis: .vertical).lineLimit(3...8) }
+                Section {
+                    ForEach($subtasks) { $step in
+                        HStack {
+                            TextField("Step", text: $step.title)
+                            Button(role: .destructive) { subtasks.removeAll { $0.id == step.id } } label: { Image(systemName: "minus.circle").frame(width: 44, height: 44) }.accessibilityLabel("Remove step")
+                        }
+                    }
+                    Button("Add a step") { subtasks.append(ChoreStep(title: "")) }.disabled(subtasks.count >= 20)
+                } header: { Text("Checklist") } footer: { Text("Up to 20 steps, each at most 160 characters.") }
+                Section { Text("Changes apply to newly generated days. Today's saved chores keep their instructions, assignment, and approval rules.").font(.footnote).foregroundStyle(Brand.muted) }
                 if let saveMessage { Section { Text(saveMessage).font(.subheadline).foregroundStyle(Brand.red) } }
-                if chore != nil {
-                    Section { Button("Delete chore", role: .destructive) { confirmDelete = true }.disabled(saving || !model.canChange) }
-                }
-            }.navigationTitle(chore == nil ? "Add a chore" : "Edit chore").navigationBarTitleDisplayMode(.inline)
+                if routine != nil { Section { Button("Delete routine", role: .destructive) { confirmDelete = true }.disabled(saving || !model.canChange) } }
+            }.navigationTitle(routine == nil ? "Add a chore" : "Edit routine").navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(saving) }
-                    ToolbarItem(placement: .confirmationAction) { Button { Task { await save() } } label: { if saving { ProgressView() } else { Text("Save").bold() } }.disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || title.count > 100 || days.isEmpty || saving || saveBlocked || !model.canChange) }
+                    ToolbarItem(placement: .confirmationAction) { Button { Task { await save() } } label: { if saving { ProgressView() } else { Text("Save").bold() } }.disabled(!valid || saving || saveBlocked || !model.canChange) }
                 }
                 .task {
-                    var c = Calendar(identifier: .gregorian); c.timeZone = model.zone
-                    let parts = (chore?.dueTime ?? "18:00").split(separator: ":").compactMap { Int($0) }
-                    dueDate = c.date(bySettingHour: parts.first ?? 18, minute: parts.dropFirst().first ?? 0, second: 0, of: Date()) ?? Date()
+                    dueDate = Dates.wallTime(routine?.dueTime ?? "18:00", on: model.today, in: model.zone) ?? Date()
+                    scheduledDate = Dates.wallTime("12:00", on: routine?.scheduledDate ?? model.today, in: model.zone) ?? Date()
                 }
-                .confirmationDialog("Delete this chore and remove it from the household's routine?", isPresented: $confirmDelete, titleVisibility: .visible) {
-                    Button("Delete chore", role: .destructive) { Task { saving = true; if let chore, await model.deleteChore(chore) { dismiss() }; saving = false } }
+                .confirmationDialog("Delete this routine?", isPresented: $confirmDelete, titleVisibility: .visible) {
+                    Button("Delete routine", role: .destructive) { Task { saving = true; if let routine, await model.deleteRoutine(routine) { dismiss() }; saving = false } }
                     Button("Cancel", role: .cancel) { }
-                }
+                } message: { Text("Saved daily chores and history remain. No new days will be generated from this routine.") }
         }.interactiveDismissDisabled(saving)
+    }
+    private var valid: Bool {
+        !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && title.count <= 100 && instructions.count <= 3000 && (scheduleType == "one_off" || !days.isEmpty) && subtasks.allSatisfy { !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.title.count <= 160 }
     }
     private func save() async {
         saving = true; defer { saving = false }
-        let f = DateFormatter(); f.timeZone = model.zone; f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "HH:mm"
-        let draft = ChoreDraft(title: title.trimmingCharacters(in: .whitespacesAndNewlines), personId: personID.isEmpty ? nil : personID,
-                               weekdays: days.sorted(), dueTime: hasDeadline ? f.string(from: dueDate) : nil,
-                               reminderMinutes: reminder, expectedVersion: chore?.version)
-        if await model.saveChore(draft, id: chore?.id) { dismiss() }
+        var draft = ChoreDraft(title: title.trimmingCharacters(in: .whitespacesAndNewlines), personId: personID.isEmpty ? nil : personID, weekdays: scheduleType == "one_off" ? Array(0...6) : days.sorted(), dueTime: hasDeadline ? Dates.wallTimeString(dueDate, in: model.zone) : nil, reminderMinutes: reminder, expectedVersion: routine?.version)
+        draft.required = required; draft.requiresApproval = requiresApproval; draft.instructions = instructions
+        draft.subtasks = subtasks; draft.scheduleType = scheduleType; draft.scheduledDate = scheduleType == "one_off" ? Dates.day(scheduledDate, in: model.zone) : nil
+        if await model.saveChore(draft, id: routine?.id) { dismiss() }
         else { saveBlocked = model.lastMutationNeedsReview; saveMessage = model.message }
     }
 }
@@ -121,10 +140,13 @@ struct SettingsScreen: View {
             if model.isAdmin {
                 Section("Family access") {
                     NavigationLink("Invite a child account") { ChildInvitationScreen() }
+                    NavigationLink("Caregiver permissions") { CaregiverAccessScreen() }
                     NavigationLink("Signed-in phones and tablets") { MobileDevicesScreen() }
                     Link("Parent invitations and frame setup", destination: APIClient.configuredURL)
                 }
             }
+            if model.canManageChores { Section("Chore routines") { NavigationLink("Holidays and chore breaks") { ChoreBreaksScreen() } } }
+            if model.canManageInternet || model.session?.isChild == true { Section("Shared frame") { NavigationLink("Create a frame unlock code") { FrameAccessScreen() } } }
             Section("Your household") {
                 LabeledContent("Timezone", value: model.session?.household.timezone ?? "")
                 if let last = model.lastUpdated { LabeledContent("Last refreshed", value: last.formatted(date: .abbreviated, time: .shortened)) }
@@ -167,6 +189,10 @@ struct NotificationPreferencesScreen: View {
                 Toggle("Reopened", isOn: $value.choreReopened)
                 Toggle("Due soon", isOn: $value.choreDueSoon)
                 Toggle("Overdue", isOn: $value.choreOverdue)
+            }
+            Section("Internet time") {
+                Toggle("Earned rewards", isOn: $value.rewards)
+                Toggle("Session updates and warnings", isOn: $value.internetSessions)
             }
             if model.canViewChildSettings {
                 Section("Around the house") {
