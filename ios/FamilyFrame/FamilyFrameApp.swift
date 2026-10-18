@@ -4,6 +4,7 @@ import SwiftUI
 struct FamilyFrameApp: App {
     @UIApplicationDelegateAdaptor(FamilyAppDelegate.self) var delegate
     @StateObject private var model = AppModel()
+    @ObservedObject private var notifications = NotificationController.shared
     @Environment(\.scenePhase) private var phase
     var body: some Scene {
         WindowGroup {
@@ -21,8 +22,10 @@ struct FamilyFrameApp: App {
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .familyNotificationReceived)) { _ in Task { await model.refresh() } }
-            .onReceive(NotificationCenter.default.publisher(for: .familyNotificationOpened)) { _ in
-                model.selectedTab = 3; Task { await model.refresh() }
+            .task(id: (notifications.openedNotificationID ?? "") + "|" + (model.session?.cacheIdentity ?? "")) {
+                if let id = notifications.openedNotificationID, model.session != nil {
+                    await model.openNotification(id: id); notifications.consumeOpenedNotification(id)
+                }
             }
             .alert("Family Frame", isPresented: Binding(get: { model.message != nil }, set: { if !$0 { model.message = nil } })) {
                 Button("OK") { model.message = nil }
@@ -35,14 +38,26 @@ struct FamilyFrameApp: App {
 
 struct DashboardTabs: View {
     @EnvironmentObject var model: AppModel
+    var body: some View { DashboardTabContent(network: model.internet) }
+}
+private struct DashboardTabContent: View {
+    @EnvironmentObject var model: AppModel
+    @ObservedObject var network: InternetModel
     var body: some View {
         TabView(selection: $model.selectedTab) {
-            NavigationStack { TodayScreen() }.tabItem { Label("Today", systemImage: "house.fill") }.tag(0)
-            NavigationStack { ChoresScreen() }.tabItem { Label("Chores", systemImage: "checklist") }.tag(1)
-            NavigationStack { CalendarScreen() }.tabItem { Label("Calendar", systemImage: "calendar") }.tag(2)
-            NavigationStack { ActivityScreen() }.tabItem { Label("Activity", systemImage: "bell.fill") }.badge(model.unreadCount).tag(3)
-            NavigationStack { SettingsScreen() }.tabItem { Label("Settings", systemImage: "gearshape.fill") }.tag(4)
+            NavigationStack { TodayScreen().modifier(SettingsToolbar()) }.tabItem { Label("Today", systemImage: "house.fill") }.tag(0)
+            NavigationStack { ChoresScreen().modifier(SettingsToolbar()) }.tabItem { Label("Chores", systemImage: "checklist") }.tag(1)
+            NavigationStack { CalendarScreen().modifier(SettingsToolbar()) }.tabItem { Label("Calendar", systemImage: "calendar") }.tag(2)
+            NavigationStack { DevicesScreen().modifier(SettingsToolbar()) }.tabItem { Label("Devices", systemImage: "gamecontroller.fill") }.tag(3)
+            NavigationStack { ActivityScreen().modifier(SettingsToolbar()) }.tabItem { Label("Activity", systemImage: "bell.fill") }.badge(model.unreadCount).tag(4)
         }
+        .sheet(item: $model.openedOccurrence) { OccurrenceDetailScreen(original: $0) }
+        .sheet(item: $network.openedSession) { item in NavigationStack { InternetSessionDetail(network: network, original: item) } }
+    }
+}
+private struct SettingsToolbar: ViewModifier {
+    func body(content: Content) -> some View {
+        content.toolbar { ToolbarItem(placement: .topBarLeading) { NavigationLink { SettingsScreen() } label: { Label("Settings", systemImage: "gearshape").labelStyle(.iconOnly) } } }
     }
 }
 
@@ -56,6 +71,8 @@ struct WelcomeScreen: View {
     @State private var confirmationCode = ""
     @State private var invitation = ""
     @State private var confirmationNotice: String?
+    @State private var recovering = false
+    @State private var deleting = false
     @FocusState private var focus: Field?
     enum Field: Hashable { case name, email, password, confirmPassword, code, invitation }
     var body: some View {
@@ -80,6 +97,7 @@ struct WelcomeScreen: View {
                     }
                 }
                 Text("Parents and kids each use their own email and password. Your household role controls what you can see and change.").font(.footnote).foregroundStyle(Brand.muted)
+                Link("Privacy policy", destination: APIClient.configuredURL.appendingPathComponent("privacy.html")).font(.footnote).frame(minHeight: 44)
             }.padding(24).frame(maxWidth: 560).frame(maxWidth: .infinity)
         }
         .background(Brand.background).scrollDismissesKeyboard(.interactively)
@@ -88,6 +106,8 @@ struct WelcomeScreen: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
             if let focus { reader.scrollTo(focus, anchor: .center) }
         }
+        .sheet(isPresented: $recovering) { PasswordRecoveryScreen(email: email) }
+        .sheet(isPresented: $deleting) { AccountDeletionScreen() }
         }
     }
     private var accountEntry: some View {
@@ -109,6 +129,7 @@ struct WelcomeScreen: View {
             Button { submitAccount() } label: {
                 if model.isSigningIn { ProgressView().tint(.white) } else { Text(creating ? "Create my account" : "Sign in to Family Frame") }
             }.buttonStyle(PrimaryButton()).disabled(!entryValid || model.isSigningIn)
+            if !creating { Button("Forgot your password?") { focus = nil; recovering = true }.font(.subheadline).frame(minHeight: 44).disabled(model.isSigningIn) }
             Link("Open the web dashboard", destination: APIClient.configuredURL).font(.footnote).foregroundStyle(Brand.cyanInk)
         }
     }
@@ -136,6 +157,7 @@ struct WelcomeScreen: View {
                 if model.isSigningIn { ProgressView().tint(.white) } else { Text("Accept family invitation") }
             }.buttonStyle(PrimaryButton()).disabled(invitation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isSigningIn)
             Text("An account without an accepted invitation has no access to household data.").font(.caption).foregroundStyle(Brand.muted)
+            Button("Delete this unlinked account", role: .destructive) { deleting = true }.font(.subheadline).frame(minHeight: 44).disabled(model.isSigningIn)
             backToSignIn
         }
     }

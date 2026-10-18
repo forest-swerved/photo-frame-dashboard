@@ -25,4 +25,16 @@ final class EntryUITests: XCTestCase {
         // No account is created and no request is sent to a live auth service.
         let screenshot = XCTAttachment(screenshot: app.screenshot()); screenshot.name = "Account creation keyboard"; screenshot.lifetime = .keepAlways; add(screenshot)
     }
+    func testRecoveryOpensWithoutSendingAccountRequests() {
+        let app = XCUIApplication(); app.launch()
+        let forgot = app.buttons["Forgot your password?"]
+        if !forgot.isHittable { app.swipeUp() }
+        XCTAssertTrue(forgot.waitForExistence(timeout: 5)); forgot.tap()
+        XCTAssertTrue(app.navigationBars["Reset password"].waitForExistence(timeout: 5))
+        let email = app.textFields["Account email"]
+        XCTAssertTrue(email.exists)
+        XCTAssertFalse(app.buttons["Send reset email"].isEnabled)
+        XCTAssertFalse(app.secureTextFields["At least 12 characters"].exists, "Recovery proof must be requested before entering a new password")
+        let screenshot = XCTAttachment(screenshot: app.screenshot()); screenshot.name = "Native recovery - no live request"; screenshot.lifetime = .keepAlways; add(screenshot)
+    }
 }

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Privacy · Family Frame</title>
+  <style>
+    :root{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#17263c;background:#f4f8fc;line-height:1.65;color-scheme:light}
+    *{box-sizing:border-box}body{margin:0}main{max-width:780px;margin:32px auto;padding:34px;background:#fff;border:1px solid #e0e8f2;border-radius:24px;box-shadow:0 12px 48px #1d51720b}
+    a{color:#006f9c;text-underline-offset:3px}h1{font-size:2.3rem;line-height:1.15;margin:16px 0;color:#12304c}h2{font-size:1.25rem;margin-top:30px;line-height:1.3}p,li{font-size:1rem}ul{padding-left:22px}.badge{display:inline-block;background:#e1f7ef;color:#086847;padding:5px 12px;border-radius:24px;font-size:.85rem;font-weight:650}.muted{color:#536a80}.contact{background:#eaf7ff;border-left:4px solid #00a2cf;padding:14px 18px;border-radius:8px}footer{margin-top:32px;padding-top:18px;border-top:1px solid #e4ebf3;font-size:.9rem;color:#536a80}@media(max-width:600px){main{margin:12px;padding:24px 20px;border-radius:18px}h1{font-size:2rem}}
+  </style>
+</head>
+<body>
+<main>
+  <a href="/">← Family Frame</a>
+  <p><span class="badge">Your family’s information stays private</span></p>
+  <h1>Family Frame privacy</h1>
+  <p class="muted">Updated October 17, 2026</p>
+  <p>Family Frame helps a household share calendars, manage chores, receive notifications, and manage access to devices on its home network. This page explains what the website, iOS app, and paired frame use to provide those features.</p>
+
+  <h2>Information we use</h2>
+  <ul>
+    <li><strong>Accounts and family profiles:</strong> account email, display name, household membership and role, and the child profiles a parent creates. Supabase Auth handles passwords; Family Frame does not keep a separate copy of your password.</li>
+    <li><strong>Chores and Activity:</strong> routines, instructions and steps, dates, due times, completion and approval status, exceptions, rewards, and the history of who made changes.</li>
+    <li><strong>Calendars:</strong> the calendars you choose, event information used by the dashboard, cached results, and the connection status. Apple Calendar uses your Apple Account email and an app-specific password stored encrypted on the server. Disconnecting the calendar removes the saved connection and cache; it does not delete events from iCloud.</li>
+    <li><strong>Devices and notifications:</strong> paired frame and phone identifiers, session credentials, notification preferences, Activity read status, and encrypted Apple push notification tokens. Push alerts use generic text; private chore and calendar details are fetched only after the app checks your account access.</li>
+    <li><strong>Optional home-network controls:</strong> device names, stable MAC addresses, assignments to children, access windows, rewards, parent adjustments, and enforcement results. The UniFi connection controls your enrolled home-network devices. It does not follow a device onto cellular, school, or hotel networks and does not collect browsing history.</li>
+  </ul>
+
+  <h2>Who can see it</h2>
+  <p>Parents administer their household. A child account is linked to its own profile and its permitted chores, rewards, and devices. A paired family frame shows the shared household dashboard. Sensitive parent controls on a frame require a separate short-lived parent authorization.</p>
+  <p>Vercel hosts the website and its server functions. Supabase provides account authentication and the dedicated household database. Apple delivers iOS push notifications and provides iCloud Calendar when you connect it. Ubiquiti processes the network-control requests you enable for your home. These services process information needed to provide their parts of the app.</p>
+
+  <h2>No advertising or tracking analytics</h2>
+  <p>Family Frame does not sell family information, show advertising, or include advertising identifiers or third-party behavioral analytics. Essential cookies and app credentials keep you signed in and keep a frame paired. Hosting and service providers may retain operational and security logs under their own retention policies.</p>
+
+  <h2>Your controls and deletion</h2>
+  <p>You can change notification preferences, sign out of a phone, revoke paired devices, disconnect your calendar, and ask a parent to change household data. Turning off notifications does not remove shared household Activity.</p>
+  <p>Account deletion requires your current password and an explicit confirmation. It removes your login, account membership, phone sessions, push tokens, invitations associated with your account, and private Activity/preferences. Shared family calendars, child profiles, chores, and completion history remain with a household that still has an administrator. Your account identifier and actor display name are removed from retained change history.</p>
+  <p>A sole household administrator must transfer ownership to an existing adult while other active members remain. To delete the final household, Internet sessions must have ended and managed network devices must first be unenrolled and their firewall policies verified removed. This prevents orphaned network restrictions. Deleting the final household removes its stored calendars, encrypted calendar credentials, chores, profiles, device records, and history. It does not delete events from iCloud or reset a physical frame.</p>
+  <p>A small deletion recovery record containing only the account’s random ID, deletion stage, and timestamps is retained to finish interrupted deletion safely. Provider backups and operational logs may persist until their normal retention periods expire. Messages or screenshots you have already saved on your devices are outside the app’s control.</p>
+
+  <h2>Children and family use</h2>
+  <p>Parents decide which child profiles and accounts belong to their household and what children can access. The app uses children’s information to provide family scheduling, chores, notifications, and optional Internet-time rewards. It does not use that information for advertising or sell it to others.</p>
+  <p class="contact">For privacy questions or help with a deletion request, contact <a href="mailto:family-calendar@swerved.com">family-calendar@swerved.com</a>. Do not email passwords, app-specific passwords, API keys, or pairing codes.</p>
+  <footer>Family Frame · Swerved</footer>
+</main>
+</body>
+</html>

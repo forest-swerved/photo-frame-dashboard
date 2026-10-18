@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import { jwtVerify } from 'jose';
 import { APNS_HOSTS, apnsConfiguration, classifyApnsResult, preflightApns, providerToken, sendApns } from './apns.js';
-import { choreOccurrences, frameIsOffline, lockScreenPayload, notificationText, occurrenceInstant, preferencesDto, processNotifications, quietUntil, registerPush, validatePreferences } from './notifications.js';
+import { choreOccurrences, dailyOccurrenceReminders, frameIsOffline, lockScreenPayload, notificationText, occurrenceInstant, preferencesDto, processNotifications, quietUntil, registerPush, validatePreferences } from './notifications.js';
 import { handleRequest } from './app.js';
 
 function signingKey() {
@@ -36,6 +36,14 @@ test('quiet hours preserve inbox and calculate the next household-local end acro
   assert.equal(quietUntil(new Date('2026-11-01T06:30Z'), 'America/Denver', '21:00', '01:30').toISOString(), '2026-11-01T07:30:00.000Z');
   assert.equal(quietUntil(new Date('2026-11-01T08:10Z'), 'America/Denver', '21:00', '01:30').toISOString(), '2026-11-01T08:30:00.000Z');
   assert.equal(quietUntil(new Date('2026-10-18T16:30Z'), 'America/Denver', '09:00', '11:00').toISOString(), '2026-10-18T17:00:00.000Z');
+});
+
+test('immutable daily reminders clamp cross-midnight lead times and ignore skipped/submitted work', () => {
+  const occurrence = { status: 'pending', date: '2026-10-18', due_time: '00:05:00', reminder_minutes: 15, created_at: '2026-10-18T06:00Z' };
+  assert.deepEqual(dailyOccurrenceReminders(occurrence, 'America/Denver', new Date('2026-10-18T05:49Z'), new Date('2026-10-18T05:51Z')), []);
+  const midnight = dailyOccurrenceReminders(occurrence, 'America/Denver', new Date('2026-10-18T05:59Z'), new Date('2026-10-18T06:01Z'));
+  assert.deepEqual(midnight.map(item => [item.type, item.at.toISOString()]), [['chore_due_soon', '2026-10-18T06:00:00.000Z']]);
+  for (const status of ['submitted', 'completed', 'skipped']) assert.deepEqual(dailyOccurrenceReminders({ ...occurrence, status }, 'America/Denver', new Date('2026-10-18T06:00Z'), new Date('2026-10-18T06:10Z')), []);
 });
 
 test('frame heartbeat grace cannot flap within the five-minute heartbeat write interval', () => {

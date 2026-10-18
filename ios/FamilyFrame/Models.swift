@@ -25,6 +25,11 @@ struct MobileSession: Codable, Equatable {
     var cacheIdentity: String { "\(household.id)|\(user.id)|\(personId ?? "parent")" }
 }
 
+struct ParentCapabilities: Codable, Equatable {
+    let manageChores: Bool
+    let manageInternet: Bool
+}
+
 struct MobileCredential: Codable {
     let token: String
     let expiresAt: String
@@ -65,6 +70,9 @@ struct HouseholdSnapshot: Codable {
     let date: String
     var people: [Person]
     var chores: [Chore]
+    var routines: [ChoreRoutine]? = nil
+    var occurrences: [ChoreOccurrence]? = nil
+    var capabilities: ParentCapabilities? = nil
     var todaysChores: [Chore] { chores.filter { $0.applies(on: date) } }
 }
 
@@ -84,6 +92,12 @@ struct ChoreDraft: Encodable {
     var dueTime: String?
     var reminderMinutes: Int
     var expectedVersion: Int?
+    var required = true
+    var instructions = ""
+    var subtasks: [ChoreStep] = []
+    var scheduleType = "weekly"
+    var scheduledDate: String? = nil
+    var requiresApproval = false
     // Explicit nulls clear assignment/deadline when editing.
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -93,8 +107,11 @@ struct ChoreDraft: Encodable {
         try c.encode(dueTime, forKey: .dueTime)
         try c.encode(reminderMinutes, forKey: .reminderMinutes)
         try c.encodeIfPresent(expectedVersion, forKey: .expectedVersion)
+        try c.encode(required, forKey: .required); try c.encode(instructions, forKey: .instructions)
+        try c.encode(subtasks, forKey: .subtasks); try c.encode(scheduleType, forKey: .scheduleType)
+        try c.encode(scheduledDate, forKey: .scheduledDate); try c.encode(requiresApproval, forKey: .requiresApproval)
     }
-    enum CodingKeys: String, CodingKey { case title, personId, weekdays, dueTime, reminderMinutes, expectedVersion }
+    enum CodingKeys: String, CodingKey { case title, personId, weekdays, dueTime, reminderMinutes, expectedVersion, required, instructions, subtasks, scheduleType, scheduledDate, requiresApproval }
 }
 
 struct CalendarEvent: Codable, Identifiable, Equatable {
@@ -215,6 +232,10 @@ struct FamilyNotification: Codable, Identifiable {
     var readAt: String?
     let choreId: String?
     let date: String?
+    var occurrenceId: String? = nil
+    var sessionId: String? = nil
+    var creditId: String? = nil
+    var target: String? = nil
 }
 struct NotificationList: Decodable { let notifications: [FamilyNotification] }
 
@@ -226,10 +247,27 @@ struct NotificationPreferences: Codable, Equatable {
     var choreOverdue = true
     var calendarEvents = true
     var frameStatus = true
+    var rewards = true
+    var internetSessions = true
     var quietStart: String? = nil
     var quietEnd: String? = nil
     var timezone = "America/Denver"
-    enum CodingKeys: String, CodingKey { case pushEnabled, choreCompleted, choreReopened, choreDueSoon, choreOverdue, calendarEvents, frameStatus, quietStart, quietEnd, timezone }
+    enum CodingKeys: String, CodingKey { case pushEnabled, choreCompleted, choreReopened, choreDueSoon, choreOverdue, calendarEvents, frameStatus, rewards, internetSessions, quietStart, quietEnd, timezone }
+    init() { }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        pushEnabled = try c.decodeIfPresent(Bool.self, forKey: .pushEnabled) ?? true
+        choreCompleted = try c.decodeIfPresent(Bool.self, forKey: .choreCompleted) ?? true
+        choreReopened = try c.decodeIfPresent(Bool.self, forKey: .choreReopened) ?? true
+        choreDueSoon = try c.decodeIfPresent(Bool.self, forKey: .choreDueSoon) ?? true
+        choreOverdue = try c.decodeIfPresent(Bool.self, forKey: .choreOverdue) ?? true
+        calendarEvents = try c.decodeIfPresent(Bool.self, forKey: .calendarEvents) ?? true
+        frameStatus = try c.decodeIfPresent(Bool.self, forKey: .frameStatus) ?? true
+        rewards = try c.decodeIfPresent(Bool.self, forKey: .rewards) ?? true
+        internetSessions = try c.decodeIfPresent(Bool.self, forKey: .internetSessions) ?? true
+        quietStart = try c.decodeIfPresent(String.self, forKey: .quietStart); quietEnd = try c.decodeIfPresent(String.self, forKey: .quietEnd)
+        timezone = try c.decodeIfPresent(String.self, forKey: .timezone) ?? "America/Denver"
+    }
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(pushEnabled, forKey: .pushEnabled)
@@ -239,6 +277,7 @@ struct NotificationPreferences: Codable, Equatable {
         try c.encode(choreOverdue, forKey: .choreOverdue)
         try c.encode(calendarEvents, forKey: .calendarEvents)
         try c.encode(frameStatus, forKey: .frameStatus)
+        try c.encode(rewards, forKey: .rewards); try c.encode(internetSessions, forKey: .internetSessions)
         try c.encode(quietStart, forKey: .quietStart)
         try c.encode(quietEnd, forKey: .quietEnd)
     }

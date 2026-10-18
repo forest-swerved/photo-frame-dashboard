@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 import { createPool } from './database.js';
+import { verifyAccountDeletionBoundary } from './verify-account-deletion.js';
 
-export async function verifySchema(pool, schema = 'public', expectedCount = 21) {
+export async function verifySchema(pool, schema = 'public', expectedCount = 35) {
   const { rows } = await pool.query(`SELECT c.relname,c.relrowsecurity,c.relforcerowsecurity,
     pg_get_userbyid(c.relowner)=current_user AS owned_by_server,
     NOT EXISTS(SELECT 1 FROM aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) acl WHERE acl.grantee=0) AS public_revoked,
@@ -48,6 +49,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const pool = createPool();
   verifySchema(pool).then(async count => {
     await verifyAuthBoundary(pool);
+    await verifyAccountDeletionBoundary(pool);
     console.log(`Verified ${count} server-only household tables and the private three-column auth session boundary.`);
   })
     .catch(() => { console.error('Household schema permission verification failed.'); process.exitCode = 1; })

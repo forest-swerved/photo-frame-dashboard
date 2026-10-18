@@ -14,7 +14,7 @@ node --env-file=.env.local server/verify-schema.js
 node --test server/backend.test.js server/calendar-normalize.test.js server/calendar-normalize-bounded.test.js server/icloud-caldav.test.js
 ```
 
-The migration changes only twelve `family_*` tables. Each has RLS enabled, no browser policies, and no PUBLIC/anon/authenticated/service_role privileges. The server role `family_frame_server` owns only these tables and retains owner access. It has no superuser, role/database creation, replication, BYPASSRLS, or inherited role privileges. Provision table creation separately, then revoke its schema CREATE privilege. Database connections use node-postgres with verified TLS; URL flags cannot disable certificate verification or replace the explicit CA configuration.
+The complete migration manages thirty-five `family_*` tables. Each has RLS enabled, no browser policies, and no PUBLIC/anon/authenticated/service_role table privileges. The server role `family_frame_server` owns only these tables and retains owner access. It has no superuser, role/database creation, replication, BYPASSRLS, or inherited role privileges. Provision table creation separately, then revoke its schema CREATE privilege. Database connections use node-postgres with verified TLS; URL flags cannot disable certificate verification or replace the explicit CA configuration.
 
 The privileged setup process also provisions a non-exposed `family_internal.auth_sessions` view, owned by `postgres`, with exactly `id`, `user_id`, and `not_after` from managed `auth.sessions`. Only the server role receives schema USAGE and view SELECT. PUBLIC and API roles receive neither. This intentional private definer view gives the application a narrow revocation lookup without auth-schema USAGE, direct auth-table grants, auth DDL, or broad RLS bypass. `verify-schema.js` verifies both the household tables and this boundary.
 
@@ -110,7 +110,7 @@ details are available only through the authenticated inbox.
 Supported categories are completed/reopened chores, due-soon/overdue chores, upcoming
 timed calendar events, calendar sync-health transitions and frame connection status.
 Calendar reminders use fresh, complete cached coverage and a ten-minute lead time;
-provider calendar refresh remains driven by dashboard/app reads. Frame offline alerts
+provider calendar refresh also runs through the leased five-minute calendar worker. Frame offline alerts
 use a fifteen-minute grace above the five-minute heartbeat write interval. Initial
 scans establish a baseline rather than flooding users with historical overdue alerts.
 
@@ -136,8 +136,8 @@ reuse the correct token rather than regenerate it on every send.
 
 ### Additive schema upgrade
 
-There are now twenty server-owned tables. `schema.sql`, `mobile-schema.sql`,
-`notifications-schema.sql` and `child-accounts-schema.sql` are applied together by
+There are now thirty-five server-owned tables. `schema.sql`, `mobile-schema.sql`,
+`notifications-schema.sql`, `child-accounts-schema.sql`, calendar synchronization, daily chores, account Activity, Internet rewards and account deletion owner schemas are applied together by
 `npm run db:migrate`. Existing households, calendars, chores and history are retained.
 The child upgrade revokes legacy anonymous child sessions and unused child pairing
 codes; frame pairing is unchanged. The app login's
@@ -161,3 +161,60 @@ deletion/session issuance. Integration suites refuse any database not named
 `family_frame_tests` and use unique test schemas; never point them at the household
 database. A separately provisioned local PostgreSQL 17 database with a trusted local
 TLS certificate can be used if the remote test database is unavailable.
+
+### Daily work and account Activity
+
+Daily occurrence definitions retain the assigned child, required flag, instructions,
+steps and approval policy when a routine is edited. Only the household's current
+local day is materialized automatically. Historical views use existing facts;
+administrators need a correction reason to write another day. Completion callbacks
+run within the date lock and transaction, so a reward ledger can commit atomically.
+Reschedules report both source and target dates in `affectedDates`.
+
+Notification scans use pending occurrences. Submitted chores await parent approval
+and do not generate due/overdue alerts. Skips and vacation exceptions suppress
+reminders. For an early-morning due time, a lead reminder that would fall on the
+previous day is clamped to local midnight. This keeps tomorrow's definitions editable
+until the new household day starts instead of freezing them for an early reminder.
+The worker never creates missing historical occurrences to manufacture overdue work.
+
+`account-notifications-schema.sql` adds account-owned inbox/read state and preferences.
+Phones still have separate push installations/delivery leases, but sign-out or a
+second phone does not reset Activity or settings. Legacy preferences migrate by
+latest update and deterministic session-ID tie-break; existing account settings win
+on reruns. Read state merges across known device inboxes. Both browser and native
+access recheck provider sessions and current household membership. Child visibility
+uses immutable occurrence ownership, excludes parent-review/enforcement alerts, and
+allows only that child's reward/session events. Paired frames cannot read a general
+account's Activity. Push payloads retain generic text; validated detail/deep-link IDs
+are returned only from the authenticated inbox endpoint.
+
+## Internet rewards and protected frame controls
+
+Daily required occurrences mint at most one credit per child and household date. Optional or entirely excused lists do not earn a credit. Approval-gated work counts only after approval. Each credit records its source occurrences and policy revision; moving or reopening unfinished source work cannot produce another reward. Credits persist according to the visible carryover policy.
+
+`GET /api/internet` supplies authoritative server time, progress, credits, inventory, sessions and integration health. Device records are separate from frame pairings and mobile sign-ins. Stable Wi-Fi and wired MACs can belong to one device. Children receive their own eligible inventory; only authorized parents receive MAC addresses.
+
+Redemption and parent grants reserve a child and device atomically. Every mutation carries a request UUID; session changes also require `expectedVersion`. Starting, checking, pausing and ending are pending operations. A command being queued is never proof that Internet access changed. Provider reads confirm a bounded policy and reviewed firewall order before a credit is spent. An ambiguous allowance ended before confirmation puts its credit into parent review, with an audited Restore/Consume decision.
+
+Timed sessions count elapsed access, including when a device sleeps. Pause freezes remaining time after blocking is confirmed. All day has a concrete household-midnight expiry, including a 25-hour daylight-saving day, and expires even while paused. Ordinary timed windows that cross an ambiguous clock change are rejected because the gateway schedule cannot encode that distinction safely. The gateway deadline, rather than APNs or an open app, must stop Internet access.
+
+Existing invited adults have no implicit network authority. An administrator explicitly grants `manageChores` and `manageInternet`. A frame cookie permits normal household chores but cannot spend credits or control a network. A signed-in parent or child generates a one-use phone code at `/api/frame-access-codes`; redemption binds a ten-minute authorization to that paired frame. Child scope is limited to its own profile. Tokens remain in memory and expire; the setup claim code is never an administrator unlock.
+
+## UniFi activation boundary
+
+The server adapter uses the official Cloud Connector and a server-only **Site Manager API key** with the intended console ID. No key belongs in an iOS build, a frame, a browser request or this repository. Remote API access does not require router port forwarding. Home-network control works from outside the home; it does not enforce limits on cellular or another Wi-Fi network.
+
+Enrollment remains inactive until a real gateway pilot passes. Keep a permanent, exact Family Frame HTTPS exception above the persistent Internet deny. Apple devices additionally need a permanent APNs transport exception, using Apple's published narrow IPv4/IPv6 ranges on TCP 5223/443. APNs carries notifications for installed apps; that transport cannot be limited to one iOS app. General browsing remains subject to the deny.
+
+A DOMAIN filter or a successful policy readback alone does not prove that a shared CDN is isolated. Required pilot evidence includes Family Frame access while denied, an unrelated site on the shared CDN remaining blocked, IPv4/IPv6, existing connection cutoff, expiry, pause/end, controller/cloud outage, gateway restart, midnight and daylight saving. Apple devices must also receive push while denied. If exact-site isolation fails, use a separately verified management path before enabling blocking.
+
+A reviewed firewall insertion point preserves existing security rules. Policy content/order fingerprints reject drift, and only identified Family Frame policies may be changed. Durable commands serialize provider mutations and reconcile ambiguous writes. Never replace trusted-device blocking with guest hotspot authorization, and never permanently unblock a device while depending solely on a later cloud job to block it again.
+
+References: [UniFi Network 10.6.106 API](https://developer.ui.com/network/v10.6.106/openapi.json), [Cloud Connector](https://developer.ui.com/network/v10.6.106/connectorpost), [Apple APNs network requirements](https://support.apple.com/en-us/102266).
+
+## Account recovery and deletion
+
+Password recovery accepts a same-project recovery code or link and changes the password only after recovery proof succeeds. A normal signed-in session alone cannot authorize that endpoint. Reset signs out other sessions; shared household data remains.
+
+Account deletion is available before household onboarding as well as in Settings. The BFF reauthenticates using the public Auth client; only the Supabase Edge function holds the administrative capability to delete that verified identity. Its cleanup RPC also checks the live provider session, uses a fixed definer search path, and grants EXECUTE only to the Edge service role. Vercel retains no Auth service-role key. Owner transfer and network cleanup guards prevent orphaned households or firewall restrictions. An idempotent tombstone lets an interrupted deletion resume after fresh sign-in. Use synthetic accounts for release tests; never delete the household owner to prove deployment.

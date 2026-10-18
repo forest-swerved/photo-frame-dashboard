@@ -14,6 +14,7 @@ final class NotificationController: NSObject, ObservableObject, UNUserNotificati
     @Published var authorizationStatus: UNAuthorizationStatus = .notDetermined
     @Published var registrationMessage: String?
     @Published var currentToken: String?
+    @Published private(set) var openedNotificationID: String?
     var onToken: ((String) async -> Void)?
     var environment: String {
         (Bundle.main.object(forInfoDictionaryKey: "FamilyAPNSEnvironment") as? String) == "production" ? "production" : "sandbox"
@@ -49,6 +50,7 @@ final class NotificationController: NSObject, ObservableObject, UNUserNotificati
         Task { await onToken?(token) }
     }
     func failed() { registrationMessage = "Push registration is unavailable. A signed app on an iPhone or iPad with APNs configured is required." }
+    func consumeOpenedNotification(_ id: String) { if openedNotificationID == id { openedNotificationID = nil } }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         DispatchQueue.main.async {
@@ -59,7 +61,10 @@ final class NotificationController: NSObject, ObservableObject, UNUserNotificati
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         // Notification content is never trusted as a command; fetch the authoritative inbox.
+        let raw = response.notification.request.content.userInfo["notificationId"] as? String
+        let id = raw.flatMap { (1...128).contains($0.utf8.count) ? $0 : nil }
         DispatchQueue.main.async {
+            self.openedNotificationID = id
             NotificationCenter.default.post(name: .familyNotificationOpened, object: nil)
             completionHandler()
         }

@@ -16,4 +16,5 @@
 <key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/><key>UISceneConfigurations</key><dict/></dict>
 <key>FamilyAPIBaseURL</key><string>https://$(FAMILY_API_HOST)</string>
 <key>FamilyAPNSEnvironment</key><string>$(APNS_ENVIRONMENT)</string>
+<key>ITSAppUsesNonExemptEncryption</key><false/>
 </dict></plist>

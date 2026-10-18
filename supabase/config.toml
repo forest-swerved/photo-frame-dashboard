@@ -1,0 +1,4 @@
+# ES256/RS256 user tokens are authenticated by getUser inside this function.
+# Disabling the legacy platform JWT gate never disables its internal checks.
+[functions.family-delete-account]
+verify_jwt = false

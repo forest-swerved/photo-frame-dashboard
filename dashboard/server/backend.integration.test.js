@@ -43,11 +43,10 @@ test('isolated Postgres authorization and concurrency boundaries', { skip: !enab
     assert.match(schema, /^family_test_[a-f0-9]{32}$/);
     await pool.query(`CREATE SCHEMA ${schema}`);
     created = true;
-    await db.query(await readFile(new URL('./schema.sql', import.meta.url), 'utf8'));
-    await db.query(await readFile(new URL('./calendar-sync-schema.sql', import.meta.url), 'utf8'));
+    for (const name of ['schema.sql','mobile-schema.sql','notifications-schema.sql','child-accounts-schema.sql','calendar-sync-schema.sql','chore-schema.sql','account-notifications-schema.sql','internet-schema.sql','account-deletion-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
 
     await t.test('all server-only tables have RLS, owner access, and no PUBLIC policies', async () => {
-      assert.equal(await verifySchema(db, schema, 13), 13);
+      assert.equal(await verifySchema(db, schema, 35), 35);
     });
 
     await t.test('a short setup code cannot be claimed by a different signed-in account', async () => {
@@ -68,7 +67,7 @@ test('isolated Postgres authorization and concurrency boundaries', { skip: !enab
 
     await t.test('an invitation is consumed once despite concurrent joins', async () => {
       const invite = await createInvite(db, admin, {});
-      const results = await Promise.allSettled(['member-a', 'member-b'].map(id => joinHousehold(db, user(id), { token: invite.token })));
+      const results = await Promise.allSettled([randomUUID(), randomUUID()].map(id => joinHousehold(db, user(id), { token: invite.token })));
       assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
       assert.equal(results.find(result => result.status === 'rejected').reason.code, 'invalid_invite');
       assert.equal((await db.query("SELECT * FROM family_members WHERE role='member'")).rowCount, 1);
@@ -117,16 +116,16 @@ test('isolated Postgres authorization and concurrency boundaries', { skip: !enab
 
     await t.test('completion retries replay exactly and concurrent stale writes conflict', async () => {
       const chore = await createChore(db, admin, { title: 'Feed pets' });
-      const mutation = { completed: true, expectedVersion: 0, mutationId: randomUUID() };
+      const mutation = { completed: true, expectedVersion: 0, mutationId: randomUUID(), reason: 'Synthetic historical fixture' };
       const results = await Promise.all([0, 1].map(() => setCompletion(db, admin, chore.id, '2026-10-15', mutation)));
       assert.deepEqual(results[0], results[1]);
       assert.equal(results[0].version, 1);
       assert.equal((await db.query('SELECT * FROM family_completions')).rowCount, 1);
       assert.equal((await db.query('SELECT * FROM family_mutations')).rowCount, 1);
       await assert.rejects(setCompletion(db, admin, chore.id, '2026-10-15', { ...mutation, completed: false }), error => error.code === 'mutation_reused');
-      const unchanged = await setCompletion(db, admin, chore.id, '2026-10-15', { completed: true, expectedVersion: 1, mutationId: randomUUID() });
+      const unchanged = await setCompletion(db, admin, chore.id, '2026-10-15', { completed: true, expectedVersion: 1, mutationId: randomUUID(), reason: 'Synthetic historical fixture' });
       assert.equal(unchanged.version, 1);
-      const simultaneous = await Promise.allSettled([0, 1].map(() => setCompletion(db, admin, chore.id, '2026-10-15', { completed: false, expectedVersion: 1, mutationId: randomUUID() })));
+      const simultaneous = await Promise.allSettled([0, 1].map(() => setCompletion(db, admin, chore.id, '2026-10-15', { completed: false, expectedVersion: 1, mutationId: randomUUID(), reason: 'Synthetic historical fixture' })));
       assert.equal(simultaneous.filter(result => result.status === 'fulfilled').length, 1);
       assert.equal(simultaneous.find(result => result.status === 'rejected').reason.code, 'version_conflict');
       assert.equal((await db.query('SELECT version FROM family_completions')).rows[0].version, 2);
@@ -138,7 +137,7 @@ test('isolated Postgres authorization and concurrency boundaries', { skip: !enab
       const outsider = { ...admin, household: { ...admin.household, id: randomUUID() } };
       await assert.rejects(changePerson(db, outsider, person.id, { name: 'Changed', expectedVersion: 1 }), error => error.status === 404);
       await assert.rejects(createChore(db, outsider, { title: 'Foreign', personId: person.id }), error => error.status === 404);
-      await assert.rejects(setCompletion(db, outsider, chore.id, '2026-10-15', { completed: true, expectedVersion: 0, mutationId: randomUUID() }), error => error.status === 404);
+      await assert.rejects(setCompletion(db, outsider, chore.id, '2026-10-15', { completed: true, expectedVersion: 0, mutationId: randomUUID(), reason: 'Synthetic historical fixture' }), error => error.status === 404);
       assert.equal((await db.query('SELECT name FROM family_people WHERE id=$1', [person.id])).rows[0].name, 'Child');
     });
 
@@ -202,6 +201,27 @@ test('isolated Postgres authorization and concurrency boundaries', { skip: !enab
       assert.equal(result.status, 'loading');
       assert.deepEqual(result.events, []);
       assert.equal((await db.query('SELECT * FROM family_calendar_cache')).rowCount, 0);
+    });
+    await t.test('home timezone changes preserve current settings and cannot invalidate enrolled network schedules', async () => {
+      const patch = body => handleRequest(request('settings', 'PATCH', body), { db, env, authenticate: async () => admin });
+      await db.query(`INSERT INTO family_network_integrations(household_id,site_id,source_zone_id,external_zone_id,state,management_host,pilot_checks)
+        VALUES($1,$2,$3,$4,'ready','forest-family-frame.vercel.app','{"midnight":true}')`, [admin.household.id, randomUUID(), randomUUID(), randomUUID()]);
+      assert.equal((await patch({ timezone: 'America/New_York' })).status, 200);
+      const current = await patch({ title: 'Updated fixture family' });
+      assert.equal((await current.json()).data.household.timezone, 'America/New_York', 'A stale authenticated household snapshot cannot restore its old timezone.');
+      const integration = (await db.query('SELECT state,pilot_checks FROM family_network_integrations WHERE household_id=$1', [admin.household.id])).rows[0];
+      assert.equal(integration.state, 'pilot_required'); assert.deepEqual(integration.pilot_checks, {});
+      const person = await createPerson(db, admin, { name: 'Timezone fixture' }), deviceId = randomUUID();
+      await db.query(`INSERT INTO family_managed_devices(id,household_id,name,person_ids,mac_addresses,control_state,management_policy_id)
+        VALUES($1,$2,'Timezone fixture',ARRAY[$3::uuid],ARRAY['02:12:34:56:78:90'],'ready',$4)`, [deviceId, admin.household.id, person.id, randomUUID()]);
+      const denied = await patch({ timezone: 'America/Denver' }); assert.equal(denied.status, 409); assert.equal((await denied.json()).error.code, 'network_timezone_locked');
+      await db.query("UPDATE family_managed_devices SET control_state='unenrolled',management_policy_id=NULL WHERE id=$1", [deviceId]);
+      const sessionId = randomUUID();
+      await db.query(`INSERT INTO family_internet_sessions(id,household_id,person_id,device_id,source,state,desired_state,requested_at,remaining_seconds,allocated_seconds,policy_snapshot,created_by)
+        VALUES($1,$2,$3,$4,'parent','paused','blocked',now(),60,60,'{}','user:fixture')`, [sessionId, admin.household.id, person.id, deviceId]);
+      assert.equal((await patch({ timezone: 'America/Denver' })).status, 409, 'Paused time is still a nonterminal home-timezone commitment.');
+      await db.query("UPDATE family_internet_sessions SET state='ended' WHERE id=$1", [sessionId]);
+      assert.equal((await patch({ timezone: 'America/Denver' })).status, 200);
     });
   } finally {
     if (created) {

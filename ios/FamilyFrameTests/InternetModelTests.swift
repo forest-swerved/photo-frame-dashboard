@@ -1,0 +1,183 @@
+import XCTest
+import SwiftUI
+import UIKit
+@testable import FamilyFrame
+
+enum InternetFixtures {
+    static let time = "2026-10-17T18:00:00Z"
+    static let child = "synthetic-child"
+    static let device = ManagedInternetDevice(id: "synthetic-console", name: "Synthetic console", kind: "console", personIds: [child], macAddresses: ["02:00:00:00:00:01"], version: 1, controlState: "ready", online: true, lastSeenAt: time, managementAccessVerifiedAt: time)
+    static func credit(status: String = "available", id: String = "synthetic-credit", person: String = child) -> RewardCredit { RewardCredit(id: id, personId: person, earnedDate: "2026-10-17", minutes: 60, status: status, expiresAt: "2026-10-25T06:00:00Z", policyVersion: 1) }
+    static func session(state: String = "active", version: Int = 1, observed: String = "allowed", end: String? = "2026-10-17T19:00:00Z", allDay: Bool = false, person: String = child, credit: String? = "synthetic-credit", remaining: Int = 1800) -> InternetSession {
+        InternetSession(id: "synthetic-session", personId: person, deviceId: device.id, creditId: credit, source: credit == nil ? "parent" : "reward", state: state, version: version, desiredState: ["paused", "pausing", "ending", "ended"].contains(state) ? "blocked" : "allowed", observedState: observed, requestedAt: time, startedAt: state == "starting" ? nil : time, endsAt: end, remainingSeconds: remaining, verifiedAt: observed == "unknown" ? nil : time, endedAt: state == "ended" ? time : nil, reason: nil, lastError: nil, allDay: allDay)
+    }
+    static func snapshot(role: String = "child", credits: [RewardCredit] = [], sessions: [InternetSession] = [], integration: String = "ready", manage: Bool? = nil) -> InternetSnapshot {
+        InternetSnapshot(serverTime: time, timezone: "America/Denver", role: role, capabilities: ParentCapabilities(manageChores: manage ?? (role == "admin"), manageInternet: manage ?? (role == "admin")), integration: InternetIntegration(state: integration, managementHost: "frame.test", managementAccessVerifiedAt: integration == "ready" ? time : nil, lastCheckedAt: time, error: nil), policies: [RewardPolicy(personId: child, version: 1, rewardMinutes: 60, carryoverDays: 7, dailyLimitMinutes: 180, bedtime: "21:00", warningMinutes: 5, enabled: true)], credits: credits, devices: [device], sessions: sessions, progress: [])
+    }
+}
+
+@MainActor
+final class InternetModelTests: XCTestCase {
+    private func fixture(role: String = "child", monotonic: (() -> TimeInterval)? = nil) -> (InternetModel, DashboardAPI) {
+        let home = Household(id: "synthetic-home", title: "Synthetic family", timezone: "America/Denver")
+        let session = MobileSession(authenticated: true, authType: "mobile", role: role, household: home, user: FamilyUser(id: "synthetic-account", name: "Synthetic account", email: nil), personId: role == "child" ? InternetFixtures.child : nil)
+        let api = DashboardAPI(session: session, data: HouseholdSnapshot(household: home, role: role, date: "2026-10-17", people: [], chores: []))
+        api.internetData = InternetFixtures.snapshot(role: role)
+        let model = InternetModel(api: api, monotonic: monotonic); model.bind(session); return (model, api)
+    }
+    private func until(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
+        let limit = ContinuousClock.now.advanced(by: .seconds(5))
+        while !condition() && ContinuousClock.now < limit { try? await Task.sleep(for: .milliseconds(2)) }
+        XCTAssertTrue(condition(), "Expected deferred state", file: file, line: line)
+    }
+    func testCountdownUsesMonotonicServerClockAndExpiresWithoutClaimingBlocked() async {
+        var elapsed: TimeInterval = 900
+        let (model, api) = fixture(monotonic: { elapsed }); let session = InternetFixtures.session()
+        api.internetData = InternetFixtures.snapshot(sessions: [session]); await model.refresh()
+        XCTAssertEqual(session.remaining(at: model.serverNow), 3600)
+        elapsed += 90; XCTAssertEqual(session.remaining(at: model.serverNow), 3510)
+        XCTAssertFalse(model.canChange, "Read freshness expires independently of phone wall time")
+        elapsed += 3600; XCTAssertEqual(session.remaining(at: model.serverNow), 0)
+        XCTAssertEqual(session.statusLabel(at: model.serverNow), "Time is up · confirming block")
+        XCTAssertEqual(model.sessions.first?.state, "active", "A display timer cannot invent a provider result")
+    }
+    func testTimedPauseFreezesRemainderWhileAllDayPauseKeepsMidnightDeadline() {
+        let now = Dates.instant("2026-10-18T05:59:00Z")!
+        let timed = InternetFixtures.session(state: "paused", observed: "blocked", end: nil)
+        XCTAssertEqual(timed.remaining(at: now), 1800)
+        let allDay = InternetFixtures.session(state: "paused", observed: "blocked", end: "2026-10-18T06:00:00Z", allDay: true)
+        XCTAssertEqual(allDay.remaining(at: now), 60); XCTAssertEqual(allDay.remaining(at: now.addingTimeInterval(61)), 0)
+    }
+    func testQueuedStartAndResumeKeepReservedTimeUntilWindowIsAssigned() {
+        for state in ["starting", "resuming", "checking"] {
+            let pending = InternetFixtures.session(state: state, observed: "unknown", end: nil, remaining: 3600)
+            XCTAssertTrue(pending.hasPendingWindow); XCTAssertFalse(pending.hasVerifiedAccess)
+            XCTAssertEqual(pending.remaining(at: Dates.instant(InternetFixtures.time)!), 3600)
+            XCTAssertEqual(pending.remaining(at: Dates.instant(InternetFixtures.time)!.addingTimeInterval(600)), 3600, "Queue wait must not consume the child's reservation")
+            XCTAssertFalse(pending.statusLabel(at: Dates.instant(InternetFixtures.time)!).contains("active"))
+        }
+    }
+    func testUnknownAndUnverifiedStatesNeverClaimActiveInternet() {
+        let now = Dates.instant(InternetFixtures.time)!
+        let unknown = InternetFixtures.session(state: "future-state", observed: "unknown")
+        XCTAssertEqual(unknown.statusLabel(at: now), "Checking network state"); XCTAssertFalse(unknown.isStable)
+        let active = InternetFixtures.session(observed: "unknown")
+        XCTAssertFalse(active.hasVerifiedAccess); XCTAssertEqual(active.statusLabel(at: now), "Confirming network access")
+        XCTAssertEqual(InternetSession.durationLabel(3661), "1:01:01"); XCTAssertEqual(InternetSession.durationLabel(-1), "0:00")
+    }
+    func testPendingRedemptionReservesOneDeviceWithoutPretendingNetworkAccess() async {
+        let (model, api) = fixture(); let credit = InternetFixtures.credit(), device = InternetFixtures.device
+        api.internetData = InternetFixtures.snapshot(credits: [credit]); await model.refresh()
+        let pending = InternetFixtures.session(state: "starting", observed: "unknown")
+        api.redeemHandler = { api.internetData = InternetFixtures.snapshot(credits: [InternetFixtures.credit(status: "reserved")], sessions: [pending]); return pending }
+        let success = await model.redeem(credit, device: device)
+        XCTAssertTrue(success); XCTAssertEqual(model.sessions.first?.state, "starting"); XCTAssertFalse(model.sessions.first?.hasVerifiedAccess ?? true)
+        XCTAssertEqual(model.snapshot?.credits.first?.status, "reserved"); XCTAssertTrue(model.availableCredits.isEmpty)
+        XCTAssertFalse(model.deviceAvailable(device, for: credit.personId)); XCTAssertEqual(api.redeemCalls, 1)
+    }
+    func testDuplicateTapCannotRedeemTwiceAndLateMutationCannotRestoreLoggedOutState() async {
+        let (model, api) = fixture(); let credit = InternetFixtures.credit(); api.internetData = InternetFixtures.snapshot(credits: [credit]); await model.refresh()
+        let delayed = Deferred<InternetSession>(); api.redeemHandler = { try await delayed.wait() }
+        let first = Task { await model.redeem(credit, device: InternetFixtures.device) }; await until { delayed.waiting }
+        let duplicate = await model.redeem(credit, device: InternetFixtures.device)
+        XCTAssertFalse(duplicate); XCTAssertEqual(api.redeemCalls, 1)
+        model.bind(nil); delayed.resolve(InternetFixtures.session(state: "starting", observed: "unknown"))
+        let result = await first.value; XCTAssertFalse(result); XCTAssertNil(model.snapshot); XCTAssertFalse(model.isChanging); XCTAssertNil(model.earnedReward)
+    }
+    func testOldReadCannotRestoreAvailableCreditAfterAcknowledgedRedemption() async {
+        let (model, api) = fixture(); let credit = InternetFixtures.credit(), old = InternetFixtures.snapshot(credits: [InternetFixtures.credit()])
+        api.internetData = old; await model.refresh()
+        let delayed = Deferred<InternetSnapshot>(); api.internetHandler = { api.internetCalls == 2 ? try await delayed.wait() : api.internetData! }
+        let read = Task { await model.refresh() }; await until { delayed.waiting }
+        let pending = InternetFixtures.session(state: "starting", version: 2, observed: "unknown")
+        api.redeemHandler = { api.internetData = InternetFixtures.snapshot(credits: [InternetFixtures.credit(status: "reserved")], sessions: [pending]); return pending }
+        let result = await model.redeem(credit, device: InternetFixtures.device); XCTAssertTrue(result)
+        delayed.resolve(old); await read.value
+        XCTAssertTrue(model.availableCredits.isEmpty); XCTAssertEqual(model.sessions.first?.version, 2); XCTAssertEqual(model.snapshot?.credits.first?.status, "reserved")
+    }
+    func testUncertainWriteNeedsPostFailureReadAndDoesNotReplay() async {
+        let (model, api) = fixture(); let credit = InternetFixtures.credit(), data = InternetFixtures.snapshot(credits: [InternetFixtures.credit()])
+        api.internetData = data; await model.refresh()
+        let before = Deferred<InternetSnapshot>(), after = Deferred<InternetSnapshot>()
+        api.internetHandler = { try await (api.internetCalls == 2 ? before : after).wait() }
+        let read = Task { await model.refresh() }; await until { before.waiting }
+        api.redeemHandler = { throw APIError(status: 0, code: "network_error", message: "Synthetic uncertain allowance") }
+        let result = await model.redeem(credit, device: InternetFixtures.device)
+        XCTAssertFalse(result); XCTAssertTrue(model.isStale); XCTAssertTrue(model.mutationNeedsReview)
+        before.resolve(data); await until { after.waiting }; XCTAssertTrue(model.isStale)
+        after.resolve(data); await read.value
+        XCTAssertFalse(model.isStale); XCTAssertEqual(api.redeemCalls, 1)
+    }
+    func testRejectedDSTWindowPreservesCanonicalStateAndExplainsServerError() async {
+        let (model, api) = fixture(); let credit = InternetFixtures.credit(); api.internetData = InternetFixtures.snapshot(credits: [credit]); await model.refresh()
+        api.redeemHandler = { throw APIError(status: 422, code: "dst_window_unrepresentable", message: "Synthetic daylight-saving window cannot be represented") }
+        let result = await model.redeem(credit, device: InternetFixtures.device)
+        XCTAssertFalse(result); XCTAssertFalse(model.isStale); XCTAssertFalse(model.mutationNeedsReview); XCTAssertEqual(model.message, "Synthetic daylight-saving window cannot be represented")
+        XCTAssertEqual(model.snapshot?.credits.first?.status, "available"); XCTAssertTrue(model.sessions.isEmpty)
+    }
+    func testChildCannotGrantOrControlSessionResolveCreditOrRedeemSiblingReward() async {
+        let (model, api) = fixture(); api.internetData = InternetFixtures.snapshot(credits: [InternetFixtures.credit()], sessions: [InternetFixtures.session()]); await model.refresh()
+        let grant = await model.grant(personID: InternetFixtures.child, device: InternetFixtures.device, minutes: 60, allDay: true, reason: "")
+        let changed = await model.act(InternetFixtures.session(), action: "end")
+        let resolved = await model.resolve(InternetFixtures.credit(status: "review"), action: "restore", reason: "Synthetic decision")
+        let sibling = await model.redeem(InternetFixtures.credit(person: "sibling"), device: InternetFixtures.device)
+        XCTAssertFalse(grant); XCTAssertFalse(changed); XCTAssertFalse(resolved); XCTAssertFalse(sibling)
+        XCTAssertEqual(api.grantCalls + api.internetActionCalls + api.internetManagementCalls + api.redeemCalls, 0)
+    }
+    func testCaregiverRequiresServerInternetPermission() async {
+        let (model, api) = fixture(role: "member"); await model.refresh(); XCTAssertFalse(model.canManage)
+        api.internetData = InternetFixtures.snapshot(role: "member", manage: true); await model.refresh(); XCTAssertTrue(model.canManage)
+        XCTAssertEqual(model.role, "member")
+    }
+    func testParentActionsUsePresentedVersionAndCannotForcePastNewerSession() async {
+        let (model, api) = fixture(role: "admin"); let old = InternetFixtures.session(version: 1)
+        api.internetData = InternetFixtures.snapshot(role: "admin", sessions: [InternetFixtures.session(version: 2)]); await model.refresh()
+        let result = await model.act(old, action: "adjust", deltaMinutes: 15)
+        XCTAssertFalse(result); XCTAssertTrue(model.mutationNeedsReview); XCTAssertEqual(api.internetActionCalls, 0)
+        api.internetActionHandler = { _, request in
+            XCTAssertEqual(request.expectedVersion, 2); XCTAssertEqual(request.deltaMinutes, -15)
+            return InternetFixtures.session(state: "adjusting", version: 3)
+        }
+        let changed = await model.act(model.sessions[0], action: "adjust", deltaMinutes: -15)
+        XCTAssertTrue(changed); XCTAssertEqual(model.sessions.first?.version, 3)
+        await model.refresh(); XCTAssertEqual(model.sessions.first?.version, 3, "Older reads cannot demote a confirmed action")
+    }
+    func testUnconfiguredIntegrationCannotStartSessionButDoesNotPretendDefaultBlockVerified() async {
+        let (model, api) = fixture(); let credit = InternetFixtures.credit(); api.internetData = InternetFixtures.snapshot(credits: [credit], integration: "unconfigured"); await model.refresh()
+        XCTAssertFalse(model.integrationReady); XCTAssertEqual(model.snapshot?.integration.title, "Connect your home network")
+        let result = await model.redeem(credit, device: InternetFixtures.device); XCTAssertFalse(result); XCTAssertEqual(api.redeemCalls, 0)
+    }
+    func testLateNetworkReadCannotRestoreAnotherAccountAndExpiredCreditsAreUnavailable() async {
+        let (model, api) = fixture(); await model.refresh()
+        let delayed = Deferred<InternetSnapshot>(); api.internetHandler = { try await delayed.wait() }
+        let read = Task { await model.refresh() }; await until { delayed.waiting }; model.bind(nil)
+        delayed.resolve(InternetFixtures.snapshot(credits: [InternetFixtures.credit()])); await read.value
+        XCTAssertNil(model.snapshot); XCTAssertTrue(model.availableCredits.isEmpty); XCTAssertFalse(model.canManage)
+    }
+    func testEarnedPromptRequiresConfirmedAvailableCreditAndSaveLaterDoesNotSpendIt() async {
+        let (model, api) = fixture(); await model.refresh(celebrateRewards: true)
+        XCTAssertNil(model.earnedReward, "Finishing local checkboxes does not invent an award")
+        api.internetData = InternetFixtures.snapshot(credits: [InternetFixtures.credit(status: "held")]); await model.refresh(celebrateRewards: true)
+        XCTAssertNil(model.earnedReward)
+        api.internetData = InternetFixtures.snapshot(credits: [InternetFixtures.credit()]); await model.refresh(celebrateRewards: true)
+        XCTAssertEqual(model.earnedReward?.id, "synthetic-credit"); model.earnedReward = nil; await model.refresh(celebrateRewards: true)
+        XCTAssertNil(model.earnedReward, "Save for later prevents repeated prompts for the same award")
+        XCTAssertEqual(model.availableCredits.count, 1); XCTAssertEqual(api.redeemCalls, 0)
+    }
+    func testReviewCreditIsNeverAutomaticallyRestoredOrCharged() async {
+        let (model, api) = fixture(role: "admin"); api.internetData = InternetFixtures.snapshot(role: "admin", credits: [InternetFixtures.credit(status: "review")]); await model.refresh()
+        XCTAssertTrue(model.availableCredits.isEmpty); XCTAssertEqual(model.snapshot?.credits.first?.status, "review"); XCTAssertEqual(api.internetManagementCalls, 0)
+        let blank = await model.resolve(InternetFixtures.credit(status: "review"), action: "restore", reason: " "); XCTAssertFalse(blank)
+        api.resolveHandler = { api.internetData = InternetFixtures.snapshot(role: "admin", credits: [InternetFixtures.credit(status: "available")]); return InternetFixtures.credit(status: "available") }
+        let result = await model.resolve(InternetFixtures.credit(status: "review"), action: "restore", reason: "Synthetic provider review")
+        XCTAssertTrue(result); XCTAssertEqual(model.snapshot?.credits.first?.status, "available"); XCTAssertEqual(api.internetManagementCalls, 1)
+    }
+    func testSameVersionAttentionReadSupersedesOriginalSessionAndCannotBeAdjusted() async {
+        let (model, api) = fixture(role: "admin"); let original = InternetFixtures.session()
+        api.internetData = InternetFixtures.snapshot(role: "admin", sessions: [original]); await model.refresh()
+        api.internetData = InternetFixtures.snapshot(role: "admin", sessions: [InternetFixtures.session(state: "checking", observed: "unknown")]); await model.refresh()
+        XCTAssertEqual(model.currentSession(original).state, "checking")
+        let result = await model.act(original, action: "adjust", deltaMinutes: 15)
+        XCTAssertFalse(result); XCTAssertEqual(api.internetActionCalls, 0)
+    }
+}

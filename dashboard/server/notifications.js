@@ -5,11 +5,25 @@ import { decryptCredentials, digest, encryptCredentials, keyedDigest } from './c
 import { one, transaction } from './database.js';
 import { classifyApnsResult, preflightApns, sendApns } from './apns.js';
 import { activeMobileSessionSql as activeSession } from './mobile.js';
+import { ensureDailyOccurrences } from './chore-occurrences.js';
 
 const preferenceColumns = Object.freeze({ pushEnabled: 'push_enabled', choreCompleted: 'chore_completed', choreReopened: 'chore_reopened',
-  choreDueSoon: 'chore_due_soon', choreOverdue: 'chore_overdue', calendarEvents: 'calendar_events', frameStatus: 'frame_status' });
+  choreDueSoon: 'chore_due_soon', choreOverdue: 'chore_overdue', calendarEvents: 'calendar_events', frameStatus: 'frame_status',
+  rewards: 'rewards', internetSessions: 'internet_sessions' });
 const preferenceForKind = { chore_completed: 'choreCompleted', chore_reopened: 'choreReopened', chore_due_soon: 'choreDueSoon',
-  chore_overdue: 'choreOverdue', calendar_upcoming: 'calendarEvents', calendar_unavailable: 'calendarEvents', calendar_restored: 'calendarEvents', frame_offline: 'frameStatus', frame_online: 'frameStatus' };
+  chore_overdue: 'choreOverdue', chore_submitted: 'choreCompleted', calendar_upcoming: 'calendarEvents', calendar_unavailable: 'calendarEvents', calendar_restored: 'calendarEvents', frame_offline: 'frameStatus', frame_online: 'frameStatus',
+  reward_earned: 'rewards', session_started: 'internetSessions', session_warning: 'internetSessions', session_expired: 'internetSessions', session_paused: 'internetSessions',
+  session_ended: 'internetSessions', session_adjusted: 'internetSessions', enforcement_failed: 'internetSessions' };
+const childChoreKinds = ['chore_completed', 'chore_reopened', 'chore_due_soon', 'chore_overdue'];
+const childNetworkKinds = ['reward_earned', 'session_started', 'session_warning', 'session_expired', 'session_paused', 'session_ended', 'session_adjusted'];
+const uuidPattern = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$';
+const uuidJson = value => typeof value === 'string' && new RegExp(uuidPattern).test(value) ? value : null;
+const occurrenceIdSql = alias => `CASE WHEN ${alias}.payload->>'occurrenceId' ~ '${uuidPattern}' THEN (${alias}.payload->>'occurrenceId')::uuid END`;
+const childEventScope = (alias, person) => `(${alias}.person_id=${person} AND (
+  (${alias}.type IN(${childNetworkKinds.map(kind => `'${kind}'`).join(',')}) AND ${alias}.chore_id IS NULL)
+  OR (${alias}.type IN(${childChoreKinds.map(kind => `'${kind}'`).join(',')}) AND EXISTS(SELECT 1 FROM family_chore_occurrences scope_occurrence
+    WHERE scope_occurrence.household_id=${alias}.household_id AND scope_occurrence.chore_id=${alias}.chore_id AND scope_occurrence.person_id=${person}
+      AND ((${alias}.payload ? 'occurrenceId' AND scope_occurrence.id=${occurrenceIdSql(alias)}) OR (NOT ${alias}.payload ? 'occurrenceId' AND scope_occurrence.date=${alias}.date))))))`;
 const notFound = () => new ApiError(404, 'not_found', 'That notification does not exist.');
 const iso = value => new Date(value).toISOString();
 const localDate = (now, timezone) => Temporal.Instant.from(iso(now)).toZonedDateTimeISO(timezone).toPlainDate();
@@ -25,6 +39,25 @@ async function checkedSession(db, principal, now = new Date(), lock = '') {
   requireValue(session && (session.kind === 'child' ? principal.role === 'child' && session.person_id === principal.personId : principal.role !== 'child'),
     401, 'mobile_session_expired', 'Sign in or pair this app again.');
   return session;
+}
+
+async function checkedAccount(db, principal, now = new Date(), lock = '') {
+  requireValue(['user', 'mobile'].includes(principal?.authType) && principal.household?.id && principal.user?.id,
+    403, 'account_required', 'Sign in to your own Family Frame account.');
+  const householdId = uuidField(principal.household.id);
+  if (principal.authType === 'mobile') {
+    const session = await checkedSession(db, principal, now, lock ? 'FOR SHARE OF s' : '');
+    requireValue(session.user_id === principal.user.id, 401, 'session_required', 'Sign in again.');
+    return { householdId, userId: session.user_id, role: session.kind === 'child' ? 'child' : principal.role, personId: session.kind === 'child' ? session.person_id : null };
+  }
+  const userId = uuidField(principal.user.id), providerSessionId = uuidField(principal.sessionId, 'Sign-in session');
+  const member = await one(db, `SELECT m.role,m.person_id FROM family_members m JOIN family_internal.auth_sessions a ON a.user_id::text=m.user_id
+    LEFT JOIN family_people p ON p.household_id=m.household_id AND p.id=m.person_id
+    WHERE m.household_id=$1 AND m.user_id=$2 AND m.revoked_at IS NULL AND a.id=$3 AND (a.not_after IS NULL OR a.not_after>$4)
+      AND (m.role<>'child' OR p.id IS NOT NULL) ${lock ? 'FOR SHARE OF m' : ''}`, [householdId, userId, providerSessionId, now]);
+  requireValue(member && member.role === principal.role && (member.role !== 'child' || member.person_id === principal.personId),
+    401, 'session_required', 'Your sign-in or family profile changed. Sign in again.');
+  return { householdId, userId, role: member.role, personId: member.role === 'child' ? member.person_id : null };
 }
 
 export function preferencesDto(row, timezone) {
@@ -52,17 +85,19 @@ export function validatePreferences(body, current) {
 }
 
 export async function notificationPreferences(db, principal, body) {
+  requireValue(['user', 'mobile'].includes(principal?.authType) && principal.household?.id && principal.user?.id,
+    403, 'account_required', 'Sign in to your own Family Frame account.');
   return transaction(db, async client => {
-    const session = await checkedSession(client, principal, new Date(), 'FOR SHARE OF s');
-    await client.query('INSERT INTO family_notification_preferences(mobile_session_id,household_id) VALUES($1,$2) ON CONFLICT DO NOTHING', [session.id, session.household_id]);
-    const row = await one(client, 'SELECT * FROM family_notification_preferences WHERE mobile_session_id=$1 AND household_id=$2 FOR UPDATE', [session.id, session.household_id]);
+    const account = await checkedAccount(client, principal, new Date(), true);
+    await client.query('INSERT INTO family_account_notification_preferences(household_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING', [account.householdId, account.userId]);
+    const row = await one(client, 'SELECT * FROM family_account_notification_preferences WHERE household_id=$1 AND user_id=$2 FOR UPDATE', [account.householdId, account.userId]);
     const current = preferencesDto(row, principal.household.timezone);
     if (body === undefined) return current;
     const value = validatePreferences(body, current);
     const keys = Object.entries(preferenceColumns);
-    await client.query(`UPDATE family_notification_preferences SET ${keys.map(([, column], i) => `${column}=$${i + 3}`).join(',')},
-      quiet_start=$10::time,quiet_end=$11::time,updated_at=now() WHERE mobile_session_id=$1 AND household_id=$2`,
-    [session.id, session.household_id, ...keys.map(([key]) => value[key]), value.quietStart, value.quietEnd]);
+    await client.query(`UPDATE family_account_notification_preferences SET ${keys.map(([, column], i) => `${column}=$${i + 3}`).join(',')},
+      quiet_start=$${keys.length + 3}::time,quiet_end=$${keys.length + 4}::time,updated_at=now() WHERE household_id=$1 AND user_id=$2`,
+    [account.householdId, account.userId, ...keys.map(([key]) => value[key]), value.quietStart, value.quietEnd]);
     return value;
   });
 }
@@ -95,36 +130,55 @@ export async function registerPush(db, principal, body, env = process.env) {
 export function notificationText(event) {
   const chore = String(event.payload?.title || 'A chore').slice(0, 160);
   const labels = {
+    chore_submitted: ['Ready for parent review', `${chore} is waiting for approval.`],
     chore_completed: ['Chore completed', `${chore} was marked done.`], chore_reopened: ['Chore reopened', `${chore} was reopened.`],
     chore_due_soon: ['Chore due soon', `${chore} is due soon.`], chore_overdue: ['Chore overdue', `${chore} has not been marked done.`],
     calendar_upcoming: ['Calendar reminder', `${String(event.payload?.title || 'An event').slice(0, 160)} starts soon.`],
     calendar_unavailable: ['Calendar needs attention', 'The calendar has not synced recently. Check its connection in Setup.'],
     calendar_restored: ['Calendar restored', 'Your calendar is syncing again.'],
+    reward_earned: ['Internet time earned', 'Your required chores are complete. Use your reward now or save it for later.'],
+    session_started: ['Internet session started', 'Your device access window has started.'],
+    session_warning: ['Internet time ending soon', 'Your access window will end soon.'],
+    session_expired: ['Internet time finished', 'Your access window has ended.'],
+    session_paused: ['Internet session paused', 'Your access window is paused.'],
+    session_ended: ['Internet session ended', 'A parent ended this access window.'],
+    session_adjusted: ['Internet time adjusted', 'A parent changed your access window.'],
+    enforcement_failed: ['Network control needs attention', 'A device access change could not be confirmed. Open Devices for its current status.'],
     frame_offline: ['Frame may be offline', 'Your frame has not checked in recently.'], frame_online: ['Frame connected', 'Your frame is connected again.'],
   };
   return labels[event.type] || ['Family update', 'There is a new family update.'];
 }
 
 export async function notificationInbox(db, principal) {
-  const session = await checkedSession(db, principal);
-  const rows = (await db.query(`SELECT i.id,i.created_at,i.read_at,e.type,e.chore_id,e.date::text,e.payload FROM family_notification_inbox i
+  const account = await checkedAccount(db, principal);
+  const rows = (await db.query(`SELECT i.id,i.created_at,i.read_at,e.type,e.chore_id,e.date::text,e.payload FROM family_account_notification_inbox i
     JOIN family_notification_events e ON e.id=i.event_id
-    WHERE i.mobile_session_id=$1 AND i.household_id=$2 AND ($3::uuid IS NULL OR (e.person_id=$3 AND EXISTS
-      (SELECT 1 FROM family_chores c WHERE c.id=e.chore_id AND c.household_id=i.household_id AND c.person_id=$3 AND c.deleted_at IS NULL)))
-    ORDER BY i.created_at DESC,i.id DESC LIMIT 100`, [session.id, session.household_id, session.kind === 'child' ? session.person_id : null])).rows;
+    WHERE i.household_id=$1 AND i.user_id=$2 AND ($3::uuid IS NULL OR ${childEventScope('e', '$3')})
+    ORDER BY i.created_at DESC,i.id DESC LIMIT 100`, [account.householdId, account.userId, account.personId])).rows;
   return { notifications: rows.map(row => { const [title, body] = notificationText(row); return { id: row.id, kind: row.type, title, body,
-    choreId: row.chore_id || null, date: row.date || null, createdAt: iso(row.created_at), readAt: row.read_at ? iso(row.read_at) : null }; }) };
+    choreId: row.chore_id || null, date: row.date || null, occurrenceId: uuidJson(row.payload?.occurrenceId),
+    sessionId: uuidJson(row.payload?.sessionId), creditId: uuidJson(row.payload?.creditId),
+    target: childNetworkKinds.includes(row.type) || row.type === 'enforcement_failed' ? 'devices' : row.chore_id ? 'chores' : 'today',
+    createdAt: iso(row.created_at), readAt: row.read_at ? iso(row.read_at) : null }; }) };
 }
 
 export async function markNotificationRead(db, principal, id) {
   uuidField(id);
-  const session = await checkedSession(db, principal);
-  const row = await one(db, `UPDATE family_notification_inbox i SET read_at=coalesce(i.read_at,now()) FROM family_notification_events e
-    WHERE i.id=$1 AND i.event_id=e.id AND i.mobile_session_id=$2 AND i.household_id=$3 AND ($4::uuid IS NULL OR (e.person_id=$4 AND EXISTS
-      (SELECT 1 FROM family_chores c WHERE c.id=e.chore_id AND c.household_id=i.household_id AND c.person_id=$4 AND c.deleted_at IS NULL))) RETURNING i.id`,
-  [id, session.id, session.household_id, session.kind === 'child' ? session.person_id : null]);
-  if (!row) throw notFound();
-  return { read: true };
+  return transaction(db, async client => {
+    const account = await checkedAccount(client, principal, new Date(), true);
+    const row = await one(client, `UPDATE family_account_notification_inbox i SET read_at=coalesce(i.read_at,now()) FROM family_notification_events e
+      WHERE i.event_id=e.id AND i.household_id=$2 AND i.user_id=$3
+        AND (i.id=$1 OR EXISTS(SELECT 1 FROM family_notification_inbox legacy JOIN family_mobile_sessions owner ON owner.id=legacy.mobile_session_id
+          WHERE legacy.id=$1 AND legacy.event_id=i.event_id AND owner.household_id=i.household_id AND owner.user_id=i.user_id))
+        AND ($4::uuid IS NULL OR ${childEventScope('e', '$4')}) RETURNING i.id,i.event_id,i.read_at`,
+    [id, account.householdId, account.userId, account.personId]);
+    if (!row) throw notFound();
+    // Keep old installed builds' session IDs/read endpoints compatible. The
+    // account row remains authoritative across all future sign-ins.
+    await client.query(`UPDATE family_notification_inbox i SET read_at=coalesce(i.read_at,$4::timestamptz) FROM family_mobile_sessions s
+      WHERE i.mobile_session_id=s.id AND i.household_id=$1 AND s.user_id=$2 AND i.event_id=$3`, [account.householdId, account.userId, row.event_id, row.read_at]);
+    return { read: true };
+  });
 }
 
 export function occurrenceInstant(date, time, timezone) {
@@ -162,6 +216,19 @@ export function choreOccurrences(chore, timezone, since, now) {
   return result;
 }
 
+export function dailyOccurrenceReminders(occurrence, timezone, since, now) {
+  if (occurrence.status !== 'pending' || !occurrence.due_time) return [];
+  const date = typeof occurrence.date === 'string' ? occurrence.date : iso(occurrence.date).slice(0, 10);
+  const due = occurrenceInstant(date, occurrence.due_time, timezone);
+  const dayStart = occurrenceInstant(date, '00:00', timezone);
+  const lead = Math.max(0, occurrence.reminder_minutes || 0);
+  // Future definitions stay editable until the household day begins. An early
+  // morning reminder is clamped to midnight rather than freezing tomorrow.
+  return [['chore_due_soon', new Date(Math.max(dayStart.getTime(), due.getTime() - lead * 60_000))], ['chore_overdue', due]]
+    .filter(([type, at]) => (type !== 'chore_due_soon' || lead > 0) && at > since && at <= now && (!occurrence.created_at || at >= new Date(occurrence.created_at)))
+    .map(([type, at]) => ({ type, date, at, due }));
+}
+
 export function frameIsOffline(lastSeenAt, now) {
   // Authentication deliberately writes frame heartbeats at most every five
   // minutes; allow three full intervals before reporting a connectivity issue.
@@ -178,22 +245,20 @@ async function insertEvent(client, event) {
 
 async function scanHousehold(db, household, now) {
   return transaction(db, async client => {
+    await ensureDailyOccurrences(client, household, localDate(now, household.timezone).toString(), { now });
     const inserted = await one(client, 'INSERT INTO family_notification_scan_state(household_id,scanned_at) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING household_id', [household.id, now]);
     const checkpoint = await one(client, 'SELECT * FROM family_notification_scan_state WHERE household_id=$1 FOR UPDATE', [household.id]);
     if (new Date(checkpoint.scanned_at) > now) return 0;
     const since = new Date(Math.max(new Date(checkpoint.scanned_at).getTime(), now.getTime() - 24 * 3600_000));
     let events = 0;
     if (!inserted) {
-      const chores = (await client.query('SELECT * FROM family_chores WHERE household_id=$1 AND deleted_at IS NULL AND due_time IS NOT NULL', [household.id])).rows;
-      const completed = (await client.query(`SELECT chore_id,date::text FROM family_completions WHERE household_id=$1 AND completed
-        AND date BETWEEN $2::date AND $3::date`, [household.id, localDate(since, household.timezone).subtract({ days: 1 }).toString(), localDate(now, household.timezone).add({ days: 1 }).toString()])).rows;
-      const done = new Set(completed.map(row => `${row.chore_id}:${row.date}`));
-      for (const chore of chores) for (const occurrence of choreOccurrences(chore, household.timezone, since, now)) {
-        if (done.has(`${chore.id}:${occurrence.date}`)) continue;
-        events += await insertEvent(client, { householdId: household.id, key: `${occurrence.type}:${chore.id}:${chore.version}:${occurrence.date}`,
-          type: occurrence.type, personId: chore.person_id, choreId: chore.id, date: occurrence.date, at: occurrence.at,
-          expiresAt: occurrence.type === 'chore_due_soon' ? occurrence.due : new Date(occurrence.due.getTime() + 6 * 3600_000),
-          payload: { title: chore.title, choreVersion: chore.version } });
+      const chores = (await client.query(`SELECT *,date::text FROM family_chore_occurrences WHERE household_id=$1 AND status='pending' AND due_time IS NOT NULL
+        AND date BETWEEN $2::date AND $3::date`, [household.id, localDate(since, household.timezone).toString(), localDate(now, household.timezone).toString()])).rows;
+      for (const chore of chores) for (const reminder of dailyOccurrenceReminders(chore, household.timezone, since, now)) {
+        events += await insertEvent(client, { householdId: household.id, key: `${reminder.type}:${chore.id}:${reminder.date}:${chore.due_time}`,
+          type: reminder.type, personId: chore.person_id, choreId: chore.chore_id, date: reminder.date, at: reminder.at,
+          expiresAt: reminder.type === 'chore_due_soon' ? reminder.due : new Date(reminder.due.getTime() + 6 * 3600_000),
+          payload: { title: chore.title, choreVersion: chore.routine_version, occurrenceId: chore.id, occurrenceVersion: chore.version, occurrenceStatus: 'pending', dueTime: chore.due_time } });
       }
     }
     const connection = await one(client, "SELECT updated_at,version,selected_ids FROM family_calendar_connections WHERE household_id=$1 AND jsonb_array_length(selected_ids)>0", [household.id]);
@@ -231,10 +296,17 @@ async function fanOut(db, now) {
     const events = (await client.query('SELECT * FROM family_notification_events WHERE fanned_at IS NULL ORDER BY occurred_at,id LIMIT 100 FOR UPDATE SKIP LOCKED')).rows;
     if (!events.length) return 0;
     const ids = events.map(event => event.id);
-    const inbox = await client.query(`INSERT INTO family_notification_inbox(id,event_id,household_id,mobile_session_id,created_at)
+    const inbox = await client.query(`INSERT INTO family_account_notification_inbox(event_id,household_id,user_id,created_at)
+      SELECT e.id,e.household_id,m.user_id,e.occurred_at FROM family_notification_events e JOIN family_members m ON m.household_id=e.household_id
+      WHERE e.id=ANY($1::uuid[]) AND m.revoked_at IS NULL AND m.joined_at<=e.occurred_at
+        AND (m.role IN ('admin','member') OR (m.role='child' AND EXISTS(SELECT 1 FROM family_people p WHERE p.household_id=m.household_id AND p.id=m.person_id)
+          AND ${childEventScope('e', 'm.person_id')})) ON CONFLICT(event_id,household_id,user_id) DO NOTHING`, [ids]);
+    await client.query(`INSERT INTO family_notification_inbox(id,event_id,household_id,mobile_session_id,created_at)
       SELECT gen_random_uuid(),e.id,e.household_id,s.id,e.occurred_at FROM family_notification_events e
-      JOIN family_mobile_sessions s ON s.household_id=e.household_id WHERE e.id=ANY($1::uuid[]) AND ${activeSession()}
-      AND s.created_at<=e.occurred_at AND (s.kind='parent' OR s.person_id=e.person_id)
+      JOIN family_mobile_sessions s ON s.household_id=e.household_id
+      JOIN family_account_notification_inbox account_inbox ON account_inbox.event_id=e.id AND account_inbox.household_id=s.household_id AND account_inbox.user_id=s.user_id
+      WHERE e.id=ANY($1::uuid[]) AND ${activeSession()} AND s.created_at<=e.occurred_at
+        AND (s.kind='parent' OR ${childEventScope('e', 's.person_id')})
       ON CONFLICT(event_id,mobile_session_id) DO NOTHING`, [ids, now]);
     await client.query(`INSERT INTO family_notification_deliveries(id,inbox_id,installation_id,available_at)
       SELECT gen_random_uuid(),i.id,p.id,$2 FROM family_notification_inbox i JOIN family_push_installations p
@@ -268,9 +340,11 @@ export function lockScreenPayload(notificationId) {
 async function deliver(db, lease, env, now, send) {
   return transaction(db, async client => {
     const delivery = await one(client, `SELECT d.*,i.mobile_session_id,i.household_id,e.id AS event_id,e.type,e.person_id,e.chore_id,e.date::text,e.payload,e.expires_at,
-      p.credentials,p.environment,p.registered_at::text AS registered_version,p.disabled_at,p.mobile_session_id AS installation_session,h.timezone FROM family_notification_deliveries d
+      p.credentials,p.environment,p.registered_at::text AS registered_version,p.disabled_at,p.mobile_session_id AS installation_session,h.timezone,account_inbox.id AS account_notification_id FROM family_notification_deliveries d
       JOIN family_notification_inbox i ON i.id=d.inbox_id JOIN family_notification_events e ON e.id=i.event_id
       JOIN family_push_installations p ON p.id=d.installation_id JOIN family_households h ON h.id=i.household_id
+      JOIN family_mobile_sessions owner ON owner.id=i.mobile_session_id
+      LEFT JOIN family_account_notification_inbox account_inbox ON account_inbox.event_id=e.id AND account_inbox.household_id=i.household_id AND account_inbox.user_id=owner.user_id
       WHERE d.id=$1 AND d.state='leased' AND d.lease_id=$2 FOR UPDATE OF d`, [lease.id, lease.leaseId]);
     if (!delivery) return 'skipped';
     const suppress = async reason => { await client.query("UPDATE family_notification_deliveries SET state='suppressed',last_error=$2,lease_id=NULL,lease_until=NULL WHERE id=$1", [delivery.id, reason]); return 'suppressed'; };
@@ -278,15 +352,26 @@ async function deliver(db, lease, env, now, send) {
     if (!session || delivery.disabled_at || delivery.installation_session !== delivery.mobile_session_id) return suppress('recipient_inactive');
     if (new Date(delivery.expires_at) <= now) return suppress('expired');
     if (delivery.attempts >= 6) return suppress('attempt_limit');
+    if (session.kind === 'child' && (delivery.person_id !== session.person_id || ![...childChoreKinds, ...childNetworkKinds].includes(delivery.type))) return suppress('recipient_scope');
     if (delivery.chore_id) {
-      const chore = await one(client, 'SELECT * FROM family_chores WHERE id=$1 AND household_id=$2 FOR SHARE', [delivery.chore_id, delivery.household_id]);
-      if (!chore || chore.deleted_at || chore.version !== delivery.payload.choreVersion || session.kind === 'child' && chore.person_id !== session.person_id) return suppress('chore_changed');
-      // Match setCompletion's lock order (chore, then completion advisory lock) and hold through APNs acceptance.
-      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`completion:${delivery.household_id}:${delivery.chore_id}:${delivery.date}`]);
-      const completion = await one(client, 'SELECT completed,version FROM family_completions WHERE household_id=$1 AND chore_id=$2 AND date=$3::date', [delivery.household_id, delivery.chore_id, delivery.date]);
-      if (['chore_due_soon', 'chore_overdue'].includes(delivery.type) ? completion?.completed : completion?.version !== delivery.payload.completionVersion || completion?.completed !== delivery.payload.completed) return suppress('completion_changed');
-    } else if (session.kind === 'child') return suppress('recipient_scope');
-    const row = await one(client, 'SELECT * FROM family_notification_preferences WHERE mobile_session_id=$1 AND household_id=$2', [session.id, session.household_id]);
+      const occurrenceId = uuidJson(delivery.payload?.occurrenceId);
+      const occurrence = occurrenceId ? await one(client, 'SELECT *,date::text FROM family_chore_occurrences WHERE household_id=$1 AND id=$2 FOR SHARE', [delivery.household_id, occurrenceId])
+        : await one(client, `SELECT *,date::text FROM family_chore_occurrences WHERE household_id=$1 AND chore_id=$2 AND date=$3::date
+          ORDER BY (status<>'skipped') DESC,updated_at DESC LIMIT 1 FOR SHARE`, [delivery.household_id, delivery.chore_id, delivery.date]);
+      if (!occurrence || occurrence.chore_id !== delivery.chore_id || occurrence.date !== delivery.date || occurrence.person_id !== delivery.person_id
+        || session.kind === 'child' && occurrence.person_id !== session.person_id) return suppress('occurrence_changed');
+      // Today's immutable definition, not the editable recurring routine, owns
+      // identity and recipients. A queued reminder survives step progress, but
+      // rescheduling or submission/completion always invalidates it.
+      if (['chore_due_soon', 'chore_overdue'].includes(delivery.type)) {
+        if (occurrence.status !== 'pending' || occurrence.routine_version !== delivery.payload.choreVersion
+          || delivery.payload.dueTime && occurrence.due_time !== delivery.payload.dueTime) return suppress('completion_changed');
+      } else if (occurrence.completion_version !== delivery.payload.completionVersion
+        || ['submitted', 'completed'].includes(occurrence.status) !== delivery.payload.completed
+        || delivery.payload.occurrenceVersion !== undefined && occurrence.version !== delivery.payload.occurrenceVersion
+        || delivery.payload.occurrenceStatus && occurrence.status !== delivery.payload.occurrenceStatus) return suppress('completion_changed');
+    } else if (session.kind === 'child' && !childNetworkKinds.includes(delivery.type)) return suppress('recipient_scope');
+    const row = await one(client, 'SELECT * FROM family_account_notification_preferences WHERE household_id=$1 AND user_id=$2', [session.household_id, session.user_id]);
     const preferences = preferencesDto(row, delivery.timezone);
     if (!preferences.pushEnabled || !preferences[preferenceForKind[delivery.type]]) return suppress('preference_disabled');
     const resume = quietUntil(now, delivery.timezone, preferences.quietStart, preferences.quietEnd);
@@ -302,7 +387,7 @@ async function deliver(db, lease, env, now, send) {
       token = credentials.token;
     } catch { return suppress('installation_unavailable'); }
     let result;
-    try { result = await send({ token, environment: delivery.environment, notificationId: delivery.id, expiresAt: delivery.expires_at, payload: lockScreenPayload(delivery.inbox_id) }, env); }
+    try { result = await send({ token, environment: delivery.environment, notificationId: delivery.id, expiresAt: delivery.expires_at, payload: lockScreenPayload(delivery.account_notification_id || delivery.inbox_id) }, env); }
     catch { result = { accepted: false, status: 0, reason: 'transport_error' }; }
     const decision = classifyApnsResult(result, delivery.attempts + 1);
     if (decision.disable) await client.query('UPDATE family_push_installations SET disabled_at=$2 WHERE id=$1 AND registered_at=$3::timestamptz', [delivery.installation_id, now, delivery.registered_version]);

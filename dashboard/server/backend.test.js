@@ -274,10 +274,14 @@ test('API validation errors preserve cookie refresh writes from the same request
   assert.equal(response.headers.getSetCookie().length, 1);
 });
 
-test('frames and members cannot change setup, identities, chore definitions or credentials', async () => {
+test('frames and members without delegated permissions cannot change protected setup or routines', async () => {
   const routes = [['people', 'POST'], [`people/${randomUUID()}`, 'PATCH'], ['chores', 'POST'], ['invites', 'POST'], ['frame-pairs', 'POST'], ['calendar/connection', 'GET'], ['calendar/selection', 'PUT'], ['settings', 'PATCH'], ['devices', 'GET'], ['members', 'GET']];
   for (const principal of [frame, member]) for (const [path, method] of routes) {
-    const response = await handleRequest(req(path, method, method === 'GET' ? undefined : {}), { db: neverDb, authenticate: async () => principal });
+    const db = { query: async sql => {
+      if (sql.startsWith('SELECT role,manage_chores,manage_internet FROM family_members')) return { rows: [{ role: 'member', manage_chores: false, manage_internet: false }] };
+      return neverDb.query();
+    } };
+    const response = await handleRequest(req(path, method, method === 'GET' ? undefined : {}), { db, authenticate: async () => principal });
     assert.equal(response.status, 403, `${principal.role}: ${method} ${path}`);
   }
 });

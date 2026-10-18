@@ -3,6 +3,8 @@ import { ApiError, dateField, householdDate, requireValue, textField, uuidField,
 import { digest, keyedDigest, matchesDigest, randomToken } from './credentials.js';
 import { one, transaction } from './database.js';
 import { FRAME_COOKIE, FRAME_COOKIE_AGE, requireAdmin, requireHousehold } from './auth.js';
+import { requireChoreManager } from './capabilities.js';
+import { ensureDailyOccurrences, occurrenceDto, routineDetails, setRoutineCompletion } from './chore-occurrences.js';
 
 const notFound = () => new ApiError(404, 'not_found', 'That item does not exist in this household.');
 export const personDto = row => ({ id: row.id, name: row.name, color: row.color, version: row.version });
@@ -27,6 +29,9 @@ export async function claimHousehold(db, principal, body, env = process.env) {
   requireValue(matchesDigest(textField(body.bootstrapCode, 'Claim code', 200), env.FAMILY_BOOTSTRAP_HASH),
     403, 'invalid_claim', 'That claim code is invalid.');
   return transaction(db, async client => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`membership:${principal.user.id}`]);
+    requireValue(!await one(client, 'SELECT user_id FROM family_account_deletion_jobs WHERE user_id=$1::uuid', [principal.user.id]),
+      409, 'account_deleting', 'Finish deleting this account before creating another household.');
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended('family-household-claim', 0))");
     requireValue(!await one(client, 'SELECT id FROM family_households LIMIT 1'), 409, 'already_claimed', 'This household has already been claimed.');
     const id = randomUUID();
@@ -78,6 +83,8 @@ export async function joinHousehold(db, principal, body, { getVerifiedEmail } = 
   const verifiedEmail = getVerifiedEmail ? await getVerifiedEmail() : null;
   return transaction(db, async client => {
     await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`membership:${principal.user.id}`]);
+    requireValue(!await one(client, 'SELECT user_id FROM family_account_deletion_jobs WHERE user_id=$1::uuid', [principal.user.id]),
+      409, 'account_deleting', 'Finish deleting this account before accepting another invitation.');
     await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`membership-email:${candidate.household_id}:${verifiedEmail || (principal.user.email || '').trim().toLowerCase()}`]);
     let profile;
     if (candidate.role === 'child') {
@@ -162,18 +169,30 @@ export async function redeemFramePair(db, body, env = process.env) {
   });
 }
 
-export async function householdSnapshot(db, principal, requestedDate) {
+export async function householdSnapshot(db, principal, requestedDate, { now = new Date() } = {}) {
   const householdId = requireHousehold(principal);
-  const date = dateField(requestedDate || householdDate(principal.household.timezone));
-  const people = (await db.query('SELECT * FROM family_people WHERE household_id=$1 AND ($2::uuid IS NULL OR id=$2::uuid) ORDER BY created_at,id', [householdId, principal.role === 'child' ? principal.personId : null])).rows.map(personDto);
-  const chores = (await db.query(`SELECT c.*,x.completed,x.version AS completion_version,x.updated_at AS completion_updated_at
-    FROM family_chores c LEFT JOIN family_completions x ON x.household_id=c.household_id AND x.chore_id=c.id AND x.date=$2::date
-    WHERE c.household_id=$1 AND c.deleted_at IS NULL AND ($3::uuid IS NULL OR c.person_id=$3::uuid) ORDER BY c.created_at,c.id`, [householdId, date, principal.role === 'child' ? principal.personId : null])).rows.map(row => ({
-    id: row.id, title: row.title, personId: row.person_id, weekdays: row.weekdays, version: row.version,
-    dueTime: row.due_time?.slice(0, 5) || null, reminderMinutes: row.reminder_minutes ?? 15,
-    completion: { date, completed: row.completed || false, version: row.completion_version || 0, updatedAt: row.completion_updated_at || null },
-  }));
-  return { household: principal.household, role: principal.role, date, people, chores };
+  const date = dateField(requestedDate || householdDate(principal.household.timezone, now));
+  return transaction(db, async client => {
+    // Reads materialize only the current household-local day. Viewing another
+    // date cannot invent historical work or freeze a future routine definition.
+    const rows = await ensureDailyOccurrences(client, principal.household, date, { now });
+    const personId = principal.role === 'child' ? principal.personId : null;
+    const people = (await client.query('SELECT * FROM family_people WHERE household_id=$1 AND ($2::uuid IS NULL OR id=$2::uuid) ORDER BY created_at,id', [householdId, personId])).rows.map(personDto);
+    const routineRows = (await client.query('SELECT * FROM family_chores WHERE household_id=$1 AND deleted_at IS NULL AND ($2::uuid IS NULL OR person_id=$2::uuid) ORDER BY created_at,id', [householdId, personId])).rows;
+    const routines = routineRows.map(choreDto);
+    const currentVersions = new Map(routineRows.map(row => [row.id, row.version]));
+    const occurrences = rows.filter(row => !personId || row.person_id === personId).map(occurrenceDto);
+    const weekday = new Date(`${date}T12:00:00Z`).getUTCDay();
+    const chores = occurrences.filter(row => row.status !== 'skipped').map(row => ({
+      id: row.choreId, occurrenceId: row.id, title: row.title, personId: row.personId, weekdays: [weekday],
+      version: currentVersions.get(row.choreId) || row.routineVersion,
+      dueTime: row.dueTime, reminderMinutes: row.reminderMinutes, required: row.required,
+      instructions: row.instructions, subtasks: row.subtasks, requiresApproval: row.requiresApproval,
+      status: row.status, completion: row.completion,
+    }));
+    return { household: principal.household, role: principal.role, date, people, chores, routines, occurrences,
+      capabilities: principal.verifiedCapabilities || { manageChores: principal.role === 'admin', manageInternet: principal.role === 'admin' } };
+  });
 }
 
 function colorField(value = '#6b7c59') {
@@ -205,7 +224,9 @@ export async function changePerson(db, principal, id, body, remove = false) {
   });
 }
 
-const choreDto = row => ({ id: row.id, title: row.title, personId: row.person_id, weekdays: row.weekdays, version: row.version, dueTime: row.due_time?.slice(0, 5) || null, reminderMinutes: row.reminder_minutes ?? 15 });
+const choreDto = row => ({ id: row.id, title: row.title, personId: row.person_id, weekdays: row.weekdays, version: row.version, dueTime: row.due_time?.slice(0, 5) || null, reminderMinutes: row.reminder_minutes ?? 15,
+  required: row.required ?? true, instructions: row.instructions || '', subtasks: row.subtasks || [],
+  scheduleType: row.schedule_type || 'weekly', scheduledDate: row.scheduled_date ? row.scheduled_date instanceof Date ? row.scheduled_date.toISOString().slice(0, 10) : String(row.scheduled_date).slice(0, 10) : null, requiresApproval: row.requires_approval ?? false });
 export function dueTimeField(value) {
   requireValue(value === null || typeof value === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value), 422, 'invalid_due_time', 'Choose a valid due time.');
   return value;
@@ -223,13 +244,16 @@ async function checkedPerson(client, householdId, personId) {
 }
 
 export async function createChore(db, principal, body) {
-  requireAdmin(principal);
-  return transaction(db, async client => choreDto(await one(client, 'INSERT INTO family_chores(id,household_id,title,person_id,weekdays,due_time,reminder_minutes) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',
-    [randomUUID(), principal.household.id, textField(body.title, 'Chore', 100), await checkedPerson(client, principal.household.id, body.personId), weekdaysField(body.weekdays), dueTimeField(body.dueTime ?? null), reminderMinutesField(body.reminderMinutes ?? 15)])));
+  requireChoreManager(principal);
+  const details = routineDetails(body);
+  return transaction(db, async client => choreDto(await one(client, `INSERT INTO family_chores(id,household_id,title,person_id,weekdays,due_time,reminder_minutes,
+    required,instructions,subtasks,schedule_type,scheduled_date,requires_approval) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12::date,$13) RETURNING *`,
+    [randomUUID(), principal.household.id, textField(body.title, 'Chore', 100), await checkedPerson(client, principal.household.id, body.personId), weekdaysField(body.weekdays), dueTimeField(body.dueTime ?? null), reminderMinutesField(body.reminderMinutes ?? 15),
+      details.required, details.instructions, JSON.stringify(details.subtasks), details.scheduleType, details.scheduledDate, details.requiresApproval])));
 }
 
 export async function changeChore(db, principal, id, body, remove = false) {
-  requireAdmin(principal); uuidField(id); versionField(body.expectedVersion);
+  requireChoreManager(principal); uuidField(id); versionField(body.expectedVersion);
   return transaction(db, async client => {
     // Take the person reference lock before the chore, matching person deletion.
     const checkedPersonId = body.personId === undefined ? undefined : await checkedPerson(client, principal.household.id, body.personId);
@@ -241,8 +265,11 @@ export async function changeChore(db, principal, id, body, remove = false) {
       return { deleted: true };
     }
     const personId = body.personId === undefined ? row.person_id : checkedPersonId;
-    return choreDto(await one(client, 'UPDATE family_chores SET title=$3,person_id=$4,weekdays=$5,due_time=$6,reminder_minutes=$7,version=version+1 WHERE id=$1 AND household_id=$2 RETURNING *',
-      [id, principal.household.id, body.title === undefined ? row.title : textField(body.title, 'Chore', 100), personId, body.weekdays === undefined ? row.weekdays : weekdaysField(body.weekdays), body.dueTime === undefined ? row.due_time : dueTimeField(body.dueTime), body.reminderMinutes === undefined ? row.reminder_minutes : reminderMinutesField(body.reminderMinutes)]));
+    const details = routineDetails(body, row);
+    return choreDto(await one(client, `UPDATE family_chores SET title=$3,person_id=$4,weekdays=$5,due_time=$6,reminder_minutes=$7,
+      required=$8,instructions=$9,subtasks=$10::jsonb,schedule_type=$11,scheduled_date=$12::date,requires_approval=$13,version=version+1 WHERE id=$1 AND household_id=$2 RETURNING *`,
+      [id, principal.household.id, body.title === undefined ? row.title : textField(body.title, 'Chore', 100), personId, body.weekdays === undefined ? row.weekdays : weekdaysField(body.weekdays), body.dueTime === undefined ? row.due_time : dueTimeField(body.dueTime), body.reminderMinutes === undefined ? row.reminder_minutes : reminderMinutesField(body.reminderMinutes),
+        details.required, details.instructions, JSON.stringify(details.subtasks), details.scheduleType, details.scheduledDate, details.requiresApproval]));
   });
 }
 
@@ -251,29 +278,6 @@ export function completionDecision(current, desired, expectedVersion) {
   return current.completed === desired ? current : { ...current, completed: desired, version: current.version + 1 };
 }
 
-export async function setCompletion(db, principal, choreId, date, body) {
-  const householdId = requireHousehold(principal);
-  uuidField(choreId); dateField(date); uuidField(body.mutationId, 'Mutation ID'); versionField(body.expectedVersion);
-  requireValue(typeof body.completed === 'boolean', 422, 'invalid_completion', 'Send the desired completed state.');
-  const requestHash = digest(JSON.stringify({ choreId, date, completed: body.completed, expectedVersion: body.expectedVersion }));
-  return transaction(db, async client => {
-    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`mutation:${householdId}:${principal.actor}:${body.mutationId}`]);
-    const replay = await one(client, 'SELECT request_hash,response FROM family_mutations WHERE household_id=$1 AND actor=$2 AND mutation_id=$3', [householdId, principal.actor, body.mutationId]);
-    if (replay) {
-      requireValue(replay.request_hash === requestHash, 409, 'mutation_reused', 'Use a new mutation ID for a different change.');
-      return replay.response;
-    }
-    requireValue(await one(client, 'SELECT id FROM family_chores WHERE id=$1 AND household_id=$2 AND deleted_at IS NULL AND ($3::uuid IS NULL OR person_id=$3::uuid) FOR SHARE', [choreId, householdId, principal.role === 'child' ? principal.personId : null]), 404, 'not_found', 'That chore does not exist in this household.');
-    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`completion:${householdId}:${choreId}:${date}`]);
-    const row = await one(client, 'SELECT * FROM family_completions WHERE household_id=$1 AND chore_id=$2 AND date=$3::date FOR UPDATE', [householdId, choreId, date]);
-    const current = completionDto(row, choreId, date);
-    const desired = completionDecision(current, body.completed, body.expectedVersion);
-    let result = current;
-    if (desired !== current) result = completionDto(await one(client, `INSERT INTO family_completions(household_id,chore_id,date,completed,version,actor)
-      VALUES($1,$2,$3::date,$4,$5,$6) ON CONFLICT(household_id,chore_id,date) DO UPDATE SET completed=EXCLUDED.completed,version=EXCLUDED.version,actor=EXCLUDED.actor,updated_at=now() RETURNING *`,
-    [householdId, choreId, date, desired.completed, desired.version, principal.actor]), choreId, date);
-    result = { ...result, mutationId: body.mutationId };
-    await client.query('INSERT INTO family_mutations(household_id,actor,mutation_id,request_hash,response) VALUES($1,$2,$3,$4,$5::jsonb)', [householdId, principal.actor, body.mutationId, requestHash, JSON.stringify(result)]);
-    return result;
-  });
+export async function setCompletion(db, principal, choreId, date, body, options) {
+  return setRoutineCompletion(db, principal, choreId, date, body, options);
 }

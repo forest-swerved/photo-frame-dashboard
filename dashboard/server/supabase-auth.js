@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { createServerClient, parseCookieHeader, serializeCookieHeader } from '@supabase/ssr';
 import { ApiError, readJson, requireValue, textField } from './errors.js';
 import { assertSameOrigin, authUrl, userDto, verifySessionRow, verifyUserJwt } from './auth.js';
+import { enforcePairRateLimit } from './pair-rate-limit.js';
+import { revokeFrameAccessAfterRecovery } from './capabilities.js';
 
 export const AUTH_COOKIE = '__Host-family_auth';
 // The pinned SDK persists both an individual PKCE verifier and its flow index
@@ -11,6 +13,7 @@ const cookieName = name => authCookiePattern.test(name);
 const routes = new Map([
   ['sign-in/email', 'POST'], ['sign-up/email', 'POST'], ['sign-out', 'POST'],
   ['verify-email', 'POST'], ['resend-verification', 'POST'], ['get-session', 'GET'], ['token', 'GET'],
+  ['request-password-reset', 'POST'], ['reset-password', 'POST'],
 ]);
 const rawJson = data => Response.json(data, { headers: { 'Cache-Control': 'private, no-store', Pragma: 'no-cache', Expires: '0' } });
 
@@ -111,6 +114,26 @@ export function confirmationCredentials(body, env = process.env) {
   return { email: emailField(body.email), token: body.token, type: 'email' };
 }
 
+export function recoveryCredentials(body, env = process.env) {
+  if (Object.hasOwn(body, 'recoveryLink')) {
+    requireValue(Object.keys(body).every(key => ['recoveryLink', 'password'].includes(key)) && typeof body.recoveryLink === 'string' && body.recoveryLink.length <= 4096,
+      422, 'invalid_recovery', 'Paste the password reset link from your email.');
+    let link;
+    try { link = new URL(body.recoveryLink.trim()); } catch { /* Redacted below. */ }
+    const base = new URL(authUrl(env));
+    requireValue(link && link.origin === base.origin && link.pathname === '/auth/v1/verify' && !link.username && !link.password && !link.hash
+      && link.searchParams.get('type') === 'recovery' && [...link.searchParams.keys()].every(key => ['type', 'token', 'token_hash', 'redirect_to'].includes(key))
+      && new Set(link.searchParams.keys()).size === [...link.searchParams.keys()].length && !(link.searchParams.has('token') && link.searchParams.has('token_hash')),
+    422, 'invalid_recovery', 'Use the password reset link from this dashboard’s email.');
+    const token = link.searchParams.get('token_hash') || link.searchParams.get('token');
+    requireValue(typeof token === 'string' && /^[A-Za-z0-9_-]{20,512}$/.test(token), 422, 'invalid_recovery', 'The reset link is invalid.');
+    return { token_hash: token, type: 'recovery' };
+  }
+  requireValue(Object.keys(body).every(key => ['email', 'token', 'password'].includes(key)) && typeof body.token === 'string' && /^\d{6,10}$/.test(body.token),
+    422, 'invalid_recovery', 'Enter the password reset code from your email.');
+  return { email: emailField(body.email), token: body.token, type: 'recovery' };
+}
+
 function emailField(value) {
   const email = textField(value, 'Email', 254);
   requireValue(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email), 422, 'invalid_email', 'Enter a valid email address.');
@@ -152,8 +175,8 @@ export async function authGateway(request, path, db, options = {}) {
     for (const [key, value] of url.searchParams) requireValue(['__route', 'path'].includes(key) && value === `auth/${path}`,
       422, 'invalid_auth_query', 'This sign-in request is invalid.');
     const body = request.method === 'POST' ? await readJson(request) : null;
-    if (body && path !== 'verify-email') {
-      const fields = path === 'sign-in/email' ? ['email', 'password'] : path === 'sign-up/email' ? ['email', 'password', 'name'] : path === 'resend-verification' ? ['email'] : [];
+    if (body && !['verify-email', 'reset-password'].includes(path)) {
+      const fields = path === 'sign-in/email' ? ['email', 'password'] : path === 'sign-up/email' ? ['email', 'password', 'name'] : ['resend-verification', 'request-password-reset'].includes(path) ? ['email'] : [];
       requireValue(Object.keys(body).every(key => fields.includes(key)), 422, 'invalid_auth_body', 'This sign-in request contains unsupported fields.');
     }
     context = (options.createAuthContext || createAuthContext)(request, options);
@@ -166,6 +189,30 @@ export async function authGateway(request, path, db, options = {}) {
     } else if (path === 'sign-out') {
       const response = await auth.signOut({ scope: 'local' });
       if (response.error) throw providerError(response.error);
+      context.clearCookies();
+      result = { success: true };
+    } else if (path === 'request-password-reset') {
+      await enforcePairRateLimit(db, request, env);
+      const response = await auth.resetPasswordForEmail(emailField(body.email));
+      if (response.error && !['user_not_found', 'email_not_found'].includes(response.error.code)) throw providerError(response.error);
+      result = { success: true };
+    } else if (path === 'reset-password') {
+      const password = passwordField(body.password);
+      requireValue(password.length >= 12, 422, 'weak_password', 'Use at least 12 characters for your new password.');
+      const proof = recoveryCredentials(body, env);
+      await enforcePairRateLimit(db, request, env);
+      const verified = await auth.verifyOtp(proof);
+      if (verified.error) throw providerError(verified.error);
+      const claims = await context.sessionClaims(db, verifyJwt);
+      requireValue(claims && verified.data?.session?.access_token === claims.accessToken && verified.data?.user?.id === claims.sub,
+        401, 'session_required', 'Request another password reset email.');
+      const changed = await auth.updateUser({ password });
+      if (changed.error) throw providerError(changed.error);
+      await db.query('UPDATE family_mobile_sessions SET revoked_at=coalesce(revoked_at,now()) WHERE user_id=$1', [claims.sub]);
+      await db.query('UPDATE family_frame_authorizations SET revoked_at=coalesce(revoked_at,now()) WHERE created_by=$1', [claims.sub]);
+      const signedOut = await auth.signOut({ scope: 'global' });
+      if (signedOut.error) throw providerError(signedOut.error);
+      await revokeFrameAccessAfterRecovery(db, claims.sub);
       context.clearCookies();
       result = { success: true };
     } else if (path === 'resend-verification') {

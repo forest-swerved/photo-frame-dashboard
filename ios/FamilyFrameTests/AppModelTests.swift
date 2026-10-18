@@ -21,7 +21,7 @@ private final class MemoryDashboardCache: DashboardCaching {
 }
 
 @MainActor
-private final class Deferred<Value> {
+final class Deferred<Value> {
     private var continuation: CheckedContinuation<Value, Error>?
     private(set) var waiting = false
     func wait() async throws -> Value {
@@ -32,7 +32,7 @@ private final class Deferred<Value> {
 }
 
 @MainActor
-private final class DashboardAPI: FamilyAPI {
+final class DashboardAPI: FamilyAPI {
     var mobileToken: String?
     var current: MobileSession
     var data: HouseholdSnapshot
@@ -47,6 +47,24 @@ private final class DashboardAPI: FamilyAPI {
     var preferencesHandler: (() async throws -> NotificationPreferences)?
     var savePreferencesHandler: ((NotificationPreferences) async throws -> NotificationPreferences)?
     var markReadHandler: (() async throws -> Void)?
+    var frameCodeHandler: ((String, String?) async throws -> FrameAccessCode)?
+    var resetPasswordHandler: (() async throws -> Void)?
+    var deleteAccountHandler: (() async throws -> Void)?
+    var transferHandler: (() async throws -> Void)?
+    var signInHandler: (() async throws -> AccountOutcome)?
+    var deletionCalls = 0, transferCalls = 0
+    var markReadCalls = 0, frameCodeCalls = 0, memberCalls = 0
+    var occurrenceHandler: ((ChoreOccurrence, Bool) async throws -> ChoreOccurrence)?
+    var actionHandler: ((String, OccurrenceAction) async throws -> ChoreOccurrence)?
+    var occurrenceCalls = 0, actionCalls = 0, breakCalls = 0
+    var historyPersonID: String?
+    var internetData: InternetSnapshot?
+    var internetHandler: (() async throws -> InternetSnapshot)?
+    var redeemHandler: (() async throws -> InternetSession)?
+    var grantHandler: (() async throws -> InternetSession)?
+    var internetActionHandler: ((String, InternetSessionAction) async throws -> InternetSession)?
+    var resolveHandler: (() async throws -> RewardCredit)?
+    var internetCalls = 0, redeemCalls = 0, grantCalls = 0, internetActionCalls = 0, internetManagementCalls = 0
     init(session: MobileSession, data: HouseholdSnapshot) { self.current = session; self.data = data }
     func currentSession() async throws -> MobileSession { sessionCalls += 1; return try await sessionHandler?() ?? current }
     func household(date: String) async throws -> HouseholdSnapshot { householdCalls += 1; return try await householdHandler?() ?? data }
@@ -62,37 +80,252 @@ private final class DashboardAPI: FamilyAPI {
     func signOut() async throws { }
     func saveChore(_ draft: ChoreDraft, id: String?) async throws { }
     func deleteChore(_ chore: Chore) async throws { }
-    func markRead(id: String) async throws { try await markReadHandler?() }
+    func markRead(id: String) async throws { markReadCalls += 1; try await markReadHandler?() }
     func registerPush(token: String, environment: String, installationID: String) async throws { }
     func savePreferences(_ prefs: NotificationPreferences) async throws -> NotificationPreferences { try await savePreferencesHandler?(prefs) ?? prefs }
     func devices() async throws -> [MobileDevice] { [] }
     func revokeDevice(id: String) async throws { }
+    func setOccurrenceCompletion(_ occurrence: ChoreOccurrence, completed: Bool, mutationID: String) async throws -> ChoreOccurrence {
+        occurrenceCalls += 1
+        if let occurrenceHandler { return try await occurrenceHandler(occurrence, completed) }
+        var result = occurrence; result.version += 1; result.status = completed ? occurrence.requiresApproval && current.role != "admin" ? "submitted" : "completed" : "pending"
+        result.completion.completed = completed; result.completion.version += 1; return result
+    }
+    func changeOccurrence(_ id: String, action: OccurrenceAction) async throws -> ChoreOccurrence { actionCalls += 1; guard let actionHandler else { throw unexpected }; return try await actionHandler(id, action) }
+    func choreHistory(from: String, to: String, personID: String?) async throws -> [ChoreHistoryItem] { historyPersonID = personID; return [] }
+    func choreBreaks() async throws -> [ChoreBreak] { breakCalls += 1; return [] }
+    func createChoreBreak(_ draft: ChoreBreakDraft) async throws -> ChoreBreak { breakCalls += 1; throw unexpected }
+    func revokeChoreBreak(_ item: ChoreBreak, reason: String, mutationID: String) async throws -> ChoreBreak { breakCalls += 1; throw unexpected }
     private var unexpected: APIError { APIError(status: 0, code: "unexpected_test_call", message: "No account calls belong in dashboard state tests.") }
-    func accountSignIn(email: String, password: String, invitation: String) async throws -> AccountOutcome { throw unexpected }
+    func accountSignIn(email: String, password: String, invitation: String) async throws -> AccountOutcome { guard let signInHandler else { throw unexpected }; return try await signInHandler() }
     func createAccount(name: String, email: String, password: String, invitation: String) async throws -> AccountOutcome { throw unexpected }
     func confirmAccount(email: String, code: String, invitation: String) async throws -> AccountOutcome { throw unexpected }
     func resendConfirmation(email: String) async throws { throw unexpected }
+    func requestPasswordReset(email: String) async throws { throw unexpected }
+    func resetPassword(email: String, token: String, recoveryLink: String, password: String) async throws { guard let resetPasswordHandler else { throw unexpected }; try await resetPasswordHandler() }
     func joinFamily(invitation: String) async throws -> AccountOutcome { throw unexpected }
     func cancelAccountOnboarding() async { }
     func createChildInvitation(personID: String, email: String) async throws -> ChildInvitation { throw unexpected }
+    func createFrameAccessCode(scope: String, personID: String?) async throws -> FrameAccessCode { frameCodeCalls += 1; guard let frameCodeHandler else { throw unexpected }; return try await frameCodeHandler(scope, personID) }
+    func members() async throws -> [FamilyMember] { memberCalls += 1; throw unexpected }
+    func changeMemberCapabilities(_ id: String, capabilities: ParentCapabilities) async throws -> MemberCapabilitiesResult { throw unexpected }
+    func internet() async throws -> InternetSnapshot {
+        internetCalls += 1
+        if let internetHandler { return try await internetHandler() }
+        return internetData ?? InternetSnapshot(serverTime: "2026-10-17T18:00:00Z", timezone: current.household.timezone, role: current.role, capabilities: ParentCapabilities(manageChores: current.isAdmin, manageInternet: current.isAdmin), integration: InternetIntegration(state: "unconfigured", managementHost: "frame.test", managementAccessVerifiedAt: nil, lastCheckedAt: nil, error: nil), policies: [], credits: [], devices: [], sessions: [], progress: [])
+    }
+    func redeemInternet(creditID: String, deviceID: String, mutationID: String) async throws -> InternetSession { redeemCalls += 1; guard let redeemHandler else { throw unexpected }; return try await redeemHandler() }
+    func grantInternet(personID: String, deviceID: String, minutes: Int?, allDay: Bool, reason: String?, mutationID: String) async throws -> InternetSession { grantCalls += 1; guard let grantHandler else { throw unexpected }; return try await grantHandler() }
+    func changeInternetSession(_ id: String, action: InternetSessionAction) async throws -> InternetSession { internetActionCalls += 1; guard let internetActionHandler else { throw unexpected }; return try await internetActionHandler(id, action) }
+    func saveInternetDevice(_ draft: ManagedDeviceDraft, id: String?) async throws -> ManagedInternetDevice { internetManagementCalls += 1; throw unexpected }
+    func deleteInternetDevice(_ item: ManagedInternetDevice, mutationID: String) async throws { internetManagementCalls += 1; throw unexpected }
+    func saveInternetPolicy(_ personID: String, draft: RewardPolicyDraft) async throws -> RewardPolicy { internetManagementCalls += 1; throw unexpected }
+    func resolveInternetCredit(_ id: String, action: String, reason: String, mutationID: String) async throws -> RewardCredit { internetManagementCalls += 1; guard let resolveHandler else { throw unexpected }; return try await resolveHandler() }
+    func internetHistory() async throws -> [InternetHistoryItem] { throw unexpected }
+    func deleteAccount(password: String) async throws { deletionCalls += 1; guard let deleteAccountHandler else { throw unexpected }; try await deleteAccountHandler() }
+    func transferOwnership(userID: String) async throws { transferCalls += 1; guard let transferHandler else { throw unexpected }; try await transferHandler() }
 }
 
 @MainActor
 final class AppModelTests: XCTestCase {
     private let instant = Dates.instant("2026-10-17T18:00:00Z")!
-    private func fixture(now: (() -> Date)? = nil) -> (AppModel, DashboardAPI, MemoryCredentialStore, MemoryDashboardCache) {
+    private func fixture(now: (() -> Date)? = nil, role: String = "admin", personID: String? = nil) -> (AppModel, DashboardAPI, MemoryCredentialStore, MemoryDashboardCache) {
         let home = Household(id: "fixture-home", title: "Synthetic family", timezone: "America/Denver")
-        let session = MobileSession(authenticated: true, authType: "mobile", role: "admin", household: home, user: FamilyUser(id: "fixture-parent", name: "Synthetic parent", email: nil), personId: nil)
+        let session = MobileSession(authenticated: true, authType: "mobile", role: role, household: home, user: FamilyUser(id: "fixture-parent", name: "Synthetic parent", email: nil), personId: personID)
         let chore = Chore(id: "fixture-chore", title: "Synthetic chore", personId: nil, weekdays: Array(0...6), version: 1, dueTime: "18:00", reminderMinutes: 15, completion: ChoreCompletion(date: "2026-10-17", completed: false, version: 0, updatedAt: nil))
-        let data = HouseholdSnapshot(household: home, role: "admin", date: "2026-10-17", people: [], chores: [chore])
+        let data = HouseholdSnapshot(household: home, role: role, date: "2026-10-17", people: [], chores: [chore])
         let store = MemoryCredentialStore(MobileCredential(token: String(repeating: "a", count: 43), expiresAt: "2099-01-01T00:00:00Z", session: session))
         let api = DashboardAPI(session: session, data: data), cache = MemoryDashboardCache()
         return (AppModel(api: api, keychain: store, cache: cache, now: now ?? { self.instant }, observesPush: false), api, store, cache)
+    }
+    private func occurrence(_ id: String = "fixture-occurrence", personID: String? = nil, required: Bool = true, approval: Bool = false, status: String = "pending", date: String = "2026-10-17", version: Int = 1, choreID: String = "fixture-chore") -> ChoreOccurrence {
+        ChoreOccurrence(id: id, choreId: choreID, date: date, originalDate: date, title: "Synthetic daily chore", personId: personID, personName: personID == nil ? nil : "Synthetic child", required: required, instructions: "Put each item in its place.", subtasks: [ChoreStep(id: "fixture-step", title: "First step", completed: status == "completed")], requiresApproval: approval, status: status, version: version, completion: ChoreCompletion(date: date, completed: ["completed", "submitted"].contains(status), version: status == "pending" ? 0 : 1, updatedAt: nil), dueTime: "18:00", reminderMinutes: 15, skipReason: status == "skipped" ? "Synthetic school holiday" : nil, rescheduledFrom: nil, completedAt: nil, approvedAt: nil, definitionSource: "routine", routineVersion: 1, createdAt: nil, updatedAt: nil)
     }
     private func waitUntil(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
         let limit = ContinuousClock.now.advanced(by: .seconds(5))
         while !condition() && ContinuousClock.now < limit { try? await Task.sleep(for: .milliseconds(2)) }
         XCTAssertTrue(condition(), "Expected asynchronous state was not reached", file: file, line: line)
+    }
+    func testRequiredProgressExcludesExcusedOptionalAndUnapprovedWork() async {
+        let (model, api, _, _) = fixture()
+        api.data.occurrences = [occurrence("pending", choreID: "pending-routine"), occurrence("submitted", approval: true, status: "submitted", choreID: "submitted-routine"), occurrence("optional", required: false, status: "completed", choreID: "optional-routine"), occurrence("excused", status: "skipped", choreID: "excused-routine")]
+        await model.start()
+        XCTAssertEqual(model.requiredCount, 2); XCTAssertEqual(model.completedCount, 0); XCTAssertEqual(model.approvalCount, 1)
+    }
+    func testCaregiverNeedsExplicitChorePermissionAndCannotEditMembers() async {
+        let (model, api, _, _) = fixture(role: "member")
+        let item = occurrence(approval: true, status: "submitted"); api.data.occurrences = [item]
+        await model.start(); XCTAssertFalse(model.canManageChores)
+        let denied = await model.actOnOccurrence(item, action: "approve"); XCTAssertFalse(denied); XCTAssertEqual(api.actionCalls, 0)
+        api.data.capabilities = ParentCapabilities(manageChores: true, manageInternet: false); await model.refresh()
+        XCTAssertTrue(model.canManageChores); XCTAssertFalse(model.canManageInternet); XCTAssertFalse(model.isAdmin)
+        do { _ = try await model.familyMembers(); XCTFail("Caregivers cannot edit membership permissions") } catch { XCTAssertEqual((error as? APIError)?.status, 403) }
+        XCTAssertEqual(api.memberCalls, 0)
+    }
+    func testNotificationNavigationOnlyUsesCurrentAuthenticatedInbox() async {
+        let (model, api, _, _) = fixture(); let item = occurrence(); api.data.occurrences = [item]
+        var notification = FamilyNotification(id: "test-notification", kind: "chore_submitted", title: "Synthetic update", body: "Synthetic body", createdAt: "2026-10-17T18:00:00Z", readAt: nil, choreId: item.choreId, date: item.date)
+        notification.occurrenceId = item.id; notification.target = "chores"; api.activityHandler = { [notification] }
+        await model.start(); await model.openNotification(id: "untrusted-missing-id")
+        XCTAssertEqual(model.selectedTab, 4); XCTAssertNil(model.openedOccurrence); XCTAssertEqual(api.markReadCalls, 0)
+        await model.openNotification(id: notification.id)
+        XCTAssertEqual(model.selectedTab, 1); XCTAssertEqual(model.openedOccurrence?.id, item.id); XCTAssertEqual(api.markReadCalls, 1)
+        XCTAssertEqual(model.unreadCount, 0)
+    }
+    func testLateNotificationLookupCannotOpenPreviousAccountDetails() async {
+        let (model, api, _, _) = fixture(); await model.start()
+        let deferred = Deferred<[FamilyNotification]>(); api.activityHandler = { try await deferred.wait() }
+        let opened = Task { await model.openNotification(id: "test-notification") }; await waitUntil { deferred.waiting }
+        await model.signOut(); deferred.resolve([]); await opened.value
+        XCTAssertNil(model.session); XCTAssertNil(model.openedOccurrence); XCTAssertTrue(model.notifications.isEmpty); XCTAssertEqual(model.selectedTab, 0)
+    }
+    func testChildUnlockIsOwnProfileOnlyAndLateCodeIsDiscarded() async {
+        let (model, api, _, _) = fixture(role: "child", personID: "fixture-child"); await model.start()
+        for request in [("parent", nil), ("child", Optional("fixture-sibling"))] {
+            do { _ = try await model.frameAccessCode(scope: request.0, personID: request.1); XCTFail("Child must not escalate frame access") } catch { XCTAssertEqual((error as? APIError)?.status, 403) }
+        }
+        XCTAssertEqual(api.frameCodeCalls, 0)
+        let deferred = Deferred<FrameAccessCode>(); api.frameCodeHandler = { _, _ in try await deferred.wait() }
+        let code = Task { try await model.frameAccessCode(scope: "child", personID: "fixture-child") }; await waitUntil { deferred.waiting }
+        await model.signOut(); deferred.resolve(FrameAccessCode(code: "000000", scope: "child", personId: "fixture-child", expiresAt: "2026-10-17T18:05:00Z"))
+        do { _ = try await code.value; XCTFail("A previous account's code cannot remain visible") } catch is CancellationError { } catch { XCTFail("Expected cancellation, got \(error)") }
+    }
+    func testChoreOnlyCaregiverCanUnlockParentChoresButCannotUnlockAChildProfile() async {
+        let (model, api, _, _) = fixture(role: "member")
+        api.data.capabilities = ParentCapabilities(manageChores: true, manageInternet: false)
+        api.frameCodeHandler = { scope, person in
+            XCTAssertEqual(scope, "parent"); XCTAssertNil(person)
+            return FrameAccessCode(code: "000000", scope: "parent", personId: nil, expiresAt: "2099-01-01T00:00:00Z")
+        }
+        await model.start()
+        do { let code = try await model.frameAccessCode(scope: "parent", personID: nil); XCTAssertEqual(code.scope, "parent") } catch { XCTFail("Chore permission must allow its parent scope: \(error)") }
+        do { _ = try await model.frameAccessCode(scope: "child", personID: "fixture-child"); XCTFail("Child Internet scope still requires Internet management") } catch { XCTAssertEqual((error as? APIError)?.status, 403) }
+        XCTAssertEqual(api.frameCodeCalls, 1)
+        await attachLayout(NavigationStack { FrameAccessScreen() }.environmentObject(model), name: "Synthetic review - chore caregiver parent unlock")
+    }
+    func testSuccessfulPasswordRecoveryClearsCredentialAndHousehold() async {
+        let (model, api, store, cache) = fixture(); await model.start(); api.resetPasswordHandler = { }
+        let reset = await model.resetPassword(email: "synthetic@example.test", token: "000000", recoveryLink: "", password: "test-only-password")
+        XCTAssertTrue(reset); XCTAssertNil(model.session); XCTAssertNil(store.value); XCTAssertNil(cache.value); XCTAssertNil(model.snapshot)
+    }
+    func testAccountDeletionRequiresExactConfirmationAndClearsLocalAccessOnlyAfterAcknowledgment() async {
+        let (model, api, store, cache) = fixture(); await model.start(); api.deleteAccountHandler = { }
+        let missing = await model.deleteAccount(password: "test-only-password", confirmation: "DELETE")
+        XCTAssertFalse(missing); XCTAssertEqual(api.deletionCalls, 0); XCTAssertNotNil(model.session)
+        let deleted = await model.deleteAccount(password: "test-only-password", confirmation: "DELETE MY ACCOUNT")
+        XCTAssertTrue(deleted); XCTAssertNil(model.session); XCTAssertNil(model.snapshot); XCTAssertNil(store.value); XCTAssertNil(cache.value)
+        XCTAssertNil(model.internet.snapshot); XCTAssertEqual(model.accountStage, .entry); XCTAssertEqual(api.deletionCalls, 1)
+    }
+    func testOwnershipConflictDoesNotPretendAccountWasDeleted() async {
+        let (model, api, store, _) = fixture(); await model.start()
+        api.deleteAccountHandler = { throw APIError(status: 409, code: "ownership_transfer_required", message: "Transfer household ownership before deleting your account.") }
+        let result = await model.deleteAccount(password: "test-only-password", confirmation: "DELETE MY ACCOUNT")
+        XCTAssertFalse(result); XCTAssertNotNil(model.session); XCTAssertNotNil(store.value); XCTAssertFalse(model.accountDeletionNeedsReview)
+        XCTAssertEqual(model.message, "Transfer household ownership before deleting your account.")
+    }
+    func testUncertainDeletionCanBeRetriedFromVerifiedUnlinkedOnboardingWithoutFamilyJoin() async {
+        let (model, api, _, _) = fixture(); await model.start()
+        api.deleteAccountHandler = { throw APIError(status: 502, code: "identity_cleanup_pending", message: "Synthetic provider interruption") }
+        let uncertain = await model.deleteAccount(password: "test-only-password", confirmation: "DELETE MY ACCOUNT")
+        XCTAssertFalse(uncertain); XCTAssertTrue(model.accountDeletionNeedsReview)
+        await model.signOut(); api.signInHandler = { .invitationRequired }
+        let signedIn = await model.signIn(email: "synthetic@example.test", password: "test-only-password")
+        XCTAssertTrue(signedIn); XCTAssertNil(model.session); XCTAssertTrue(model.canDeleteAccount); XCTAssertFalse(model.accountDeletionNeedsReview)
+        XCTAssertEqual(model.accountStage, .joinFamily("synthetic@example.test"))
+        api.deleteAccountHandler = { }; let retried = await model.deleteAccount(password: "test-only-password", confirmation: "DELETE MY ACCOUNT")
+        XCTAssertTrue(retried); XCTAssertEqual(model.accountStage, .entry); XCTAssertEqual(api.deletionCalls, 2)
+    }
+    func testLateDeletionResponseCannotRestoreOrAffectSignedOutState() async {
+        let (model, api, store, _) = fixture(); await model.start()
+        let delayed = Deferred<Void>(); api.deleteAccountHandler = { try await delayed.wait() }
+        let deletion = Task { await model.deleteAccount(password: "test-only-password", confirmation: "DELETE MY ACCOUNT") }; await waitUntil { delayed.waiting }
+        await model.signOut(); delayed.resolve(()); let result = await deletion.value
+        XCTAssertFalse(result); XCTAssertNil(model.session); XCTAssertNil(store.value); XCTAssertNil(model.message); XCTAssertFalse(model.isSigningIn)
+    }
+    func testOwnershipTransferRequiresAdministratorAndRefreshesRole() async {
+        let (child, childAPI, _, _) = fixture(role: "child", personID: "test-child"); await child.start()
+        let denied = await child.transferOwnership(userID: "test-caregiver"); XCTAssertFalse(denied); XCTAssertEqual(childAPI.transferCalls, 0)
+        let (model, api, store, _) = fixture(); await model.start()
+        api.transferHandler = {
+            api.current = MobileSession(authenticated: true, authType: "mobile", role: "member", household: api.current.household, user: api.current.user, personId: nil)
+            api.data = HouseholdSnapshot(household: api.current.household, role: "member", date: "2026-10-17", people: [], chores: [], capabilities: ParentCapabilities(manageChores: false, manageInternet: false))
+        }
+        let result = await model.transferOwnership(userID: "test-caregiver")
+        XCTAssertTrue(result); XCTAssertFalse(model.isAdmin); XCTAssertFalse(model.canManageChores); XCTAssertEqual(store.value?.session.role, "member")
+    }
+    func testChildSubmissionDoesNotBecomeApprovedAfterOldSnapshotRefresh() async {
+        let (model, api, _, _) = fixture(role: "child", personID: "fixture-child")
+        let item = occurrence(personID: "fixture-child", approval: true); api.data.occurrences = [item]
+        await model.start(); let changed = await model.toggleOccurrence(item); await model.refresh()
+        XCTAssertTrue(changed); XCTAssertEqual(model.visibleOccurrences.first?.status, "submitted")
+        XCTAssertEqual(model.completedCount, 0); XCTAssertEqual(model.approvalCount, 1)
+        XCTAssertEqual(model.visibleOccurrences.first?.version, 2)
+    }
+    func testChildCannotApproveSiblingOrManageChoreBreaks() async {
+        let (model, api, _, _) = fixture(role: "child", personID: "fixture-child")
+        let own = occurrence(personID: "fixture-child", approval: true, status: "submitted")
+        let sibling = occurrence("sibling-occurrence", personID: "fixture-sibling", choreID: "sibling-routine")
+        api.data.occurrences = [own, sibling]; await model.start()
+        let approved = await model.actOnOccurrence(own, action: "approve")
+        let siblingChanged = await model.toggleOccurrence(sibling)
+        XCTAssertFalse(approved); XCTAssertFalse(siblingChanged); XCTAssertEqual(api.actionCalls, 0); XCTAssertEqual(api.occurrenceCalls, 0)
+        XCTAssertEqual(model.visibleOccurrences.map(\.id), [own.id])
+        do { _ = try await model.loadChoreBreaks(); XCTFail("Child must not manage holidays") } catch { XCTAssertEqual((error as? APIError)?.status, 403) }
+        XCTAssertEqual(api.breakCalls, 0)
+        _ = try? await model.loadChoreHistory(from: "2026-10-01", to: "2026-10-18", personID: "fixture-sibling")
+        XCTAssertEqual(api.historyPersonID, "fixture-child")
+    }
+    func testRescheduleAcknowledgmentCannotBeResurrectedByOldRead() async {
+        let (model, api, _, _) = fixture(); let item = occurrence(); api.data.occurrences = [item]
+        api.actionHandler = { _, request in
+            XCTAssertEqual(request.expectedVersion, item.version)
+            var moved = item; moved.date = "2026-10-18"; moved.version += 1; moved.rescheduledFrom = item.date; return moved
+        }
+        await model.start()
+        let changed = await model.actOnOccurrence(item, action: "reschedule", reason: "Synthetic reason", toDate: "2026-10-18")
+        await model.refresh()
+        XCTAssertTrue(changed); XCTAssertTrue(model.visibleOccurrences.isEmpty)
+        XCTAssertEqual(model.currentOccurrence(item).date, "2026-10-18")
+        XCTAssertFalse(model.canChangeOccurrence(model.currentOccurrence(item)))
+    }
+    func testOccurrenceAcknowledgmentAfterMidnightDoesNotChangeNewOccurrence() async {
+        var clock = Dates.instant("2026-10-18T05:59:00Z")!
+        let (model, api, _, _) = fixture(now: { clock }); let item = occurrence(); api.data.occurrences = [item]
+        let delayed = Deferred<ChoreOccurrence>(); api.occurrenceHandler = { _, _ in try await delayed.wait() }
+        await model.start(); let toggle = Task { await model.toggleOccurrence(item) }; await waitUntil { delayed.waiting }
+        clock = Dates.instant("2026-10-18T06:01:00Z")!
+        let next = occurrence("next-day-occurrence", date: "2026-10-18")
+        api.data = HouseholdSnapshot(household: api.current.household, role: "admin", date: "2026-10-18", people: [], chores: [next.legacy], occurrences: [next])
+        await model.refresh()
+        var ack = item; ack.status = "completed"; ack.version += 1; ack.completion.completed = true
+        delayed.resolve(ack); _ = await toggle.value; await model.refresh()
+        XCTAssertEqual(model.visibleOccurrences.map(\.id), [next.id]); XCTAssertFalse(model.visibleOccurrences.first?.isDone ?? true)
+    }
+    func testOccurrenceReplyAfterSignOutCannotRestoreChores() async {
+        let (model, api, _, _) = fixture(); let item = occurrence(); api.data.occurrences = [item]
+        let delayed = Deferred<ChoreOccurrence>(); api.occurrenceHandler = { _, _ in try await delayed.wait() }
+        await model.start(); let toggle = Task { await model.toggleOccurrence(item) }; await waitUntil { delayed.waiting }
+        await model.signOut(); delayed.resolve(item); let changed = await toggle.value
+        XCTAssertFalse(changed); XCTAssertNil(model.snapshot); XCTAssertTrue(model.visibleOccurrences.isEmpty)
+    }
+    func testUncertainOccurrenceWritePausesEditingWithoutReplay() async {
+        let (model, api, _, _) = fixture(); let item = occurrence(); api.data.occurrences = [item]
+        api.occurrenceHandler = { _, _ in throw APIError(status: 0, code: "network_error", message: "Synthetic uncertain occurrence write") }
+        await model.start(); let changed = await model.toggleOccurrence(item)
+        XCTAssertFalse(changed); XCTAssertTrue(model.isStale); XCTAssertEqual(api.occurrenceCalls, 1)
+        XCTAssertFalse(model.visibleOccurrences.first?.isDone ?? true); XCTAssertTrue(model.changingChores.isEmpty)
+    }
+    func testSyntheticOccurrenceAndRoutineLayouts() async {
+        let (model, api, _, _) = fixture()
+        let child = Person(id: "fixture-child", name: "Synthetic child", color: "#00748c", version: 1)
+        let submitted = occurrence(personID: child.id, approval: true, status: "submitted")
+        let optional = occurrence("optional", personID: child.id, required: false, choreID: "optional-routine")
+        api.data.people = [child]; api.data.occurrences = [submitted, optional]
+        var routine = ChoreRoutine(legacy: api.data.chores[0]); routine.instructions = "Synthetic routine instructions"; routine.requiresApproval = true; routine.subtasks = submitted.subtasks
+        api.data.routines = [routine]; await model.start()
+        await attachLayout(NavigationStack { TodayScreen() }.environmentObject(model), name: "Synthetic Stage2 Today - submitted approval")
+        await attachLayout(OccurrenceDetailScreen(original: optional).environmentObject(model).environment(\.dynamicTypeSize, .accessibility1), name: "Synthetic Stage2 chore details - accessible checklist")
+        await attachLayout(ChoreEditor(routine: routine).environmentObject(model), name: "Synthetic Stage2 routine editor")
     }
     func testFreshChoresStayEditableWhileSlowCalendarIsLoading() async throws {
         let (model, api, _, _) = fixture(), delayed = Deferred<CalendarSnapshot>()
@@ -102,6 +335,50 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(model.isLoading); XCTAssertFalse(model.isStale); XCTAssertTrue(model.canChange)
         delayed.resolve(api.calendarData); await start.value
         XCTAssertFalse(model.isLoading)
+    }
+    func testFreshChoresStayEditableWhileInternetStatusIsSlow() async {
+        let (model, api, _, _) = fixture(); let delayed = Deferred<InternetSnapshot>()
+        api.internetHandler = { try await delayed.wait() }
+        let start = Task { await model.start() }; await waitUntil { delayed.waiting && model.snapshot != nil }
+        XCTAssertTrue(model.canChange); XCTAssertFalse(model.isStale); XCTAssertTrue(model.internet.isLoading)
+        delayed.resolve(InternetFixtures.snapshot(role: "admin", integration: "unconfigured")); await start.value
+        XCTAssertTrue(model.canChange)
+    }
+    func testInternetNotificationResolvesOwnedSessionFromAuthenticatedSnapshot() async {
+        let (model, api, _, _) = fixture(role: "child", personID: InternetFixtures.child)
+        let session = InternetFixtures.session(); api.internetData = InternetFixtures.snapshot(sessions: [session])
+        var notification = FamilyNotification(id: "test-session-update", kind: "session_started", title: "Synthetic session update", body: "Synthetic body", createdAt: InternetFixtures.time, readAt: nil, choreId: nil, date: nil)
+        notification.target = "devices"; notification.sessionId = session.id; api.activityHandler = { [notification] }
+        await model.start(); await model.openNotification(id: notification.id)
+        XCTAssertEqual(model.selectedTab, 3); XCTAssertEqual(model.internet.openedSession?.id, session.id)
+        XCTAssertEqual(api.markReadCalls, 1)
+    }
+    func testSyntheticInternetParentChildAndEditorLayouts() async {
+        let (parent, api, _, _) = fixture()
+        api.data.people = [Person(id: InternetFixtures.child, name: "Synthetic child", color: "#00748c", version: 1)]
+        api.internetData = InternetFixtures.snapshot(role: "admin", credits: [InternetFixtures.credit(status: "review")], sessions: [InternetFixtures.session()])
+        await parent.start(); parent.selectedTab = 3
+        await attachLayout(DashboardTabs().environmentObject(parent), name: "Synthetic Stage3 Devices - parent session and five tabs")
+        let starting = InternetFixtures.session(state: "starting", version: 2, observed: "unknown", end: nil, remaining: 3600)
+        api.internetData?.sessions = [starting]; await parent.internet.refresh()
+        await attachLayout(NavigationStack { InternetSessionDetail(network: parent.internet, original: starting) }.environmentObject(parent).environment(\.dynamicTypeSize, .accessibility1), name: "Synthetic Stage3 session details - accessible pending state")
+        let tablet = ManagedInternetDevice(id: "synthetic-tablet", name: "Synthetic iPad", kind: "tablet", personIds: [InternetFixtures.child], macAddresses: ["02:00:00:00:00:02"], version: 1, controlState: "unenrolled", online: nil, lastSeenAt: nil, managementAccessVerifiedAt: nil, allowApplePush: true)
+        await attachLayout(ManagedDeviceEditor(network: parent.internet, device: tablet).environmentObject(parent), name: "Synthetic Stage3 device editor - Apple notification transport")
+        let (child, childAPI, _, _) = fixture(role: "child", personID: InternetFixtures.child)
+        childAPI.data.people = api.data.people; childAPI.internetData = InternetFixtures.snapshot(credits: [InternetFixtures.credit()]); await child.start()
+        childAPI.data.occurrences = [occurrence(personID: InternetFixtures.child, status: "completed")]; await child.refresh()
+        await child.internet.refresh(celebrateRewards: true)
+        XCTAssertNotNil(child.internet.earnedReward); XCTAssertEqual(child.requiredCount, 1); XCTAssertEqual(child.completedCount, 1)
+        await attachLayout(NavigationStack { ChoresScreen() }.environmentObject(child), name: "Synthetic Stage3 child - earned reward now or later")
+        await attachLayout(RewardDevicePicker(network: child.internet, credit: InternetFixtures.credit()).environmentObject(child), name: "Synthetic Stage3 child - one device reward picker")
+    }
+    func testSyntheticAccountDeletionAndUnlinkedRecoveryLayouts() async {
+        let (model, api, _, _) = fixture(); await model.start()
+        await attachLayout(AccountDeletionScreen().environmentObject(model), name: "Synthetic Stage3 account deletion - password and exact confirmation")
+        await model.signOut(); api.signInHandler = { .invitationRequired }
+        _ = await model.signIn(email: "synthetic@example.test", password: "test-only-password")
+        XCTAssertTrue(model.canDeleteAccount)
+        await attachLayout(WelcomeScreen().environmentObject(model), name: "Synthetic Stage3 unlinked verified account - deletion without joining")
     }
     func testBackgroundRefreshDoesNotRepeatedlyFetchSettings() async {
         let (model, api, _, _) = fixture(); await model.start()

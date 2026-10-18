@@ -39,6 +39,8 @@ const client = {
   signOut: () => post('sign-out'),
   verifyEmail: credentials => post('verify-email', credentials),
   resendVerification: credentials => post('resend-verification', credentials),
+  requestPasswordReset: credentials => post('request-password-reset', credentials),
+  resetPassword: credentials => post('reset-password', credentials),
 };
 export async function authClient() { return client; }
 
