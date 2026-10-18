@@ -1,4 +1,5 @@
 import pg from 'pg';
+import { attachDatabasePool } from '@vercel/functions';
 import { requireValue } from './errors.js';
 
 export function poolConfig(env = process.env, { migration = false, max = 3 } = {}) {
@@ -14,7 +15,28 @@ export function poolConfig(env = process.env, { migration = false, max = 3 } = {
 }
 
 export function createPool(env = process.env, options) {
-  return new pg.Pool(poolConfig(env, options));
+  const pool = new pg.Pool(poolConfig(env, options));
+  // Idle sockets can fail between requests. A handler prevents an unhandled
+  // EventEmitter error without logging connection URLs or provider credentials.
+  pool.on('error', () => {});
+  return pool;
+}
+
+// One small pool per warm runtime/configuration. An injected test pool bypasses
+// this helper, and changing URL/CA replaces the old pool rather than sharing it
+// across environments. Callers must not end this borrowed runtime pool.
+let runtimePool;
+let runtimeConfig;
+export function sharedPool(env = process.env) {
+  const config = poolConfig(env);
+  const signature = JSON.stringify({ ...config, vercelLifecycle: env.VERCEL === '1' });
+  if (runtimePool && runtimeConfig === signature) return runtimePool;
+  const previous = runtimePool;
+  runtimePool = createPool(env);
+  if (env.VERCEL === '1') attachDatabasePool(runtimePool);
+  runtimeConfig = signature;
+  if (previous) previous.end().catch(() => {});
+  return runtimePool;
 }
 
 export async function transaction(pool, work) {

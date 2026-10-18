@@ -36,6 +36,7 @@
     }
   ],
   "crons": [
-    { "path": "/api/mobile/jobs/notifications", "schedule": "* * * * *" }
+    { "path": "/api/mobile/jobs/notifications", "schedule": "* * * * *" },
+    { "path": "/api/calendar/jobs/sync", "schedule": "*/5 * * * *" }
   ]
 }

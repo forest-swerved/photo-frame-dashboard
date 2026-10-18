@@ -19,7 +19,18 @@ export async function authRequest(path, { method = 'GET', body } = {}) {
   } finally { clearTimeout(timeout); }
 }
 
-const post = (path, body = {}) => authRequest(path, { method: 'POST', body });
+let authGeneration = 0;
+const tokenStates = new WeakMap();
+const MAX_TOKEN_CACHE_MS = 60_000;
+const EXPIRY_MARGIN_MS = 30_000;
+
+export function clearAuthCache() { authGeneration++; }
+
+const post = async (path, body = {}) => {
+  clearAuthCache();
+  try { return await authRequest(path, { method: 'POST', body }); }
+  finally { clearAuthCache(); }
+};
 const client = {
   getSession: () => authRequest('get-session'),
   token: () => authRequest('token'),
@@ -35,7 +46,15 @@ export async function userToken() {
   return tokenForClient(await authClient());
 }
 
-export async function tokenForClient(auth) {
+function tokenExpiry(token) {
+  try {
+    const part = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const expires = JSON.parse(atob(part)).exp;
+    return typeof expires === 'number' && Number.isFinite(expires) ? expires * 1000 : null;
+  } catch { return null; }
+}
+
+async function readToken(auth, state, now) {
   try {
     const session = await auth.getSession();
     if (session.error) {
@@ -48,10 +67,34 @@ export async function tokenForClient(auth) {
       if ([401, 403].includes(error.status)) return null;
       throw error;
     }
-    return data?.token || null;
+    if (state.generation !== authGeneration) return null;
+    const token = data?.token || null;
+    const sessionExpiry = Date.parse(session.data.session.expiresAt);
+    const expires = Math.min(tokenExpiry(token || '') ?? Infinity, Number.isFinite(sessionExpiry) ? sessionExpiry : now);
+    if (token && expires - EXPIRY_MARGIN_MS > now) {
+      state.token = token;
+      state.expiresAt = Math.min(expires - EXPIRY_MARGIN_MS, now + MAX_TOKEN_CACHE_MS);
+    }
+    return token;
   } catch (error) {
     // A session can expire between the session check and the token request.
     if ([401, 403].includes(error.status)) return null;
     throw error;
   }
+}
+
+// Credentials are transient and per-page only. Every data request still reaches
+// the server's current membership/session checks; auth failures invalidate this hint.
+export async function tokenForClient(auth, now = Date.now()) {
+  let state = tokenStates.get(auth);
+  if (!state || state.generation !== authGeneration) {
+    state = { generation: authGeneration, token: null, expiresAt: 0, pending: null };
+    tokenStates.set(auth, state);
+  }
+  if (state.token && now < state.expiresAt) return state.token;
+  if (state.pending) return state.pending;
+  const pending = readToken(auth, state, now);
+  state.pending = pending;
+  try { return await pending; }
+  finally { if (state.pending === pending) state.pending = null; }
 }

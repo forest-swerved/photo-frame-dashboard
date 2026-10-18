@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 import { createPool } from './database.js';
 
-export async function verifySchema(pool, schema = 'public', expectedCount = 20) {
+export async function verifySchema(pool, schema = 'public', expectedCount = 21) {
   const { rows } = await pool.query(`SELECT c.relname,c.relrowsecurity,c.relforcerowsecurity,
     pg_get_userbyid(c.relowner)=current_user AS owned_by_server,
     NOT EXISTS(SELECT 1 FROM aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) acl WHERE acl.grantee=0) AS public_revoked,

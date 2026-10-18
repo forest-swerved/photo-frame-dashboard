@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { authClient, tokenForClient } from './auth.js';
+import { authClient, tokenForClient, clearAuthCache } from './auth.js';
 
 test('a signed-out managed session is ordinary state and does not request a JWT', async () => {
   let tokenRequests = 0;
@@ -57,4 +57,46 @@ test('the BFF client preserves structured provider errors and does not cache a t
 
 test('a provider failure is not mistaken for a normal signed-out session', async () => {
   await assert.rejects(tokenForClient({ getSession: async () => { throw Object.assign(new Error('Provider unavailable'), { status: 503 }); } }), /Provider unavailable/);
+});
+
+test('concurrent data reads share a transient token refresh and refresh before the earliest expiry', async () => {
+  const now = Date.parse('2026-10-17T18:00:00Z');
+  const jwt = `fixture.${Buffer.from(JSON.stringify({ exp: (now + 90_000) / 1000 })).toString('base64url')}.fixture`;
+  let sessions = 0, tokens = 0;
+  let release;
+  const waiting = new Promise(resolve => { release = resolve; });
+  const auth = {
+    getSession: async () => { sessions++; await waiting; return { data: { session: { expiresAt: new Date(now + 3_600_000).toISOString() } } }; },
+    token: async () => { tokens++; return { data: { token: jwt } }; },
+  };
+  const reads = Array.from({ length: 4 }, () => tokenForClient(auth, now));
+  release();
+  assert.deepEqual(await Promise.all(reads), [jwt, jwt, jwt, jwt]);
+  assert.equal(sessions, 1); assert.equal(tokens, 1);
+  assert.equal(await tokenForClient(auth, now + 59_000), jwt);
+  assert.equal(sessions, 1);
+  await tokenForClient(auth, now + 61_000);
+  assert.equal(sessions, 2); assert.equal(tokens, 2);
+});
+
+test('an auth transition discards an older in-flight credential and forces a new session check', async () => {
+  const now = Date.now();
+  let releaseOld;
+  let tokenCalls = 0;
+  const auth = {
+    getSession: async () => ({ data: { session: { expiresAt: new Date(now + 3_600_000).toISOString() } } }),
+    token: async () => {
+      tokenCalls++;
+      if (tokenCalls === 1) return new Promise(resolve => { releaseOld = () => resolve({ data: { token: 'old-fixture-token' } }); });
+      return { data: { token: 'current-fixture-token' } };
+    },
+  };
+  const old = tokenForClient(auth, now);
+  await new Promise(resolve => setImmediate(resolve));
+  clearAuthCache();
+  assert.equal(await tokenForClient(auth, now), 'current-fixture-token');
+  releaseOld();
+  assert.equal(await old, null);
+  assert.equal(await tokenForClient(auth, now), 'current-fixture-token');
+  assert.equal(tokenCalls, 2);
 });

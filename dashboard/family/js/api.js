@@ -1,4 +1,4 @@
-import { userToken } from './auth.js';
+import { userToken, clearAuthCache } from './auth.js';
 
 let frameMode = false;
 
@@ -27,7 +27,10 @@ export async function request(path, options = {}) {
     }
     const response = await fetch(path, { method, headers, credentials: 'same-origin', cache: 'no-store', signal: controller.signal, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
     const result = await response.json().catch(() => ({}));
-    if (!response.ok) throw new ApiError(result.error?.message || 'The request could not be completed.', response.status, result.error?.code || 'request_failed', result.error?.details, result.requestId);
+    if (!response.ok) {
+      if ([401, 403].includes(response.status)) clearAuthCache();
+      throw new ApiError(result.error?.message || 'The request could not be completed.', response.status, result.error?.code || 'request_failed', result.error?.details, result.requestId);
+    }
     return result.data;
   } catch (error) {
     if (error instanceof ApiError) throw error;
