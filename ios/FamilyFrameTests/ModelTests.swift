@@ -24,11 +24,11 @@ final class ModelTests: XCTestCase {
         XCTAssertTrue(json["personId"] is NSNull); XCTAssertTrue(json["dueTime"] is NSNull)
         XCTAssertEqual(json["expectedVersion"] as? Int, 7)
     }
-    func testChildSessionDoesNotRequireEmail() throws {
-        let json = Data(#"{"authenticated":true,"authType":"mobile","role":"child","household":{"id":"test-home","title":"Test-only household","timezone":"America/Denver"},"user":{"id":"child-person","name":"Test child"},"personId":"child-person"}"#.utf8)
+    func testChildAccountSessionSeparatesAccountAndProfileIdentity() throws {
+        let json = Data(#"{"authenticated":true,"authType":"mobile","role":"child","household":{"id":"test-home","title":"Test-only household","timezone":"America/Denver"},"user":{"id":"child-account","name":"Test child","email":"child@example.test"},"personId":"child-person"}"#.utf8)
         let value = try JSONDecoder().decode(MobileSession.self, from: json)
-        XCTAssertTrue(value.isChild); XCTAssertFalse(value.isAdmin); XCTAssertNil(value.user.email)
-        XCTAssertEqual(value.cacheIdentity, "test-home|child-person|child-person")
+        XCTAssertTrue(value.isChild); XCTAssertFalse(value.isAdmin); XCTAssertEqual(value.user.email, "child@example.test")
+        XCTAssertEqual(value.cacheIdentity, "test-home|child-account|child-person")
     }
     func testCalendarEventsKeepAllCoveredDaysAndExclusiveEnd() throws {
         let json = Data(#"{"id":"test-event","title":"Test-only event","allDay":true,"startDate":"2026-10-17","endDateExclusive":"2026-10-20"}"#.utf8)

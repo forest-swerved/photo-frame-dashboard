@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { createPool } from './database.js';
 import { digest } from './credentials.js';
 import { createChore, householdSnapshot, setCompletion } from './household.js';
-import { authenticateMobile, createMobilePair, redeemMobilePair } from './mobile.js';
+import { authenticateMobile, createMobileSession, createMobilePair, redeemMobilePair } from './mobile.js';
 import { markNotificationRead, notificationInbox, notificationPreferences, processNotifications, registerPush } from './notifications.js';
 
 const enabled = Boolean(process.env.FAMILY_RUN_DB_TESTS === '1' && process.env.DATABASE_URL);
@@ -13,6 +13,7 @@ test('isolated PostgreSQL mobile notification authorization, outbox, and deadlin
   const pool = createPool(process.env, { migration: true, max: 10 });
   const schema = `family_test_${randomUUID().replaceAll('-', '')}`;
   const providerSession = randomUUID(), parentId = randomUUID(), householdId = randomUUID(), childA = randomUUID(), childB = randomUUID();
+  const childAccounts = { childA: { id: randomUUID(), providerSession: randomUUID() }, childB: { id: randomUUID(), providerSession: randomUUID() } };
   const db = {
     async connect() { const client = await pool.connect(); try { await client.query(`SET search_path TO ${schema},pg_catalog`); return client; } catch (error) { client.release(); throw error; } },
     async query(sql, params) { const client = await this.connect(); try { return await client.query(sql, params); } finally { client.release(); } },
@@ -32,15 +33,20 @@ test('isolated PostgreSQL mobile notification authorization, outbox, and deadlin
     await pool.query('CREATE TABLE IF NOT EXISTS family_internal.auth_sessions(id uuid PRIMARY KEY,user_id uuid NOT NULL,not_after timestamptz)');
     await pool.query('INSERT INTO family_internal.auth_sessions(id,user_id,not_after) VALUES($1,$2,NULL)', [providerSession, parentId]);
     await pool.query(`CREATE SCHEMA ${schema}`); created = true;
-    for (const name of ['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
+    for (const name of ['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
     await db.query('INSERT INTO family_households(id,title,timezone) VALUES($1,$2,$3)', [householdId, household.title, household.timezone]);
     await db.query("INSERT INTO family_members(household_id,user_id,name,email,role) VALUES($1,$2,'Test parent','parent@example.invalid','admin')", [householdId, parentId]);
     for (const [id, name] of [[childA, 'Test child A'], [childB, 'Test child B']]) await db.query("INSERT INTO family_people(id,household_id,name,color) VALUES($1,$2,$3,'#00aabb')", [id, householdId, name]);
     for (const [name, personId] of [['parent', null], ['childA', childA], ['childB', childB]]) {
       const id = randomUUID();
+      const accountId = personId ? childAccounts[name].id : parentId, providerId = personId ? childAccounts[name].providerSession : providerSession;
+      if (personId) {
+        await pool.query('INSERT INTO family_internal.auth_sessions(id,user_id,not_after) VALUES($1,$2,NULL)', [providerId, accountId]);
+        await db.query("INSERT INTO family_members(household_id,user_id,name,email,role,person_id) VALUES($1,$2,$3,$4,'child',$5)", [householdId, accountId, name, `${name}@example.invalid`, personId]);
+      }
       await db.query(`INSERT INTO family_mobile_sessions(id,household_id,token_hash,kind,user_id,provider_session_id,person_id,label,created_at,expires_at)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,'2026-01-01','2027-12-31')`, [id, householdId, digest(randomUUID()), personId ? 'child' : 'parent', personId ? null : parentId, personId ? null : providerSession, personId, name]);
-      principals[name] = { ...parent, authType: 'mobile', mobileSessionId: id, role: personId ? 'child' : 'admin', personId, actor: `mobile:${id}` };
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,'2026-01-01','2027-12-31')`, [id, householdId, digest(randomUUID()), personId ? 'child' : 'parent', accountId, providerId, personId, name]);
+      principals[name] = { ...parent, user: { id: accountId, name }, authType: 'mobile', mobileSessionId: id, role: personId ? 'child' : 'admin', personId, actor: `mobile:${id}` };
       await registerPush(db, principals[name], { installationId: randomUUID(), token: ({ parent: 'a', childA: 'b', childB: 'c' }[name]).repeat(64), environment: 'sandbox' }, env);
     }
     const resetEvents = async () => {
@@ -211,12 +217,10 @@ test('isolated PostgreSQL mobile notification authorization, outbox, and deadlin
       await pool.query('INSERT INTO family_internal.auth_sessions(id,user_id,not_after) VALUES($1,$2,NULL)', [providerSession, parentId]);
     });
 
-    await t.test('child pairing is single-use under concurrency and child endpoints cannot access siblings/admin', async () => {
-      const pair = await createMobilePair(db, parent, { personId: childA }, env);
-      const redemptions = await Promise.allSettled([0, 1].map(() => redeemMobilePair(db, { code: pair.code }, env)));
-      assert.equal(redemptions.filter(result => result.status === 'fulfilled').length, 1);
-      assert.equal(redemptions.find(result => result.status === 'rejected').reason.code, 'invalid_pair');
-      const mobile = redemptions.find(result => result.status === 'fulfilled').value;
+    await t.test('child account exchange replaces anonymous pairing and cannot access siblings/admin', async () => {
+      await assert.rejects(createMobilePair(db, parent, { personId: childA }, env), error => error.status === 410);
+      await assert.rejects(redeemMobilePair(db, { code: '123456' }, env), error => error.status === 410);
+      const mobile = await createMobileSession(db, { ...principals.childA, authType: 'user', sessionId: childAccounts.childA.providerSession }, {});
       const request = new Request('https://family.example/api/mobile/session', { headers: { authorization: `FamilyMobile ${mobile.token}` } });
       const child = await authenticateMobile(request, db);
       assert.equal(child.role, 'child'); assert.equal(child.personId, childA);
@@ -226,7 +230,7 @@ test('isolated PostgreSQL mobile notification authorization, outbox, and deadlin
       assert.ok(snapshot.chores.every(chore => chore.personId === childA));
       await assert.rejects(setCompletion(db, child, sibling.id, '2026-10-17', { completed: true, expectedVersion: 0, mutationId: randomUUID() }), error => error.status === 404 || error.status === 403);
       await assert.rejects(createChore(db, child, { title: 'Forbidden' }), error => error.status === 403);
-      await assert.rejects(createMobilePair(db, child, { personId: childB }, env), error => error.status === 403);
+      await assert.rejects(createMobilePair(db, child, { personId: childB }, env), error => error.status === 410);
       await db.query('DELETE FROM family_internal.auth_sessions WHERE id=$1', [providerSession]);
       const token = 'p'.repeat(43);
       await db.query('UPDATE family_mobile_sessions SET token_hash=$2 WHERE id=$1', [principals.parent.mobileSessionId, digest(token)]);
@@ -235,6 +239,7 @@ test('isolated PostgreSQL mobile notification authorization, outbox, and deadlin
   } finally {
     if (created) await pool.query(`DROP SCHEMA ${schema} CASCADE`);
     await pool.query('DELETE FROM family_internal.auth_sessions WHERE id=$1 AND user_id=$2', [providerSession, parentId]).catch(() => {});
+    for (const account of Object.values(childAccounts)) await pool.query('DELETE FROM family_internal.auth_sessions WHERE id=$1 AND user_id=$2', [account.providerSession, account.id]).catch(() => {});
     await pool.end();
   }
 });

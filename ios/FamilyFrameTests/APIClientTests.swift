@@ -76,7 +76,7 @@ final class APIClientTests: XCTestCase {
         }
         try await api.registerPush(token: "test-token", environment: "sandbox", installationID: installation)
     }
-    @MainActor func testParentSignInExchangesProviderTokenForOpaqueMobileSession() async throws {
+    @MainActor func testSharedSignInExchangesProviderTokenForOpaqueRoleDerivedSession() async throws {
         let api = client(); var paths: [String] = []
         let token = String(repeating: "b", count: 43)
         MockProtocol.handler = { [self] request in
@@ -91,8 +91,88 @@ final class APIClientTests: XCTestCase {
             XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-provider-jwt")
             return (200, Data("{\"data\":{\"token\":\"\(token)\",\"expiresAt\":\"2099-01-01T00:00:00Z\",\"session\":{\"authenticated\":true,\"authType\":\"mobile\",\"role\":\"admin\",\"household\":{\"id\":\"test-home\",\"title\":\"Test household\",\"timezone\":\"America/Denver\"},\"user\":{\"id\":\"test-parent\",\"name\":\"Test parent\"}}}}".utf8))
         }
-        let response = try await api.parentLogin(email: "parent@example.test", password: "test-only-password")
+        let outcome = try await api.accountSignIn(email: "parent@example.test", password: "test-only-password")
+        guard case .authenticated(let response) = outcome else { return XCTFail("Expected mobile session") }
         XCTAssertEqual(response.token, token); XCTAssertTrue(response.session.isAdmin)
         XCTAssertEqual(paths, ["/api/auth/sign-in/email", "/api/auth/token", "/api/mobile/sessions"])
     }
+    @MainActor func testVerifiedUnlinkedAccountRequiresInvitationBeforeMobileAccess() async throws {
+        let api = client(); api.mobileToken = nil
+        var paths: [String] = []
+        MockProtocol.handler = { request in
+            let path = request.url!.path; paths.append(path)
+            if path == "/api/auth/sign-in/email" { return (200, Data(#"{"session":{}}"#.utf8)) }
+            if path == "/api/auth/token" { return (200, Data(#"{"token":"verified-account-jwt"}"#.utf8)) }
+            XCTAssertEqual(path, "/api/mobile/sessions")
+            return (403, Data(#"{"error":{"code":"membership_required","message":"Accept an invitation first"}}"#.utf8))
+        }
+        let outcome = try await api.accountSignIn(email: "child@example.test", password: "test-only-password")
+        guard case .invitationRequired = outcome else { return XCTFail("An unlinked account cannot get a mobile credential") }
+        XCTAssertEqual(paths, ["/api/auth/sign-in/email", "/api/auth/token", "/api/mobile/sessions"])
+        XCTAssertNil(api.mobileToken)
+    }
+    @MainActor func testSignupRequiresEmailConfirmationWithoutClaimingProfileOrRole() async throws {
+        let api = client(); var requests = 0
+        MockProtocol.handler = { [self] request in
+            requests += 1
+            XCTAssertEqual(request.url?.path, "/api/auth/sign-up/email")
+            let payload = body(request)
+            XCTAssertEqual(payload["email"] as? String, "child@example.test")
+            XCTAssertEqual(payload["name"] as? String, "Test child")
+            XCTAssertNil(payload["role"]); XCTAssertNil(payload["personId"])
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+            return (200, Data(#"{"session":null,"user":null,"confirmationRequired":true}"#.utf8))
+        }
+        let outcome = try await api.createAccount(name: "Test child", email: "child@example.test", password: "test-only-password")
+        guard case .confirmationRequired = outcome else { return XCTFail("Expected emailed confirmation") }
+        XCTAssertEqual(requests, 1, "Do not exchange for a mobile session before confirmation")
+    }
+    @MainActor func testEmailConfirmationAcceptsInvitationBeforeIssuingChildSession() async throws {
+        let api = client(); api.mobileToken = nil
+        var paths: [String] = []
+        let token = String(repeating: "c", count: 43)
+        MockProtocol.handler = { [self] request in
+            let path = request.url!.path; paths.append(path)
+            if path == "/api/auth/verify-email" {
+                let payload = body(request)
+                XCTAssertEqual(payload["email"] as? String, "child@example.test")
+                XCTAssertEqual(payload["token"] as? String, "123456")
+                return (200, Data(#"{"session":{}}"#.utf8))
+            }
+            if path == "/api/auth/token" { return (200, Data(#"{"token":"verified-child-jwt"}"#.utf8)) }
+            if path == "/api/join" {
+                XCTAssertEqual(body(request)["token"] as? String, "test-only-invitation")
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer verified-child-jwt")
+                return (200, Data(#"{"data":{"role":"child","personId":"test-person"}}"#.utf8))
+            }
+            XCTAssertEqual(path, "/api/mobile/sessions")
+            return (200, Data("{\"data\":{\"token\":\"\(token)\",\"expiresAt\":\"2099-01-01T00:00:00Z\",\"session\":{\"authenticated\":true,\"authType\":\"mobile\",\"role\":\"child\",\"household\":{\"id\":\"test-home\",\"title\":\"Test household\",\"timezone\":\"America/Denver\"},\"user\":{\"id\":\"test-child-account\",\"name\":\"Test child\",\"email\":\"child@example.test\"},\"personId\":\"test-person\"}}}".utf8))
+        }
+        let outcome = try await api.confirmAccount(email: "child@example.test", code: "123456", invitation: "test-only-invitation")
+        guard case .authenticated(let credential) = outcome else { return XCTFail("Expected child mobile session") }
+        XCTAssertTrue(credential.session.isChild); XCTAssertFalse(credential.session.isAdmin)
+        XCTAssertEqual(credential.session.user.id, "test-child-account"); XCTAssertEqual(credential.session.personId, "test-person")
+        XCTAssertEqual(paths, ["/api/auth/verify-email", "/api/auth/token", "/api/join", "/api/mobile/sessions"])
+    }
+    @MainActor func testUnconfirmedSignInRoutesToConfirmationInsteadOfMobileExchange() async throws {
+        let api = client(); var requests = 0
+        MockProtocol.handler = { _ in requests += 1; return (403, Data(#"{"error":{"code":"email_not_confirmed","message":"Confirm email"}}"#.utf8)) }
+        let outcome = try await api.accountSignIn(email: "child@example.test", password: "test-only-password")
+        guard case .confirmationRequired = outcome else { return XCTFail("Expected email confirmation") }
+        XCTAssertEqual(requests, 1)
+    }
+    @MainActor func testChildInvitationIsCreatedForExplicitProfileAndEmail() async throws {
+        let api = client()
+        MockProtocol.handler = { [self] request in
+            XCTAssertEqual(request.url?.path, "/api/invites")
+            let payload = body(request)
+            XCTAssertEqual(payload["role"] as? String, "child")
+            XCTAssertEqual(payload["personId"] as? String, "test-person")
+            XCTAssertEqual(payload["email"] as? String, "child@example.test")
+            return (201, Data(#"{"data":{"id":"test-invite","token":"test-only-invitation","expiresAt":"2099-01-01T00:00:00Z","personId":"test-person","email":"child@example.test","role":"child"}}"#.utf8))
+        }
+        let invite = try await api.createChildInvitation(personID: "test-person", email: "child@example.test")
+        XCTAssertEqual(invite.email, "child@example.test"); XCTAssertEqual(invite.role, "child")
+    }
+
 }

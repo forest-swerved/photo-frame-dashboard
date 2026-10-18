@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS family_members (
   user_id text NOT NULL,
   name text NOT NULL,
   email text NOT NULL,
-  role text NOT NULL CHECK (role IN ('admin', 'member')),
+  role text NOT NULL CHECK (role IN ('admin', 'member', 'child')),
+  person_id uuid,
   joined_at timestamptz NOT NULL DEFAULT now(),
   revoked_at timestamptz,
   PRIMARY KEY (household_id, user_id)
@@ -65,6 +66,10 @@ CREATE TABLE IF NOT EXISTS family_invites (
   token_hash text NOT NULL UNIQUE,
   expires_at timestamptz NOT NULL,
   created_by text NOT NULL,
+  role text NOT NULL DEFAULT 'member' CHECK (role IN ('member','child')),
+  person_id uuid,
+  email text,
+  revoked_at timestamptz,
   redeemed_at timestamptz,
   redeemed_by text,
   created_at timestamptz NOT NULL DEFAULT now()

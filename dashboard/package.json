@@ -7,8 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test family/js/*.test.js server/backend.test.js server/mobile.test.js server/notifications.test.js server/calendar-normalize.test.js server/calendar-normalize-bounded.test.js server/icloud-caldav.test.js",
-    "test:db": "FAMILY_RUN_DB_TESTS=1 node --env-file=.env.test.local --test server/backend.integration.test.js server/notifications.integration.test.js",
+    "test": "node --test family/js/*.test.js server/backend.test.js server/mobile.test.js server/notifications.test.js server/child-accounts.test.js server/calendar-normalize.test.js server/calendar-normalize-bounded.test.js server/icloud-caldav.test.js",
+    "test:db": "FAMILY_RUN_DB_TESTS=1 node --env-file=.env.test.local --test server/backend.integration.test.js server/notifications.integration.test.js server/child-accounts.integration.test.js",
     "db:migrate": "node --env-file=.env.local server/migrate.js",
     "db:verify": "node --env-file=.env.local server/verify-schema.js",
     "deploy": "vite build && wrangler deploy"

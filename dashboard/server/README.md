@@ -77,14 +77,23 @@ The adapter validates every Apple DAV destination and redirect before credential
 household with the frame; see [the iOS guide](../../ios/README.md) for build, signing,
 and Apple push configuration.
 
-Parent login uses the existing first-party auth gateway and exchanges the verified
+Account login uses the existing first-party auth gateway and exchanges the verified
 browser session at `POST /api/mobile/sessions` for a revocable, hashed mobile token.
 Subsequent native requests use `Authorization: FamilyMobile <opaque token>` and the
-canonical HTTPS Origin. Each request checks the parent's current membership and live
-provider session. A parent administrator creates a ten-minute, single-use child code
-at `POST /api/mobile/pairings`. Redeeming it binds that installation to one profile.
-Children can read and complete their own chores; they cannot manage Setup or edit a
-sibling's chores. Mobile tokens expire after 90 days and can be revoked in the app.
+canonical HTTPS Origin. Each request checks the account's current membership and live
+provider session. A parent administrator creates a child invitation at `POST /api/invites`
+with `{role:"child",personId,email}` (`POST /api/child-invites` is an equivalent alias).
+The child creates their own password, confirms their email, and accepts the private
+token at `POST /api/join` before mobile exchange. Every production invitation join
+checks the current confirmed email directly with the provider, including family-member
+invitations, so stale JWT emails cannot bypass a child reservation. Concurrent joins
+are serialized; existing child accounts cannot consume adult invitations to widen access.
+
+Children can read and complete their own chores and view the shared calendar; they
+cannot manage Setup or edit a sibling's chores. Both browser and native requests
+derive the profile from the stored membership. Anonymous `/api/mobile/pairings` and
+its redemption route return 410. Mobile tokens expire after 90 days and can be revoked
+in the app; provider sign-out and parent removal also stop account access and push fanout.
 
 Chores accept optional `dueTime` (`HH:mm`, household timezone) and `reminderMinutes`
 (0–1440). Profiles keep a section even when no chores are scheduled. No household
@@ -114,9 +123,11 @@ inbox/scheduler still work but no push delivery is claimed.
 
 ### Additive schema upgrade
 
-There are now twenty server-owned tables. `schema.sql`, `mobile-schema.sql` and
-`notifications-schema.sql` are applied together by `npm run db:migrate`. Existing
-households, calendars, chores, sessions and history are retained. The app login's
+There are now twenty server-owned tables. `schema.sql`, `mobile-schema.sql`,
+`notifications-schema.sql` and `child-accounts-schema.sql` are applied together by
+`npm run db:migrate`. Existing households, calendars, chores and history are retained.
+The child upgrade revokes legacy anonymous child sessions and unused child pairing
+codes; frame pairing is unchanged. The app login's
 normal schema-CREATE permission remains revoked. For an upgrade, an authorized
 administrator temporarily grants CREATE on `public` to the existing
 `family_frame_server` table owner, runs the owner migration, then revokes CREATE even
@@ -129,9 +140,11 @@ to run it as Supabase's temporary CLI administrator.
 ### Qualification
 
 `npm test` includes native-auth and notification unit tests. `npm run test:db` adds
-concurrency, parent revocation, one-use child pairing, sibling isolation, deadline
+concurrency, confirmed-email child invitations, provider/parent revocation, sibling isolation, deadline
 races, quiet hours, installation ownership, token invalidation, calendar/frame status
-and retry checks. Integration suites refuse any database not named
+and retry checks. Child tests also cover stale-email reservations, role/profile
+changes, retired anonymous credentials, repeated migrations and concurrent profile
+deletion/session issuance. Integration suites refuse any database not named
 `family_frame_tests` and use unique test schemas; never point them at the household
 database. A separately provisioned local PostgreSQL 17 database with a trusted local
 TLS certificate can be used if the remote test database is unavailable.
