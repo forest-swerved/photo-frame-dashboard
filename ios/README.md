@@ -1,6 +1,6 @@
 # Family Frame for iPhone and iPad
 
-Native SwiftUI app, iOS 17+, using the same dedicated Swerved Family Frame API and household as the web dashboard and physical frame. No production credentials, family data, signing team, or APNs private keys are bundled. The interface follows the dashboard's bright Swerved light theme.
+Native SwiftUI app, iOS 17+, using the same dedicated Swerved Family Frame API and household as the web dashboard and physical frame. No production credentials, family data, or APNs private keys are bundled. The interface follows the dashboard's bright Swerved light theme.
 
 ## Implemented
 
@@ -21,10 +21,10 @@ open ios/FamilyFrame.xcodeproj
 
 The checked public configuration is `Config/FamilyFrame.xcconfig`:
 
-- Suggested bundle ID: `com.swerved.familyframe` (confirm availability under the actual Swerved Apple Developer team).
+- Bundle ID: `com.swerved.familyframe` (confirm availability under the selected Apple Developer team; the backend's Swerved account does not determine the signing team).
 - API host: `forest-family-frame.vercel.app`.
 - No development team is selected. Add the actual team in Xcode's Signing & Capabilities or an ignored `Config/Local.xcconfig` containing `DEVELOPMENT_TEAM = <your team ID>`.
-- Debug uses the APNs `development` entitlement and sends `sandbox`; Release uses `production` for both. TestFlight builds use production APNs.
+- Debug requests the APNs `development` entitlement and sends `sandbox`; Release requests `production`. Build settings alone do not prove the signed result: an archive can be development-signed despite its Release configuration. Verify that the exported app's code entitlements, embedded provisioning profile, and `FamilyAPNSEnvironment` agree. Ad hoc and TestFlight distribution use production APNs; development-signed builds use the `development` entitlement and send `sandbox`.
 
 A simulator build does not need a signing team:
 
@@ -60,15 +60,14 @@ Offline data is for reading. The app does not queue background mutations or infe
 
 Native account creation is implemented. In-app account deletion initiation and server-side fulfillment are not implemented yet and must be completed before requesting external review. Apple's account-deletion requirement applies to apps that support account creation. Device sign-out/revocation is already available; account deletion remains a separate required release feature. Implement actual deletion/revocation and appropriate data handling rather than a support-email or disabled placeholder. [Apple's account deletion guidance](https://developer.apple.com/support/offering-account-deletion-in-your-app/).
 
-## Push setup still requires Apple account configuration
+## Signing and distribution
 
-A simulator build and tests do **not** establish TestFlight distribution or end-to-end push delivery. Completing the app's installable family beta requires:
+A simulator build and tests do **not** establish distribution or push delivery. Use the intended Apple Developer team, enable Push Notifications, and provision the chosen bundle ID. Keep APNs authentication keys and their Key ID / Team ID / topic only in the server environment; never add a `.p8` file to the app, Git, or an xcconfig. Follow the backend's documented environment names for separate sandbox and production keys, and configure the server scheduler. App Settings reads `/api/mobile/status` to show server readiness separately from device permission and registration.
 
-1. An active Apple Developer Program team and App Store Connect app record with the chosen bundle ID.
-2. Push Notifications capability and provisioning for that actual team.
-3. APNs authentication key and its Key ID / Team ID / topic configured only in the server environment. Never add a `.p8` file to the app, Git, or an xcconfig. Follow the backend's documented environment names. Configure the server scheduler too; app Settings reads `/api/mobile/status` and shows missing setup.
-4. Archive a signed Release build, validate it, upload it to App Store Connect, complete required app/privacy/export metadata, and submit the external beta for Apple's review. Invite the family after the build is approved. TestFlight builds expire after 90 days; permanent household use needs a maintained beta or a later approved distribution route.
-5. On physical iPhones/iPads, verify parent/child signup, email delivery/confirmation, email-bound invitation acceptance, sign-in, permissions, each enabled notification category, notification-open refresh, quiet hours, token rotation, device revocation, and closed-app receipt. Server acceptance, device delivery, and the person reading an alert are separate proof states.
+- **Private registered-device installation:** export the archive with Xcode's `release-testing` method for ad hoc distribution. Every intended iPhone/iPad UDID must be registered and included in the exported app's provisioning profile. Verify the exported signature and matching production APNs configuration before installing; installing the raw archive is not equivalent. This route does not establish TestFlight availability.
+- **TestFlight:** create the App Store Connect app record, validate and upload the distribution build, complete app/privacy/export metadata, and request external beta review. Complete account deletion, the privacy policy and its in-app link, accurate export-compliance declarations, and isolated reviewer access/data before external review. Invite family testers after approval. TestFlight builds expire after 90 days; continued household use needs maintained releases or another approved distribution route.
+
+On physical iPhones/iPads, verify parent/child signup, email delivery/confirmation, email-bound invitation acceptance, sign-in, permissions, each enabled notification category, notification-open refresh, quiet hours, token rotation, device revocation, and closed-app receipt. Server acceptance, device delivery, and the person reading an alert are separate proof states.
 
 Alerts are standard UserNotifications alerts with private generic lock-screen content; detailed information is fetched in the authenticated Activity inbox. The app does not bypass Focus or use Critical Alerts. APNs and iOS are best-effort, so exact alarm-clock delivery times cannot be guaranteed. Scheduled due/overdue work runs on the server, not in unreliable iOS background timers.
 
@@ -76,6 +75,10 @@ Official references: [APNs registration](https://developer.apple.com/documentati
 
 ## Verification boundary
 
-The development build and client tests are exercised locally without signing in to a real household. Test fixtures exist only in the unit-test target and never appear in the shipped interface. No Apple Developer team is guessed, no live APNs key is generated, and no distribution or physical-device delivery is claimed until those steps are actually completed.
+Test fixtures exist only in the unit-test target and never appear in the shipped interface. Simulator tests, live sign-in, provider acceptance, physical receipt, and TestFlight distribution are separate checks.
 
-Local verification on 2026-10-17: Xcode 27 simulator build passed; 21 model/client/Keychain tests and two native entry UI tests passed, covering role-derived account exchange, signup/confirmation, invitation acceptance before mobile access, and shared parent/child email entry. The simulator app launched and its bright sign-in layout was visually inspected. The account creation UI test types a reserved test-only email but never submits an account or invitation. No real household sign-in, Apple signing, TestFlight upload, or actual APNs receipt is implied by those results.
+Local verification on 2026-10-17: Xcode 27 simulator build passed; 21 model/client/Keychain tests and two native entry UI tests passed, covering role-derived account exchange, signup/confirmation, invitation acceptance before mobile access, and shared parent/child email entry. The simulator app launched and its bright sign-in layout was visually inspected. The account creation UI test types a reserved test-only email but never submits an account or invitation.
+
+Physical verification on 2026-10-17: a distribution-signed `release-testing` export passed signature, provisioning, and matching production APNs checks. It installed and launched on the owner's provisioned iPhone. Live parent sign-in and production push registration succeeded; Apple returned HTTP 200 for one generic test alert, and the owner confirmed receiving it. This does not establish native calendar rendering or completion of every dashboard flow.
+
+Still to verify: actual chore completion, due-soon and overdue notifications, closed-app receipt, and children's email-account onboarding when their addresses are available. TestFlight upload and external review remain pending, including account deletion, privacy policy/link, export-compliance metadata, and isolated reviewer data/access.
