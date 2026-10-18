@@ -315,7 +315,7 @@ dialog::backdrop { background: rgba(17, 17, 17, .45); }
   .family-shell { display: block; height: auto; min-height: 100vh; }
   .sidebar { position: fixed; left: 0; right: 0; bottom: 0; height: auto; border-right: 0; border-top: 1px solid var(--line); background: var(--surface); padding: 8px 12px max(9px, env(safe-area-inset-bottom)); z-index: 20; }
   .brand, .sidebar-bottom { display: none; }
-  .sidebar nav { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+  .sidebar nav { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 3px; }
   .nav-item { min-height: 53px; padding: 7px 4px; flex-direction: column; gap: 5px; border-radius: 9px; font-size: 10px; }
   .nav-item svg { width: 21px; height: 21px; }
   .main-content { padding: 25px 19px 105px; overflow: visible; }
@@ -449,3 +449,54 @@ dialog::backdrop { background: rgba(17, 17, 17, .45); }
   .frame-display .occurrence-info details, .frame-display .subtask-list button { font-size: 18px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } }
+
+/* Session timers update in place; status always distinguishes requested and observed access. */
+.internet-summary { margin-top: 24px; }
+.session-grid, .device-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; }
+.devices-heading { margin-top: 26px; }
+.session-card, .managed-device { min-width: 0; }
+.session-card h3, .managed-device h3 { font-size: 24px; overflow-wrap: anywhere; }
+.session-card .section-heading { align-items: start; flex-wrap: wrap; gap: 14px; }
+.session-timer { color: var(--cyan-ink); font-size: 32px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.session-state, .device-status { font-weight: 700; line-height: 1.5; }
+.session-facts { display: flex; gap: 18px; flex-wrap: wrap; margin: 18px 0; }
+.session-facts div { flex: 1; min-width: 120px; }
+.session-facts dt { color: var(--muted); font-size: 13px; }
+.session-facts dd { margin: 6px 0 0; line-height: 1.5; }
+.network-status p { max-width: 850px; }
+.reward-panel { margin-top: 24px; }
+.reward-row, .available-rewards > div { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 16px 0; border-bottom: 1px solid var(--line); }
+.reward-row:last-child, .available-rewards > div:last-child { border-bottom: 0; }
+.reward-row small { display: block; margin-top: 7px; color: var(--muted); line-height: 1.5; }
+.progress-list { color: var(--muted); line-height: 1.6; }
+.reward-celebration > strong { color: var(--cyan-ink); font-size: 30px; }
+.reward-celebration p { line-height: 1.7; }
+.device-picker { display: grid; gap: 12px; margin: 20px 0; }
+.device-option { display: flex; gap: 13px; align-items: center; padding: 17px; border: 1px solid var(--line); border-radius: 12px; min-height: 64px; cursor: pointer; }
+.device-option input { width: 24px; height: 24px; flex: 0 0 auto; accent-color: var(--cyan-ink); }
+.device-option small { display: block; color: var(--muted); margin-top: 5px; }
+.device-option:has(input:checked) { border-color: var(--cyan-ink); background: var(--cyan-tint); }
+.assignment-picker { border: 1px solid var(--line); border-radius: 12px; padding: 15px; }
+.assignment-picker legend { padding: 0 6px; }
+.assignment-picker .checkbox-label { margin: 8px 0; }
+.account-tools { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px; }
+@media (max-width: 700px) {
+  .sidebar { padding-left: 7px; padding-right: 7px; }
+  .nav-item { font-size: 9px; }
+  .session-grid, .device-grid { grid-template-columns: minmax(0, 1fr); }
+  .reward-row, .available-rewards > div { align-items: start; flex-direction: column; gap: 7px; }
+  .session-timer { font-size: 30px; }
+}
+@media (min-width: 701px) {
+  .frame-display .session-grid, .frame-display .device-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .frame-display .session-card .supporting, .frame-display .session-facts { font-size: 16px; }
+  .frame-display .session-card .text-button { min-height: 48px; }
+}
+
+.entry-privacy { color: var(--ink-soft); font-size: 13px; }
+
+.network-status .field-help, .managed-device .field-help { margin-top: 10px; }
+.finished-sessions { display: grid; gap: 14px; margin: 18px 0 24px; }
+
+.session-clock { display: grid; gap: 5px; text-align: right; }
+.session-clock > small { color: var(--muted); font-size: 13px; }

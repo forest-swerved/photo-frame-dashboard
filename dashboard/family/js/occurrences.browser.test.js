@@ -25,6 +25,7 @@ async function fixture({ role = 'admin', frame = false, signedOut = false, width
     } else if (url.pathname === '/api/auth/get-session') data = signedOut ? null : { session: { expiresAt: '2099-01-01T00:00:00Z' } };
     else if (url.pathname === '/api/auth/token') data = { token: 'fixture.transient.token' };
     else if (url.pathname === '/api/household') data = { household: home, role: activeRole, date: '2026-10-17', people: [person], chores: [{ ...routine, completion: occurrence.completion }], routines: [routine], occurrences: [occurrence], capabilities: { manageChores: activeRole === 'admin' || activeRole === 'caregiver', manageInternet: activeRole === 'admin' || activeRole === 'caregiver' } };
+    else if (url.pathname === '/api/internet') data = { serverTime: '2026-10-17T18:00:00Z', timezone: home.timezone, role: activeRole, capabilities: { manageInternet: activeRole === 'admin' }, integration: { state: 'unconfigured' }, devices: [], sessions: [], policies: [], credits: [], progress: [] };
     else if (url.pathname === '/api/calendar') data = { status: 'not_configured', events: [] };
     else if (url.pathname === '/api/calendar/connection') data = { connected: false, calendars: [] };
     else if (url.pathname === '/api/devices') data = { devices: [] };
@@ -137,7 +138,13 @@ test('frame approval lives only in memory and the private header, with timed loc
     assert.ok(f.state.calls.some(call => call.path === '/api/household' && call.headers['x-family-authorization'] === 'fixture-private-grant'));
     assert.equal((await f.page.locator('body').innerText()).includes('fixture-private-grant'), false);
     assert.deepEqual(await f.page.evaluate(() => ({ local: Object.keys(localStorage), session: Object.keys(sessionStorage) })), { local: [], session: [] });
+    await f.page.getByRole('link', { name: 'Chores', exact: true }).click();
+    await f.page.getByRole('button', { name: '+ Add a chore', exact: true }).click();
+    await f.page.getByLabel('Chore', { exact: true }).fill('Private unsaved routine');
     await f.page.clock.runFor(4000);
+    await f.page.waitForFunction(() => !document.querySelector('dialog').open);
+    assert.equal(await f.page.getByLabel('Chore', { exact: true }).count(), 0);
+    await f.page.getByRole('link', { name: 'Setup', exact: true }).click();
     await f.page.getByRole('button', { name: 'Enter unlock code', exact: true }).waitFor();
     const households = f.state.calls.filter(call => call.path === '/api/household');
     assert.equal(households.at(-1).headers['x-family-authorization'], undefined);

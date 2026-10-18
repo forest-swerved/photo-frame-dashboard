@@ -3,10 +3,10 @@ import { userToken, clearAuthCache } from './auth.js';
 let frameMode = false;
 let frameAccess = null;
 export function setFrameAccess(value) {
-  frameAccess = value && typeof value.token === 'string' && Number.isFinite(Date.parse(value.expiresAt)) ? { ...value } : null;
+  frameAccess = value && typeof value.token === 'string' && Number.isFinite(Date.parse(value.expiresAt)) ? { ...value, expiresMono: performance.now() + Math.min(600000, Math.max(0, Date.parse(value.expiresAt) - Date.now())) } : null;
 }
 export function frameAccessStatus() {
-  if (frameAccess && Date.parse(frameAccess.expiresAt) <= Date.now()) frameAccess = null;
+  if (frameAccess && (Date.parse(frameAccess.expiresAt) <= Date.now() || performance.now() >= frameAccess.expiresMono)) frameAccess = null;
   if (!frameAccess) return null;
   const { scope, personId, expiresAt } = frameAccess;
   return { scope, personId, expiresAt };
@@ -24,12 +24,12 @@ export class ApiError extends Error {
 export function setFrameMode(value) { frameMode = value === true; if (!frameMode) frameAccess = null; }
 
 export async function request(path, options = {}) {
-  const { method = 'GET', body, authenticated = true } = options;
+  const { method = 'GET', body, authenticated = true, timeoutMs = 25000 } = options;
   const headers = { Accept: 'application/json' };
   if (frameMode && frameAccessStatus()) headers['X-Family-Authorization'] = frameAccess.token;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 25000);
+  const timeout = setTimeout(() => controller.abort(), Math.min(65000, Math.max(1000, timeoutMs)));
   try {
     if (authenticated && !frameMode) {
       const token = await userToken();

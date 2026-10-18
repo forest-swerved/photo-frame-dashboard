@@ -1,3 +1,4 @@
+import { frameCodeScopes } from './workbench.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { routinePayload, mergeOccurrence, scheduledItems } from './occurrences.js';
@@ -47,5 +48,26 @@ test('scoped frame credentials use only the private header and are removed at ex
   setFrameMode(false); setFrameMode(true);
   await request('/api/household');
   assert.equal(calls[2].options.headers['X-Family-Authorization'], undefined);
+  setFrameMode(false);
+});
+
+
+test('frame unlock choices match caregiver capabilities and a child can only unlock their own scope', () => {
+  assert.deepEqual(frameCodeScopes({ authType: 'user', role: 'member' }), []);
+  assert.deepEqual(frameCodeScopes({ authType: 'user', role: 'member' }, { manageChores: true }), ['parent']);
+  assert.deepEqual(frameCodeScopes({ authType: 'user', role: 'member' }, { manageInternet: true }), ['parent', 'child']);
+  assert.deepEqual(frameCodeScopes({ authType: 'user', role: 'child', personId: 'child-a' }, { manageInternet: true }), ['child']);
+  assert.deepEqual(frameCodeScopes({ authType: 'frame', role: 'caregiver' }, { manageInternet: true }), []);
+});
+
+
+test('moving the local wall clock backward cannot extend a frame unlock', t => {
+  let wall = Date.parse('2026-10-17T18:00:00Z'), elapsed = 0;
+  t.mock.method(Date, 'now', () => wall);
+  t.mock.method(performance, 'now', () => elapsed);
+  setFrameMode(true);
+  setFrameAccess({ token: 'fixture-private-approval', scope: 'parent', expiresAt: new Date(wall + 60000).toISOString() });
+  wall -= 3600000; elapsed = 60001;
+  assert.equal(frameAccessStatus(), null);
   setFrameMode(false);
 });

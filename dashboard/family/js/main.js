@@ -4,6 +4,8 @@ import { escapeHtml as h, color, dateInZone, dateFormatter, addDays, dateLabel, 
 import { createRenderer } from './render.js';
 import { scheduledItems, mergeOccurrence, occurrenceDetails } from './occurrences.js';
 import { createWorkbench } from './workbench.js';
+import { createInternetUI } from './internet-ui.js';
+import { createAccountUI } from './account-ui.js';
 
 const app = document.querySelector('#family-app');
 const dialog = document.querySelector('#family-dialog');
@@ -11,13 +13,14 @@ const notice = document.querySelector('#family-notice');
 const paintApp = createRenderer(app);
 const noEvents = [];
 const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const views = ['today', 'calendar', 'chores', 'activity', 'setup'];
+const views = ['today', 'calendar', 'chores', 'devices', 'activity', 'setup'];
 const icons = {
   today: '<path d="M3 10 12 3l9 7M5 9v12h14V9M9 21v-8h6v8"/>',
   calendar: '<rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/>',
   chores: '<rect x="3" y="3" width="18" height="18" rx="4"/><path d="m7 12 3 3 7-7"/>',
   setup: '<path d="M4 6h10M18 6h2M4 12h3M11 12h9M4 18h10M18 18h2"/><circle cx="16" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="16" cy="18" r="2"/>',
   activity: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M9 21h6"/>',
+  devices: '<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/>',
 };
 const S = {
   booting: true, session: null, snapshot: null, calendar: null, connection: null, devices: [], members: [],
@@ -38,13 +41,25 @@ let paintedView = null;
 let pointerActive = false;
 const workbench = createWorkbench({ snapshot: () => S.snapshot, session: () => S.session, epoch: () => generation,
   members: () => S.members, zone, today, frame, field, button, openDialog, dialog, toast, render,
-  reload: loadHousehold, reloadSetup: loadSetup, reboot: boot });
+  reload: async () => { await loadHousehold(); if (internet.loaded() || S.view === 'devices') await internet.load(); }, reloadSetup: loadSetup, reboot: boot });
+const internet = createInternetUI({ snapshot: () => S.snapshot, session: () => S.session, epoch: () => generation,
+  zone, frame, field, button, openDialog, dialog, toast, render, unlock: workbench.unlock });
 
 if (location.hash.startsWith('#invite=')) {
   try { S.inviteToken = decodeURIComponent(location.hash.slice(8)); } catch { /* Invalid token stays blank. */ }
   history.replaceState(null, '', `${location.pathname}${location.search}`);
   S.view = 'setup';
 }
+
+const accountUI = createAccountUI({ session: () => S.session, epoch: () => generation, members: () => S.members,
+  reloadSetup: loadSetup, openDialog, field, button, dialog, reboot: boot, toast,
+  deleted: async () => {
+    generation++; workbench.reset(); internet.reset(); clearAuthCache(); setFrameMode(false);
+    // The confirmed deletion response clears same-origin Auth cookies on the server.
+    S.session = null; S.snapshot = null; S.calendar = null; S.connection = null; S.devices = []; S.members = [];
+    S.generatedInvite = null; S.pairing = null; S.pending.clear(); S.conflicts.clear(); S.failures.clear(); S.attempts.clear();
+    S.verificationEmail = ''; S.authMode = 'sign-in'; S.error = ''; S.message = 'Your account has been deleted.'; S.booting = false; render(true);
+  } });
 
 function icon(name) { return `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.today}</svg>`; }
 function admin() { return S.session?.role === 'admin'; }
@@ -92,10 +107,10 @@ function updateStamp(value) {
 }
 
 function shell(content) {
-  const labels = { today: 'Today', calendar: 'Calendar', chores: 'Chores', activity: 'Activity', setup: 'Setup' };
+  const labels = { today: 'Today', calendar: 'Calendar', chores: 'Chores', devices: 'Devices', activity: 'Activity', setup: 'Setup' };
   return `<div class="family-shell" data-key="family-shell">
     <aside class="sidebar"><a class="brand" href="#today" aria-label="${h(title())} home"><span class="brand-mark">f<span>f</span></span><span class="brand-name">${h(title())}<small>A little more together.</small></span></a>
-      <nav aria-label="Main navigation">${views.map(view => `<a class="nav-item ${S.view === view ? 'active' : ''}" data-key="nav-${view}" href="#${view}" ${S.view === view ? 'aria-current="page"' : ''}>${icon(view)}<span>${labels[view]}</span></a>`).join('')}</nav>
+      <nav aria-label="Main navigation">${views.filter(view => !frame() || view !== 'activity').map(view => `<a class="nav-item ${S.view === view ? 'active' : ''}" data-key="nav-${view}" href="#${view}" ${S.view === view ? 'aria-current="page"' : ''}>${icon(view)}<span>${labels[view]}</span></a>`).join('')}</nav>
       <div class="sidebar-bottom"><span class="connection-dot ${S.error ? 'warning' : ''}"></span><span>${frame() ? 'Paired family frame' : 'Your family, connected'}</span></div>
     </aside>
     <main id="main-content" class="main-content" tabindex="-1"><header class="page-heading" data-key="page-heading"><div><p class="eyebrow">${h(title())}</p><h1>${labels[S.view]}</h1></div><div class="header-clock">${clockMarkup()}</div></header>${noticeBanner()}${content}</main>
@@ -168,7 +183,7 @@ function todayView() {
   const completed = chores.filter(done).length;
   return `<section class="welcome-strip" data-key="today-summary"><div><p class="eyebrow">${h(dateLabel(today(), { weekday: 'long', month: 'long', day: 'numeric' }))}</p><h2>Today, together.</h2><p class="welcome-summary">${chores.length ? `${chores.length - completed} ${chores.length - completed === 1 ? 'chore' : 'chores'} remaining · ${completed} complete` : 'Your family’s day, in one place.'}</p></div><div class="family-portraits">${people().slice(0, 6).map(profile => `<span title="${h(profile.name)}" data-key="portrait-${h(profile.id)}">${avatar(profile)}</span>`).join('')}</div></section>
     <div class="today-grid" data-key="today-grid"><section class="panel agenda-panel"><div class="section-heading"><div><p class="eyebrow">The day ahead</p><h2>On your calendar</h2></div><a href="#calendar" class="text-button">View calendar <span aria-hidden="true">↗</span></a></div>${calendarStatus()}${calendarLegend()}<div class="event-list">${eventList(today(), 4)}</div></section>
-    <section class="panel chores-panel"><div class="section-heading"><div><p class="eyebrow">A shared little effort</p><h2>Today's chores</h2></div><span class="count-pill">${completed}<span> / ${chores.length}</span></span></div>${S.snapshot ? (chores.length ? `<div class="progress-track" role="progressbar" aria-label="Today's chores complete" aria-valuenow="${completed}" aria-valuemin="0" aria-valuemax="${chores.length}"><i style="width:${Math.round(completed / chores.length * 100)}%"></i></div><div class="chore-list">${chores.slice(0, 6).map(chore => choreRow(chore)).join('')}</div>${chores.length > 6 ? '<a href="#chores" class="more-link">View all chores</a>' : ''}` : empty('A fresh start', 'No chores are scheduled for today.', admin() ? button('Add a chore', 'add-chore', 'button button-small') : '')) : '<p class="quiet-empty">Loading shared chores…</p>'}</section></div>`;
+    <section class="panel chores-panel"><div class="section-heading"><div><p class="eyebrow">A shared little effort</p><h2>Today's chores</h2></div><span class="count-pill">${completed}<span> / ${chores.length}</span></span></div>${S.snapshot ? (chores.length ? `<div class="progress-track" role="progressbar" aria-label="Today's chores complete" aria-valuenow="${completed}" aria-valuemin="0" aria-valuemax="${chores.length}"><i style="width:${Math.round(completed / chores.length * 100)}%"></i></div><div class="chore-list">${chores.slice(0, 6).map(chore => choreRow(chore)).join('')}</div>${chores.length > 6 ? '<a href="#chores" class="more-link">View all chores</a>' : ''}` : empty('A fresh start', 'No chores are scheduled for today.', admin() ? button('Add a chore', 'add-chore', 'button button-small') : '')) : '<p class="quiet-empty">Loading shared chores…</p>'}</section></div>${internet.summary()}`;
 }
 
 function calendarView() {
@@ -188,7 +203,7 @@ function choresView() {
   return `<div class="section-heading chores-heading" data-key="chores-heading"><div><p class="eyebrow">${h(dateLabel(S.snapshot.date))}</p><h2>Everyone has a part.</h2></div>${choreManager() ? button('+ Add a chore', 'add-chore') : '<span class="soft-label">Tap a chore to complete it</span>'}</div>
     ${lanes.length ? `<div class="person-lanes" data-key="person-lanes">${lanes.map(profile => { const list = chores.filter(chore => chore.personId === profile.id || (!chore.personId && profile.id === null)); return `<section class="panel person-lane" data-key="person-${h(profile.id || 'anyone')}"><header>${avatar(profile)}<div><h2>${h(profile.name)}</h2><p>${list.length ? `${list.filter(done).length} of ${list.length} complete` : 'No chores today'}</p></div></header>${list.length ? `<div class="chore-list">${list.map(chore => choreRow(chore, false)).join('')}</div>` : `<p class="quiet-empty">No chores are scheduled for today.</p>${choreManager() ? button('Add a chore', 'add-chore', 'button button-small', `data-person-id="${h(profile.id)}" aria-label="Add a chore for ${h(profile.name)}"`) : ''}`}</section>`; }).join('')}</div>` : `<section class="panel">${empty('Nothing assigned today', admin() ? 'Add a recurring chore and choose the days it should appear.' : 'Your family administrator can add recurring chores.', admin() ? button('Add a chore', 'add-chore') : '')}</section>`}
     <div class="chore-tools">${button('Chore history', 'chore-history', 'button button-secondary')}${choreManager() ? button('Holidays & chore breaks', 'chore-breaks', 'button button-secondary') : ''}</div>
-    ${choreManager() && routines().length ? `<section class="panel all-chores" data-key="all-chores"><div class="section-heading"><div><p class="eyebrow">Your routines</p><h2>All chore routines</h2></div></div><div class="definition-list">${routines().map(chore => `<div data-key="definition-${h(chore.id)}"><span><strong>${h(chore.title)}</strong><small>${h(profileLabel(chore.personId))} · ${chore.scheduleType === 'one_off' ? `Once on ${h(chore.scheduledDate)}` : chore.weekdays.length === 7 ? 'Every day' : h(chore.weekdays.map(day => days[day]).join(', '))} · ${chore.required === false ? 'Optional' : 'Required'}</small></span>${button('Edit', 'edit-chore', 'text-button', `data-id="${h(chore.id)}"`)}</div>`).join('')}</div></section>` : ''}`;
+    ${internet.summary()}${choreManager() && routines().length ? `<section class="panel all-chores" data-key="all-chores"><div class="section-heading"><div><p class="eyebrow">Your routines</p><h2>All chore routines</h2></div></div><div class="definition-list">${routines().map(chore => `<div data-key="definition-${h(chore.id)}"><span><strong>${h(chore.title)}</strong><small>${h(profileLabel(chore.personId))} · ${chore.scheduleType === 'one_off' ? `Once on ${h(chore.scheduledDate)}` : chore.weekdays.length === 7 ? 'Every day' : h(chore.weekdays.map(day => days[day]).join(', '))} · ${chore.required === false ? 'Optional' : 'Required'}</small></span>${button('Edit', 'edit-chore', 'text-button', `data-id="${h(chore.id)}"`)}</div>`).join('')}</div></section>` : ''}`;
 }
 
 function profileCards() {
@@ -212,7 +227,7 @@ function inviteSettings() {
 
 function setupView() {
   if (frame()) return `<section class="panel frame-settings"><p class="eyebrow">Connected to ${h(title())}</p><h2>Your frame is paired.</h2><p>This display can view your calendar and complete family chores. Manage people, recurring chores and your Apple connection from an administrator's phone.</p><p class="soft-label">Timezone: ${h(zone())}</p>${button('Remove this frame connection', 'unpair-local', 'button button-secondary danger-text')}</section>${workbench.unlockPanel()}`;
-  const account = `<section class="panel setup-card"><p class="eyebrow">Your account</p><h2>${h(S.session?.user?.name || 'Family member')}</h2><p class="supporting">${h(S.session?.user?.email || '')} · ${admin() ? 'Administrator' : S.session?.role === 'child' ? 'Child account' : 'Family member'}</p>${button('Sign out', 'sign-out', 'button button-secondary')}</section>`;
+  const account = `<section class="panel setup-card"><p class="eyebrow">Your account</p><h2>${h(S.session?.user?.name || 'Family member')}</h2><p class="supporting">${h(S.session?.user?.email || '')} · ${admin() ? 'Administrator' : S.session?.role === 'child' ? 'Child account' : 'Family member'}</p>${button('Sign out', 'sign-out', 'button button-secondary')}${accountUI.tools()}</section>`;
   if (!admin()) return `<div class="setup-grid">${account}${workbench.unlockPanel()}<section class="panel setup-card"><h2>You're part of the family.</h2><p class="supporting">You can view the shared calendar and complete chores. Your administrator manages assignments, profiles and connections.</p></section></div>`;
   return `<div class="setup-grid"><section class="panel setup-card"><p class="eyebrow">The basics</p><h2>Your household</h2><form data-form="settings" class="form-stack">${field('Household name', 'title', title(), { max: 80 })}${field('Timezone', 'timezone', zone(), { max: 80, extra: 'list="timezones"' })}<datalist id="timezones">${['America/Denver', 'America/Los_Angeles', 'America/Chicago', 'America/New_York', 'America/Phoenix', 'Europe/London', 'UTC'].map(value => `<option value="${value}"></option>`).join('')}</datalist><p class="field-help">Calendar times and recurring chore days use this timezone.</p>${formError()}<button class="button button-secondary" type="submit">Save household</button></form></section>${profileCards()}${appleSettings()}${deviceSettings()}${inviteSettings()}${workbench.unlockPanel()}${account}</div>`;
 }
@@ -232,11 +247,11 @@ function entryView() {
   }
   const pairForm = `<p class="supporting">On an administrator's phone, open Setup and create a pairing code. Enter that code here to connect this display.</p><form data-form="redeem-pair" class="form-stack">${field('Six-digit pairing code', 'code', '', { max: 6, extra: 'inputmode="numeric" pattern="[0-9]{6}"' })}${formError()}<button class="button" type="submit">Pair this frame</button></form>`;
   const content = S.entryPair ? `<div class="auth-card"><p class="eyebrow">A place on your wall</p><h2>Bring your<br>family home.</h2>${pairForm}<p class="form-switch">Using your phone? ${button('Sign in to your account', 'show-account-entry', 'text-button')}</p></div>` : `<div class="auth-card">${authForm}</div><details class="pair-entry"><summary>Setting up your photo frame?</summary>${pairForm}</details>`;
-  return `<main id="main-content" class="entry-layout"><section class="entry-story"><a class="entry-brand" href="/family.html">Family Frame<span>A little more together.</span></a><div class="entry-clock">${clockMarkup()}</div><div class="entry-art" aria-hidden="true"><span></span><span></span><span></span></div><p class="entry-tagline">The everyday,<br><em>shared.</em></p><p class="entry-footnote">Your calendar stays private.<br>Your family stays connected.</p></section><section class="entry-content">${S.error ? `<div class="banner banner-error" role="alert">${h(S.error)}</div>` : ''}${S.message ? `<div class="banner" role="status">${h(S.message)}</div>` : ''}${content}</section></main>`;
+  return `<main id="main-content" class="entry-layout"><section class="entry-story"><a class="entry-brand" href="/family.html">Family Frame<span>A little more together.</span></a><div class="entry-clock">${clockMarkup()}</div><div class="entry-art" aria-hidden="true"><span></span><span></span><span></span></div><p class="entry-tagline">The everyday,<br><em>shared.</em></p><p class="entry-footnote">Your calendar stays private.<br>Your family stays connected.</p><a class="entry-privacy" href="/privacy.html" target="_blank" rel="noopener">Privacy policy</a></section><section class="entry-content">${S.error ? `<div class="banner banner-error" role="alert">${h(S.error)}</div>` : ''}${S.message ? `<div class="banner" role="status">${h(S.message)}</div>` : ''}${content}</section></main>`;
 }
 
 function joinView() {
-  return `<main id="main-content" class="membership-layout"><header class="simple-brand">Family Frame</header><section class="membership-intro"><p class="eyebrow">Signed in as ${h(S.session.user?.email || S.session.user?.name)}</p><h1>A place for<br><em>your family.</em></h1><p>Your account is ready. Join your family's household or claim this dashboard with its private setup code.</p>${button('Sign out', 'sign-out', 'text-button')}</section><div class="membership-grid"><section class="panel"><h2>Join your family</h2><p class="supporting">Paste the invitation token or link shared by your administrator.</p><form data-form="join" class="form-stack">${field('Invitation', 'token', S.inviteToken, { max: 2000 })}${formError()}<button class="button" type="submit">Join household</button></form></section><section class="panel"><h2>Set up your household</h2><p class="supporting">The private setup code makes you this dashboard's first administrator.</p><form data-form="claim" class="form-stack">${field('Household name', 'title', 'Our family', { max: 80 })}${field('Private setup code', 'bootstrapCode', '', { type: 'password', autocomplete: 'off', max: 200 })}${formError()}<button class="button button-secondary" type="submit">Create household</button></form></section></div></main>`;
+  return `<main id="main-content" class="membership-layout"><header class="simple-brand">Family Frame</header><section class="membership-intro"><p class="eyebrow">Signed in as ${h(S.session.user?.email || S.session.user?.name)}</p><h1>A place for<br><em>your family.</em></h1><p>Your account is ready. Join your family's household or claim this dashboard with its private setup code.</p>${button('Sign out', 'sign-out', 'text-button')}${accountUI.tools()}</section><div class="membership-grid"><section class="panel"><h2>Join your family</h2><p class="supporting">Paste the invitation token or link shared by your administrator.</p><form data-form="join" class="form-stack">${field('Invitation', 'token', S.inviteToken, { max: 2000 })}${formError()}<button class="button" type="submit">Join household</button></form></section><section class="panel"><h2>Set up your household</h2><p class="supporting">The private setup code makes you this dashboard's first administrator.</p><form data-form="claim" class="form-stack">${field('Household name', 'title', 'Our family', { max: 80 })}${field('Private setup code', 'bootstrapCode', '', { type: 'password', autocomplete: 'off', max: 200 })}${formError()}<button class="button button-secondary" type="submit">Create household</button></form></section></div></main>`;
 }
 
 function render(force = false) {
@@ -249,7 +264,7 @@ function render(force = false) {
   if (S.booting) markup = '<main id="main-content" class="initial-state"><p class="eyebrow">Family Frame</p><h1>Opening your dashboard…</h1><p>Checking your family connection.</p></main>';
   else if (!S.session) markup = entryView();
   else if (!S.session.household) markup = joinView();
-  else markup = shell(({ today: todayView, calendar: calendarView, chores: choresView, activity: workbench.activityView, setup: setupView })[S.view]());
+  else markup = shell(({ today: todayView, calendar: calendarView, chores: choresView, devices: internet.view, activity: workbench.activityView, setup: setupView })[S.view]());
   paintApp(markup);
   if (S.session?.household && paintedView !== S.view) {
     const main = app.querySelector('.main-content');
@@ -329,6 +344,7 @@ async function loadSetup() {
 
 async function boot() {
   const epoch = ++generation;
+  if (dialog.open) dialog.close();
   clearAuthCache();
   S.calendarBusy = false;
   S.calendarShowingBusy = false;
@@ -336,6 +352,7 @@ async function boot() {
   queuedCalendar = null;
   S.snapshot = null; S.calendar = null; S.connection = null; S.devices = []; S.members = [];
   workbench.reset();
+  internet.reset();
   S.generatedInvite = null; S.pairing = null;
   S.pending.clear(); S.conflicts.clear(); S.failures.clear(); S.attempts.clear();
   S.booting = true;
@@ -351,7 +368,7 @@ async function boot() {
       if (epoch !== generation) return;
       S.booting = false;
       render(true);
-      await Promise.allSettled([loadCalendar(), S.view === 'setup' ? loadSetup() : S.view === 'activity' ? workbench.loadActivity() : Promise.resolve()]);
+      await Promise.allSettled([loadCalendar(), S.view === 'setup' ? loadSetup() : S.view === 'activity' ? workbench.loadActivity() : Promise.resolve(), Array.isArray(S.snapshot?.occurrences) || S.view === 'devices' ? internet.load() : Promise.resolve()]);
     }
   } catch (error) {
     if (error.status === 401) {
@@ -364,7 +381,7 @@ async function boot() {
 
 async function refresh() {
   if (!S.session?.household) return boot();
-  try { await loadHousehold(); await loadCalendar(); if (S.view === 'setup') await loadSetup(); }
+  try { await loadHousehold(); await Promise.allSettled([loadCalendar(), internet.loaded() || Array.isArray(S.snapshot?.occurrences) ? internet.load() : Promise.resolve()]); if (S.view === 'setup') await loadSetup(); }
   catch (error) { dataFailure(error); }
 }
 
@@ -374,6 +391,7 @@ function dataFailure(error) {
     generation++;
     clearAuthCache();
     workbench.reset();
+    internet.reset();
     S.session = null; S.snapshot = null; S.calendar = null; S.connection = null; S.devices = []; S.members = [];
     S.generatedInvite = null; S.pairing = null;
     S.pending.clear(); S.conflicts.clear(); S.failures.clear(); S.attempts.clear();
@@ -410,6 +428,7 @@ async function saveCompletion(chore, desired) {
     toast(current?.version > result.version ? 'Your change was saved earlier. A newer update from another device is shown.' : (result.occurrence || result).status === 'submitted' ? 'Submitted. Waiting for parent approval.' : desired ? 'Chore completed. Saved for the family.' : 'Chore reopened. Saved for the family.');
     S.attempts.delete(key);
     if (occurrence) await loadHousehold().catch(dataFailure);
+    if (occurrence && epoch === generation) await internet.load({ celebrateFor: desired ? chore.personId : null });
   } catch (error) {
     if (epoch !== generation) return;
     if (error.status === 401 || error.status === 403) { dataFailure(error); return; }
@@ -552,6 +571,8 @@ const forms = {
 async function action(name, element) {
   const id = element.dataset.id;
   if (await workbench.action(name, element)) return;
+  if (await internet.action(name, element)) return;
+  if (await accountUI.action(name, element)) return;
   if (name === 'refresh') return refresh();
   if (name === 'show-account-entry') { S.entryPair = false; render(true); return; }
   if (name === 'auth-mode') { const email = app.querySelector('[name="email"]'); if (email) S.verificationEmail = email.value.trim(); S.authMode = element.dataset.mode; S.error = ''; S.message = ''; return render(true); }
@@ -604,6 +625,7 @@ async function action(name, element) {
   if (name === 'sign-out') {
     generation++;
     workbench.reset();
+    internet.reset();
     const auth = await authClient();
     const result = await auth.signOut();
     if (result.error) throw new Error(result.error.message || 'Could not sign out. Try again.');
@@ -641,19 +663,20 @@ window.addEventListener('hashchange', () => {
   if (dialog.open) dialog.close();
   S.view = next;
   render(true);
-  if (S.session?.household) { if (next === 'setup') loadSetup(); else if (next === 'activity') workbench.loadActivity(); else loadCalendar(); }
+  if (S.session?.household) { if (next === 'setup') loadSetup(); else if (next === 'activity') workbench.loadActivity(); else if (next === 'devices') internet.load(); else loadCalendar(); }
 });
 window.addEventListener('online', () => refresh());
 document.addEventListener('visibilitychange', () => { if (!document.hidden && S.session?.household) refresh(); });
 setInterval(() => {
   paintClock();
+  internet.tick();
   if (frame() && workbench.accessExpired()) { workbench.reset(); boot(); return; }
   if (S.session?.household && S.snapshot && S.snapshot.date !== today() && !pollBusy) { pollBusy = true; refresh().finally(() => { pollBusy = false; }); }
 }, 1000);
 setInterval(async () => {
   if (document.hidden || !S.session?.household || pollBusy || dialog.open) return;
   pollBusy = true;
-  try { await loadHousehold(); await loadCalendar(); if (S.view === 'activity') await workbench.loadActivity(); } catch (error) { dataFailure(error); }
+  try { await loadHousehold(); await Promise.allSettled([loadCalendar(), internet.loaded() || Array.isArray(S.snapshot?.occurrences) ? internet.load() : Promise.resolve()]); if (S.view === 'activity') await workbench.loadActivity(); } catch (error) { dataFailure(error); }
   finally { pollBusy = false; }
 }, 20000);
 boot();
