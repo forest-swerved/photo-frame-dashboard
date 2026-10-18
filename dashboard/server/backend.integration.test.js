@@ -43,11 +43,10 @@ test('isolated Postgres authorization and concurrency boundaries', { skip: !enab
     assert.match(schema, /^family_test_[a-f0-9]{32}$/);
     await pool.query(`CREATE SCHEMA ${schema}`);
     created = true;
-    await db.query(await readFile(new URL('./schema.sql', import.meta.url), 'utf8'));
-    await db.query(await readFile(new URL('./calendar-sync-schema.sql', import.meta.url), 'utf8'));
+    for (const name of ['schema.sql','mobile-schema.sql','notifications-schema.sql','child-accounts-schema.sql','calendar-sync-schema.sql','chore-schema.sql','account-notifications-schema.sql','internet-schema.sql','account-deletion-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
 
     await t.test('all server-only tables have RLS, owner access, and no PUBLIC policies', async () => {
-      assert.equal(await verifySchema(db, schema, 13), 13);
+      assert.equal(await verifySchema(db, schema, 35), 35);
     });
 
     await t.test('a short setup code cannot be claimed by a different signed-in account', async () => {
@@ -68,7 +67,7 @@ test('isolated Postgres authorization and concurrency boundaries', { skip: !enab
 
     await t.test('an invitation is consumed once despite concurrent joins', async () => {
       const invite = await createInvite(db, admin, {});
-      const results = await Promise.allSettled(['member-a', 'member-b'].map(id => joinHousehold(db, user(id), { token: invite.token })));
+      const results = await Promise.allSettled([randomUUID(), randomUUID()].map(id => joinHousehold(db, user(id), { token: invite.token })));
       assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
       assert.equal(results.find(result => result.status === 'rejected').reason.code, 'invalid_invite');
       assert.equal((await db.query("SELECT * FROM family_members WHERE role='member'")).rowCount, 1);
@@ -117,16 +116,16 @@ test('isolated Postgres authorization and concurrency boundaries', { skip: !enab
 
     await t.test('completion retries replay exactly and concurrent stale writes conflict', async () => {
       const chore = await createChore(db, admin, { title: 'Feed pets' });
-      const mutation = { completed: true, expectedVersion: 0, mutationId: randomUUID() };
+      const mutation = { completed: true, expectedVersion: 0, mutationId: randomUUID(), reason: 'Synthetic historical fixture' };
       const results = await Promise.all([0, 1].map(() => setCompletion(db, admin, chore.id, '2026-10-15', mutation)));
       assert.deepEqual(results[0], results[1]);
       assert.equal(results[0].version, 1);
       assert.equal((await db.query('SELECT * FROM family_completions')).rowCount, 1);
       assert.equal((await db.query('SELECT * FROM family_mutations')).rowCount, 1);
       await assert.rejects(setCompletion(db, admin, chore.id, '2026-10-15', { ...mutation, completed: false }), error => error.code === 'mutation_reused');
-      const unchanged = await setCompletion(db, admin, chore.id, '2026-10-15', { completed: true, expectedVersion: 1, mutationId: randomUUID() });
+      const unchanged = await setCompletion(db, admin, chore.id, '2026-10-15', { completed: true, expectedVersion: 1, mutationId: randomUUID(), reason: 'Synthetic historical fixture' });
       assert.equal(unchanged.version, 1);
-      const simultaneous = await Promise.allSettled([0, 1].map(() => setCompletion(db, admin, chore.id, '2026-10-15', { completed: false, expectedVersion: 1, mutationId: randomUUID() })));
+      const simultaneous = await Promise.allSettled([0, 1].map(() => setCompletion(db, admin, chore.id, '2026-10-15', { completed: false, expectedVersion: 1, mutationId: randomUUID(), reason: 'Synthetic historical fixture' })));
       assert.equal(simultaneous.filter(result => result.status === 'fulfilled').length, 1);
       assert.equal(simultaneous.find(result => result.status === 'rejected').reason.code, 'version_conflict');
       assert.equal((await db.query('SELECT version FROM family_completions')).rows[0].version, 2);
@@ -138,7 +137,7 @@ test('isolated Postgres authorization and concurrency boundaries', { skip: !enab
       const outsider = { ...admin, household: { ...admin.household, id: randomUUID() } };
       await assert.rejects(changePerson(db, outsider, person.id, { name: 'Changed', expectedVersion: 1 }), error => error.status === 404);
       await assert.rejects(createChore(db, outsider, { title: 'Foreign', personId: person.id }), error => error.status === 404);
-      await assert.rejects(setCompletion(db, outsider, chore.id, '2026-10-15', { completed: true, expectedVersion: 0, mutationId: randomUUID() }), error => error.status === 404);
+      await assert.rejects(setCompletion(db, outsider, chore.id, '2026-10-15', { completed: true, expectedVersion: 0, mutationId: randomUUID(), reason: 'Synthetic historical fixture' }), error => error.status === 404);
       assert.equal((await db.query('SELECT name FROM family_people WHERE id=$1', [person.id])).rows[0].name, 'Child');
     });
 

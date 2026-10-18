@@ -7,7 +7,7 @@
   "regions": ["iad1"],
   "functions": {
     "api/index.js": {
-      "maxDuration": 60,
+      "maxDuration": 300,
       "includeFiles": "{server/calendar-normalize.js,server/calendar-normalize-bounded.js,server/calendar-normalize-worker.js,node_modules/ical.js/**,node_modules/@js-temporal/polyfill/**,node_modules/jsbi/**}"
     }
   },
@@ -37,6 +37,7 @@
   ],
   "crons": [
     { "path": "/api/mobile/jobs/notifications", "schedule": "* * * * *" },
-    { "path": "/api/calendar/jobs/sync", "schedule": "*/5 * * * *" }
+    { "path": "/api/calendar/jobs/sync", "schedule": "*/5 * * * *" },
+    { "path": "/api/internet/jobs/process", "schedule": "* * * * *" }
   ]
 }

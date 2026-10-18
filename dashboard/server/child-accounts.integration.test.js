@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createPool } from './database.js';
+import { householdDate } from './errors.js';
 import { authenticate } from './auth.js';
 import { digest } from './credentials.js';
 import { handleRequest } from './app.js';
@@ -15,6 +16,7 @@ test('verified child account onboarding, concurrency, and live scope boundaries'
   const pool = createPool(process.env, { migration: true, max: 10 });
   const schema = `family_test_${randomUUID().replaceAll('-', '')}`;
   const household = { id: randomUUID(), title: 'Account test household', timezone: 'America/Denver' };
+  const workDate = householdDate(household.timezone);
   const profiles = { a: randomUUID(), b: randomUUID(), c: randomUUID() };
   const accounts = { parent: { id: randomUUID(), sessionId: randomUUID(), email: 'parent@example.invalid' }, a: { id: randomUUID(), sessionId: randomUUID(), email: 'child-a@example.invalid' }, b: { id: randomUUID(), sessionId: randomUUID(), email: 'child-b@example.invalid' } };
   const user = account => ({ authType: 'user', actor: `user:${account.id}`, user: { id: account.id, email: account.email, name: 'Untrusted account name' }, sessionId: account.sessionId, household: null, role: null });
@@ -39,7 +41,7 @@ test('verified child account onboarding, concurrency, and live scope boundaries'
     await pool.query('CREATE TABLE IF NOT EXISTS family_internal.auth_sessions(id uuid PRIMARY KEY,user_id uuid NOT NULL,not_after timestamptz)');
     for (const account of Object.values(accounts)) await pool.query('INSERT INTO family_internal.auth_sessions(id,user_id) VALUES($1,$2)', [account.sessionId, account.id]);
     await pool.query(`CREATE SCHEMA ${schema}`); created = true;
-    for (const name of ['schema.sql','mobile-schema.sql','notifications-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
+    for (const name of ['schema.sql','mobile-schema.sql','notifications-schema.sql','calendar-sync-schema.sql','chore-schema.sql','account-notifications-schema.sql','internet-schema.sql','account-deletion-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
     await db.query('INSERT INTO family_households(id,title,timezone) VALUES($1,$2,$3)', [household.id, household.title, household.timezone]);
     await db.query("INSERT INTO family_members(household_id,user_id,name,email,role) VALUES($1,$2,'Parent',$3,'admin')", [household.id, accounts.parent.id, accounts.parent.email]);
     for (const [key, id] of Object.entries(profiles)) await db.query("INSERT INTO family_people(id,household_id,name,color) VALUES($1,$2,$3,'#00aabb')", [id, household.id, `Test profile ${key}`]);
@@ -89,13 +91,13 @@ test('verified child account onboarding, concurrency, and live scope boundaries'
     const choreA = await createChore(db, parent, { title: 'Only child A', personId: profiles.a });
     const choreB = await createChore(db, parent, { title: 'Only child B', personId: profiles.b });
     const complete = async value => {
-      const row = (await db.query("SELECT version FROM family_completions WHERE household_id=$1 AND chore_id=$2 AND date='2026-10-18'", [household.id, choreA.id])).rows[0];
-      return setCompletion(db, childA, choreA.id, '2026-10-18', { completed: value, expectedVersion: row?.version || 0, mutationId: randomUUID() });
+      const row = (await db.query("SELECT version FROM family_completions WHERE household_id=$1 AND chore_id=$2 AND date=$3::date", [household.id, choreA.id, workDate])).rows[0];
+      return setCompletion(db, childA, choreA.id, workDate, { completed: value, expectedVersion: row?.version || 0, mutationId: randomUUID() });
     };
     await t.test('web bearer and native exchange derive child scope from membership rather than metadata or requested role', async () => {
-      const snapshot = await householdSnapshot(db, childA, '2026-10-18');
+      const snapshot = await householdSnapshot(db, childA, workDate);
       assert.deepEqual(snapshot.people.map(person => person.id), [profiles.a]); assert.deepEqual(snapshot.chores.map(chore => chore.id), [choreA.id]);
-      await assert.rejects(setCompletion(db, childA, choreB.id, '2026-10-18', { completed: true, expectedVersion: 0, mutationId: randomUUID() }), error => error.status === 404);
+      await assert.rejects(setCompletion(db, childA, choreB.id, workDate, { completed: true, expectedVersion: 0, mutationId: randomUUID() }), error => error.status === 404);
       await assert.rejects(createChore(db, childA, { title: 'Forbidden' }), error => error.status === 403);
       await assert.rejects(createInvite(db, childA, {}), error => error.status === 403);
       const unjoined = user({ id: randomUUID(), sessionId: randomUUID(), email: 'unjoined@example.invalid' });

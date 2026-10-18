@@ -10,6 +10,11 @@ import { calendarConnection, calendarSnapshot, connectCalendar, removeCalendar, 
 import { createMobileSession, createMobilePair, redeemMobilePair, mobileSessionData, mobileDevices, revokeMobile } from './mobile.js';
 import { registerPush, notificationPreferences, notificationInbox, markNotificationRead, processNotifications } from './notifications.js';
 import { preflightApns } from './apns.js';
+import { setOccurrenceCompletion, changeChoreOccurrence, choreHistory, choreExceptions, createChoreException, revokeChoreException } from './chore-occurrences.js';
+import { parentCapabilities, changeMemberCapabilities, createFrameAccessCode, redeemFrameAccess, frameAuthorization, transferOwnership } from './capabilities.js';
+import { deleteAccount } from './account-deletion.js';
+import { internetSnapshot, saveRewardPolicy, saveManagedDevice, startInternetSession, changeInternetSession, internetHistory, syncChoreReward, resolveRewardReview } from './internet.js';
+import { processInternetJobs } from './internet-worker.js';
 
 export function apiPath(request) {
   const url = new URL(request.url);
@@ -32,10 +37,41 @@ async function deviceList(db, principal) {
 export async function dispatch(request, db, principal, route, options = {}) {
   const method = request.method;
   const url = new URL(request.url);
+  if (route === 'account/delete' && method === 'POST') {
+    const result = await deleteAccount(db, principal, await readJson(request), options);
+    options.authContext?.clearCookies();
+    return json(result);
+  }
   if (route === 'session' && method === 'GET') return json(await sessionData(db, principal));
   if (route === 'claim' && method === 'POST') return json(await claimHousehold(db, principal, await readJson(request), options.env));
   if (route === 'join' && method === 'POST') return json(await joinHousehold(db, principal, await readJson(request), { getVerifiedEmail: () => confirmedAccountEmail(request, principal, options) }));
   requireHousehold(principal);
+  if (route === 'account/transfer-ownership' && method === 'POST') return json(await transferOwnership(db, principal, await readJson(request)));
+  if (principal.role === 'member' && /^(household|chores|chore-occurrences|chore-exceptions|chore-history)(\/|$)/.test(route)) principal = { ...principal, verifiedCapabilities: await parentCapabilities(db, principal) };
+  options = { ...options, choreOptions: { ...options.choreOptions, onChange: options.choreOptions?.onChange || ((client, change) => syncChoreReward(client, change)) } };
+  if (route === 'frame-access-codes' && method === 'POST') return json(await createFrameAccessCode(db, principal, await readJson(request), options), 201);
+  if (route === 'frame-access/redeem' && method === 'POST') {
+    await enforcePairRateLimit(db, request, options.env);
+    return json(await redeemFrameAccess(db, principal, await readJson(request), options));
+  }
+  if (route === 'notifications' && method === 'GET') return json(await notificationInbox(db, principal));
+  const notificationRead = /^notifications\/([^/]+)\/read$/.exec(route);
+  if (notificationRead && method === 'POST') return json(await markNotificationRead(db, principal, notificationRead[1]));
+  if (route === 'notification-preferences' && ['GET', 'PUT', 'PATCH'].includes(method)) return json(await notificationPreferences(db, principal, method === 'GET' ? undefined : await readJson(request)));
+  if (route === 'internet' && method === 'GET') return json(await internetSnapshot(db, principal, options));
+  if (route === 'internet/history' && method === 'GET') return json(await internetHistory(db, principal));
+  const rewardReview = /^internet\/credits\/([^/]+)\/resolve$/.exec(route);
+  if (rewardReview && method === 'POST') return json(await resolveRewardReview(db, principal, rewardReview[1], await readJson(request), options));
+  if (route === 'internet/redeem' && method === 'POST') return json(await startInternetSession(db, principal, await readJson(request), { ...options, reward: true }), 202);
+  if (route === 'internet/grants' && method === 'POST') return json(await startInternetSession(db, principal, await readJson(request), options), 202);
+  const internetSession = /^internet\/sessions\/([^/]+)\/actions$/.exec(route);
+  if (internetSession && method === 'POST') return json(await changeInternetSession(db, principal, internetSession[1], await readJson(request), options), 202);
+  if (route === 'internet/devices' && method === 'POST') return json(await saveManagedDevice(db, principal, null, await readJson(request)), 201);
+  const managedDevice = /^internet\/devices\/([^/]+)$/.exec(route);
+  if (managedDevice && ['PATCH', 'DELETE'].includes(method)) return json(await saveManagedDevice(db, principal, managedDevice[1], method === 'DELETE'
+    ? { expectedVersion: deleteVersion(url), mutationId: url.searchParams.get('mutationId') || randomUUID() } : await readJson(request), method === 'DELETE'));
+  const rewardPolicy = /^internet\/policies\/([^/]+)$/.exec(route);
+  if (rewardPolicy && method === 'PUT') return json(await saveRewardPolicy(db, principal, rewardPolicy[1], await readJson(request)));
   if (route === 'mobile/sessions' && method === 'POST') return json(await createMobileSession(db, principal, await readJson(request)), 201);
   if (route === 'mobile/pairings' && method === 'POST') return json(await createMobilePair(db, principal, await readJson(request), options.env), 201);
   if (route === 'mobile/devices' && method === 'GET') return json(await mobileDevices(db, principal));
@@ -58,6 +94,15 @@ export async function dispatch(request, db, principal, route, options = {}) {
     if (readNotification && method === 'POST') return json(await markNotificationRead(db, principal, readNotification[1]));
   }
   if (route === 'household' && method === 'GET') return json(await householdSnapshot(db, principal, url.searchParams.get('date')));
+  if (route === 'chore-history' && method === 'GET') return json(await choreHistory(db, principal, Object.fromEntries(url.searchParams)));
+  if (route === 'chore-exceptions' && method === 'GET') return json(await choreExceptions(db, principal));
+  if (route === 'chore-exceptions' && method === 'POST') return json(await createChoreException(db, principal, await readJson(request)), 201);
+  const exception = /^chore-exceptions\/([^/]+)\/revoke$/.exec(route);
+  if (exception && method === 'POST') return json(await revokeChoreException(db, principal, exception[1], await readJson(request)));
+  const occurrenceCompletion = /^chore-occurrences\/([^/]+)\/completion$/.exec(route);
+  if (occurrenceCompletion && method === 'PUT') return json(await setOccurrenceCompletion(db, principal, occurrenceCompletion[1], await readJson(request), options.choreOptions));
+  const occurrenceAction = /^chore-occurrences\/([^/]+)\/actions$/.exec(route);
+  if (occurrenceAction && method === 'POST') return json(await changeChoreOccurrence(db, principal, occurrenceAction[1], await readJson(request), options.choreOptions));
   if (route === 'invites' && method === 'POST') return json(await createInvite(db, principal, await readJson(request)), 201);
   if (route === 'child-invites' && method === 'POST') return json(await createInvite(db, principal, { ...await readJson(request), role: 'child' }), 201);
   if (route === 'frame-pairs' && method === 'POST') return json(await createFramePair(db, principal, await readJson(request), options.env), 201);
@@ -71,8 +116,10 @@ export async function dispatch(request, db, principal, route, options = {}) {
   }
   if (route === 'members' && method === 'GET') {
     requireAdmin(principal);
-    return json({ members: (await db.query('SELECT user_id,name,email,role,person_id,joined_at FROM family_members WHERE household_id=$1 AND revoked_at IS NULL ORDER BY joined_at', [principal.household.id])).rows.map(row => ({ id: row.user_id, name: row.name, email: row.email, role: row.role, personId: row.person_id || null, joinedAt: row.joined_at })) });
+    return json({ members: (await db.query('SELECT user_id,name,email,role,person_id,joined_at,manage_chores,manage_internet FROM family_members WHERE household_id=$1 AND revoked_at IS NULL ORDER BY joined_at', [principal.household.id])).rows.map(row => ({ id: row.user_id, name: row.name, email: row.email, role: row.role, personId: row.person_id || null, joinedAt: row.joined_at, capabilities: { manageChores: row.role === 'admin' || row.manage_chores, manageInternet: row.role === 'admin' || row.manage_internet } })) });
   }
+  const memberCapabilities = /^members\/([^/]+)\/capabilities$/.exec(route);
+  if (memberCapabilities && method === 'PATCH') return json(await changeMemberCapabilities(db, principal, memberCapabilities[1], await readJson(request)));
   const member = /^members\/([^/]+)$/.exec(route);
   if (member && method === 'DELETE') {
     return json(await revokeHouseholdMember(db, principal, member[1]));
@@ -90,7 +137,7 @@ export async function dispatch(request, db, principal, route, options = {}) {
     return json(await changeChore(db, principal, chore[1], body, method === 'DELETE'));
   }
   const completion = /^chores\/([^/]+)\/completions\/([^/]+)$/.exec(route);
-  if (completion && method === 'PUT') return json(await setCompletion(db, principal, completion[1], completion[2], await readJson(request)));
+  if (completion && method === 'PUT') return json(await setCompletion(db, principal, completion[1], completion[2], await readJson(request), options.choreOptions));
   if (route === 'settings' && method === 'PATCH') {
     requireAdmin(principal);
     const body = await readJson(request);
@@ -124,6 +171,12 @@ export async function handleRequest(request, options = {}) {
     if (route === 'health' && request.method === 'GET') return json({ ok: true });
     if (['mobile/pairings','mobile/pairings/redeem'].includes(route) && request.method === 'POST') throw new ApiError(410, 'child_accounts_required', 'Children now use their own email accounts and a parent invitation.');
     db = options.db || sharedPool(options.env);
+    if (route === 'internet/jobs/process' && request.method === 'GET') {
+      const env = options.env || process.env;
+      requireValue(typeof env.CRON_SECRET === 'string' && env.CRON_SECRET.length >= 32, 503, 'internet_jobs_unconfigured', 'Internet scheduling is not configured.');
+      requireValue(digest(request.headers.get('authorization') || '') === digest(`Bearer ${env.CRON_SECRET}`), 401, 'unauthenticated', 'Unauthorized.');
+      return json(await processInternetJobs(db, { env, ...options.internetJobs }));
+    }
     if (route === 'calendar/jobs/sync' && request.method === 'GET') {
       const env = options.env || process.env;
       requireValue(typeof env.CRON_SECRET === 'string' && env.CRON_SECRET.length >= 32, 503, 'calendar_jobs_unconfigured', 'Calendar scheduling is not configured.');
@@ -153,7 +206,8 @@ export async function handleRequest(request, options = {}) {
       return json({ deleted: true }, 200, { 'Set-Cookie': `${FRAME_COOKIE}=; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` });
     }
     if (!options.authenticate && request.headers.get('authorization')?.startsWith('Bearer ') && !['GET', 'HEAD'].includes(request.method)) authContext = (options.createAuthContext || createAuthContext)(request, options);
-    const principal = await (options.authenticate || authenticate)(request, db, { ...options, authContext });
+    let principal = await (options.authenticate || authenticate)(request, db, { ...options, authContext });
+    if (request.headers.has('x-family-authorization')) principal = await frameAuthorization(db, principal, request.headers.get('x-family-authorization'));
     const response = await dispatch(request, db, principal, route, { ...options, ...(authContext ? { authContext } : {}) });
     return authContext ? authContext.finish(response) : response;
   } catch (error) {

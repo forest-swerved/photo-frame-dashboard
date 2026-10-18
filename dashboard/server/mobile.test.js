@@ -39,7 +39,7 @@ test('completion authorization rejects a sibling chore before completion or noti
  let completionWrites=0;
  const client={release(){},async query(sql){if(/INSERT INTO family_completions|INSERT INTO family_mutations/.test(sql))completionWrites++;return {rows:[]};}};
  const db={async connect(){return client;}};
- await assert.rejects(setCompletion(db,principal,randomUUID(),'2026-10-17',{completed:true,expectedVersion:0,mutationId:randomUUID()}),e=>e.status===404);
+ await assert.rejects(setCompletion(db,principal,randomUUID(),'2026-10-17',{completed:true,expectedVersion:0,mutationId:randomUUID()},{now:new Date('2026-10-17T18:00:00Z')}),e=>e.status===404);
  assert.equal(completionWrites,0);
 });
 test('deadline inputs preserve midnight and reject invalid wall times and unbounded reminders',()=>{

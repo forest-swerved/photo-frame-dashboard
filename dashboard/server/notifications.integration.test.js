@@ -33,7 +33,7 @@ test('isolated PostgreSQL mobile notification authorization, outbox, and deadlin
     await pool.query('CREATE TABLE IF NOT EXISTS family_internal.auth_sessions(id uuid PRIMARY KEY,user_id uuid NOT NULL,not_after timestamptz)');
     await pool.query('INSERT INTO family_internal.auth_sessions(id,user_id,not_after) VALUES($1,$2,NULL)', [providerSession, parentId]);
     await pool.query(`CREATE SCHEMA ${schema}`); created = true;
-    for (const name of ['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
+    for (const name of ['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql', 'chore-schema.sql', 'account-notifications-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
     await db.query('INSERT INTO family_households(id,title,timezone) VALUES($1,$2,$3)', [householdId, household.title, household.timezone]);
     await db.query("INSERT INTO family_members(household_id,user_id,name,email,role) VALUES($1,$2,'Test parent','parent@example.invalid','admin')", [householdId, parentId]);
     for (const [id, name] of [[childA, 'Test child A'], [childB, 'Test child B']]) await db.query("INSERT INTO family_people(id,household_id,name,color) VALUES($1,$2,$3,'#00aabb')", [id, householdId, name]);
@@ -49,17 +49,19 @@ test('isolated PostgreSQL mobile notification authorization, outbox, and deadlin
       principals[name] = { ...parent, user: { id: accountId, name }, authType: 'mobile', mobileSessionId: id, role: personId ? 'child' : 'admin', personId, actor: `mobile:${id}` };
       await registerPush(db, principals[name], { installationId: randomUUID(), token: ({ parent: 'a', childA: 'b', childB: 'c' }[name]).repeat(64), environment: 'sandbox' }, env);
     }
+    await db.query("UPDATE family_members SET joined_at='2026-01-01'");
     const resetEvents = async () => {
       await db.query('TRUNCATE family_notification_events CASCADE');
       await db.query('DELETE FROM family_notification_scan_state');
       await db.query('DELETE FROM family_notification_preferences');
+      await db.query('DELETE FROM family_account_notification_preferences');
       await db.query('UPDATE family_push_installations SET disabled_at=NULL');
     };
     const chore = await createChore(db, parent, { title: 'Test chore A', personId: childA, dueTime: '12:00', reminderMinutes: 15 });
     await db.query("UPDATE family_chores SET created_at='2026-01-01' WHERE id=$1", [chore.id]);
     const complete = async (completed, date = '2026-10-17') => {
       const current = (await db.query('SELECT version FROM family_completions WHERE household_id=$1 AND chore_id=$2 AND date=$3::date', [householdId, chore.id, date])).rows[0];
-      return setCompletion(db, parent, chore.id, date, { completed, expectedVersion: current?.version || 0, mutationId: randomUUID() });
+      return setCompletion(db, parent, chore.id, date, { completed, expectedVersion: current?.version || 0, mutationId: randomUUID(), reason: 'Synthetic notification fixture' });
     };
     const transition = async completed => { await complete(!completed); await resetEvents(); return complete(completed); };
     const current = () => new Date(Date.now() + 1000);
@@ -129,8 +131,9 @@ test('isolated PostgreSQL mobile notification authorization, outbox, and deadlin
     });
 
     await t.test('first deadline scan establishes a baseline, catches due crossings once, and rechecks completion', async () => {
+      await complete(false);
       await resetEvents();
-      await db.query('DELETE FROM family_completions WHERE chore_id=$1', [chore.id]);
+      await db.query("UPDATE family_chore_occurrences SET created_at='2026-01-01' WHERE chore_id=$1", [chore.id]);
       await db.query("UPDATE family_chores SET due_time='12:00',reminder_minutes=15 WHERE id=$1", [chore.id]);
       const baseline = new Date('2026-10-17T17:44:00Z');
       const first = await processNotifications(db, { env, now: baseline, send: async () => ({ accepted: true, status: 200 }) });
