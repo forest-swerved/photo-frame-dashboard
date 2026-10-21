@@ -1,19 +1,32 @@
 import SwiftUI
 
 struct PersonOccurrencesCard: View {
+    @EnvironmentObject var model: AppModel
     let person: Person?
     let occurrences: [ChoreOccurrence]
+    var showEmptySections = false
+    @State private var adding = false
+    @State private var newSection = "tasks"
     var body: some View {
         FrameCard(accent: person.map { Color(hex: $0.color) } ?? Brand.lime) {
             HStack {
-                Text(person?.name ?? "Family chores").font(.title2.bold()).accessibilityAddTraits(.isHeader)
+                Text(person?.name ?? "Family tasks").font(.title2.bold()).accessibilityAddTraits(.isHeader)
                 Spacer()
-                let required = occurrences.filter { $0.required && !$0.isSkipped }
+                let required = occurrences.filter { $0.required && !$0.isSkipped && model.isCurrentSchoolSchedule($0) }
                 Text("\(required.filter(\.isDone).count)/\(required.count) required").font(.subheadline.weight(.semibold)).monospacedDigit()
                     .padding(.horizontal, 12).padding(.vertical, 6).background(Brand.lime, in: Capsule())
             }
-            if occurrences.isEmpty { Text("Nothing scheduled today.").foregroundStyle(Brand.muted) }
-            ForEach(occurrences) { occurrence in OccurrenceRow(occurrence: occurrence) }
+            if occurrences.isEmpty && !showEmptySections { Text("Nothing scheduled today.").foregroundStyle(Brand.muted) }
+            ForEach(TaskSections.groups(occurrences, schoolDay: model.isSchoolDay, showEmpty: showEmptySections)) { group in
+                Text(group.title).font(.headline).foregroundStyle(Brand.cyanInk).accessibilityAddTraits(.isHeader).padding(.top, 6)
+                if group.items.isEmpty {
+                    Text("No tasks scheduled.").font(.subheadline).foregroundStyle(Brand.muted)
+                    if model.canManageChores { Button("Add task") { newSection = group.id; adding = true }.font(.subheadline.weight(.semibold)).frame(minHeight: 44).disabled(!model.canChange).accessibilityLabel("Add \(group.title.lowercased()) task for \(person?.name ?? "the family")") }
+                }
+                ForEach(group.items) { occurrence in OccurrenceRow(occurrence: occurrence) }
+            }
+        }.sheet(isPresented: $adding) {
+            ChoreEditor(routine: nil, assignedPersonID: person?.id, initialSchoolDayFilter: model.isSchoolDay ? "school_day" : model.snapshot?.schoolDay?.type == "non_school_day" ? "non_school_day" : "any", initialTaskSection: newSection)
         }
     }
 }
@@ -43,6 +56,7 @@ struct OccurrenceRow: View {
                         if current.status != "pending" { Text(current.statusLabel).font(.caption.weight(.semibold)).foregroundStyle(current.isSubmitted ? Brand.magentaInk : Brand.muted) }
                     }.foregroundStyle(Brand.cyanInk)
                     if !current.instructions.isEmpty { Text(current.instructions).font(.subheadline).foregroundStyle(Brand.muted).lineLimit(2) }
+                    if !model.isCurrentSchoolSchedule(current) { Text("Earlier school schedule").font(.caption.weight(.semibold)).foregroundStyle(Brand.muted) }
                     if !current.subtasks.isEmpty { Text("\(current.subtasks.filter { $0.completed == true }.count) of \(current.subtasks.count) steps").font(.caption).foregroundStyle(Brand.muted) }
                     if current.status == "pending" {
                         TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -53,7 +67,7 @@ struct OccurrenceRow: View {
                     }
                     if let reason = current.skipReason { Text(reason).font(.subheadline).foregroundStyle(Brand.muted) }
                 }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
-            }.buttonStyle(.plain).accessibilityHint("Opens instructions, checklist and chore actions")
+            }.buttonStyle(.plain).accessibilityHint("Opens instructions, checklist and task actions")
             Image(systemName: "chevron.right").font(.caption).foregroundStyle(Brand.muted).padding(.top, 14).accessibilityHidden(true)
         }.padding(.vertical, 6)
             .sheet(isPresented: $details) { OccurrenceDetailScreen(original: current) }
@@ -63,7 +77,7 @@ struct OccurrenceRow: View {
 struct ApprovalQueue: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
-        let waiting = model.visibleOccurrences.filter(\.isSubmitted)
+        let waiting = model.visibleOccurrences.filter { $0.isSubmitted && model.isCurrentSchoolSchedule($0) }
         if model.canManageChores && !waiting.isEmpty {
             FrameCard(accent: Brand.magenta) {
                 Text("Waiting for approval · \(waiting.count)").font(.title2.bold()).accessibilityAddTraits(.isHeader)
@@ -96,11 +110,11 @@ struct OccurrenceDetailScreen: View {
             List {
                 Section {
                     Text(current.title).font(.title2.bold())
-                    Text(current.personName ?? "Family chore").foregroundStyle(Brand.cyanInk)
+                    Text(current.personName ?? "Family task").foregroundStyle(Brand.cyanInk)
                     Text(current.statusLabel).font(.headline).foregroundStyle(current.isSubmitted ? Brand.magentaInk : Brand.muted)
                     Text(Dates.dayLabel(current.date)).font(.subheadline)
-                    Text(current.required ? "Required chore" : "Optional chore").font(.subheadline)
-                    if current.requiresApproval { Text("A parent must approve this chore before it counts as done.").font(.footnote).foregroundStyle(Brand.muted) }
+                    Text(current.required ? "Required task" : "Optional task").font(.subheadline)
+                    if current.requiresApproval { Text("A parent must approve this task before it counts as done.").font(.footnote).foregroundStyle(Brand.muted) }
                 }
                 if !current.instructions.isEmpty { Section("Instructions") { Text(current.instructions).textSelection(.enabled) } }
                 RewardHomeCard(network: model.internet)
@@ -114,17 +128,17 @@ struct OccurrenceDetailScreen: View {
                             } label: { Label(step.title, systemImage: step.completed == true ? "checkmark.circle.fill" : "circle").foregroundStyle(Brand.ink).frame(minHeight: 44) }
                                 .disabled(!enabled || current.status != "pending").accessibilityValue(step.completed == true ? "Checked" : "Not checked")
                         }
-                    } header: { Text("Checklist") } footer: { Text("Marking this chore done also completes its checklist.") }
+                    } header: { Text("Checklist") } footer: { Text("Marking this task done also completes its checklist.") }
                 }
                 if let reason = current.skipReason { Section("Excused for this day") { Text(reason) } }
                 if let from = current.rescheduledFrom { Section { Text("Moved from \(Dates.dayLabel(from)).") } }
                 if current.canComplete {
                     Section {
                         if current.isSubmitted && model.canManageChores {
-                            Button("Approve this chore") { Task { _ = await model.actOnOccurrence(current, action: "approve") } }.disabled(!enabled)
+                            Button("Approve this task") { Task { _ = await model.actOnOccurrence(current, action: "approve") } }.disabled(!enabled)
                             Button("Return it to do") { action = .reject }.disabled(!enabled)
                         } else {
-                            Button(current.isSubmitted ? "Withdraw submission" : current.isDone ? "Reopen chore" : current.requiresApproval && !model.canManageChores ? "Submit for approval" : "Mark done") {
+                            Button(current.isSubmitted ? "Withdraw submission" : current.isDone ? "Reopen task" : current.requiresApproval && !model.canManageChores ? "Submit for approval" : "Mark done") {
                                 Task { _ = await model.toggleOccurrence(current) }
                             }.disabled(!enabled)
                         }
@@ -132,12 +146,12 @@ struct OccurrenceDetailScreen: View {
                 }
                 if model.canManageChores && current.status == "pending" {
                     Section("For this occurrence") {
-                        Button("Excuse this chore") { action = .skip }.disabled(!enabled)
+                        Button("Excuse this task") { action = .skip }.disabled(!enabled)
                         Button("Move to another day") { action = .reschedule }.disabled(!enabled)
                     }
                 }
-                Section { Text("This is the saved chore for this date. Routine edits affect newly generated days.").font(.footnote).foregroundStyle(Brand.muted) }
-            }.navigationTitle("Chore").navigationBarTitleDisplayMode(.inline)
+                Section { Text("This is the saved task for this date. Routine edits affect newly generated days.").font(.footnote).foregroundStyle(Brand.muted) }
+            }.navigationTitle("Task").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
                 .sheet(item: $action) { OccurrenceActionEditor(occurrence: current, action: $0.rawValue) }
         }
@@ -155,7 +169,7 @@ private struct OccurrenceActionEditor: View {
     @State private var hasDeadline = true
     @State private var saving = false
     @State private var saveBlocked = false
-    private var title: String { action == "reschedule" ? "Move this chore" : action == "skip" ? "Excuse this chore" : "Return it to do" }
+    private var title: String { action == "reschedule" ? "Move this task" : action == "skip" ? "Excuse this task" : "Return it to do" }
     var body: some View {
         NavigationStack {
             Form {
@@ -168,7 +182,7 @@ private struct OccurrenceActionEditor: View {
                     }
                 }
                 Section("Reason") { TextField("Explain the change", text: $reason, axis: .vertical).lineLimit(3...6) }
-                if saveBlocked { Section { Text("Close this form, refresh, and review the chore before making another change.").foregroundStyle(Brand.red) } }
+                if saveBlocked { Section { Text("Close this form, refresh, and review the task before making another change.").foregroundStyle(Brand.red) } }
                 Section { Text("This changes this occurrence only and appears in its history.").font(.footnote).foregroundStyle(Brand.muted) }
             }.navigationTitle(title).navigationBarTitleDisplayMode(.inline)
                 .task { hasDeadline = occurrence.dueTime != nil; due = Dates.wallTime(occurrence.dueTime ?? "18:00", on: occurrence.date, in: model.zone) ?? Date() }
@@ -205,7 +219,7 @@ struct ChoreHistoryScreen: View {
             }
             if loading { ProgressView("Loading history…") }
             if let error { Text(error).foregroundStyle(Brand.red) }
-            if !loading && history.isEmpty && error == nil { Text("No recorded chore changes in this period.").foregroundStyle(Brand.muted) }
+            if !loading && history.isEmpty && error == nil { Text("No recorded task changes in this period.").foregroundStyle(Brand.muted) }
             ForEach(history) { item in
                 VStack(alignment: .leading, spacing: 6) {
                     Text(item.title).font(.headline)
@@ -215,8 +229,8 @@ struct ChoreHistoryScreen: View {
                     if let reason = item.reason { Text(reason).font(.subheadline) }
                 }.padding(.vertical, 5)
             }
-            Section { Text("Shows the latest 100 changes in this period, using the saved chore and household dates.").font(.footnote).foregroundStyle(Brand.muted) }
-        }.navigationTitle("Chore history").task(id: selection) { await load() }.refreshable { await load() }
+            Section { Text("Shows the latest 100 changes in this period, using the saved task and household dates.").font(.footnote).foregroundStyle(Brand.muted) }
+        }.navigationTitle("Task history").task(id: selection) { await load() }.refreshable { await load() }
     }
     private func load() async {
         loading = true; error = nil; let selected = selection

@@ -54,6 +54,8 @@ protocol FamilyAPI: AnyObject {
     func changeOccurrence(_ id: String, action: OccurrenceAction) async throws -> ChoreOccurrence
     func choreHistory(from: String, to: String, personID: String?) async throws -> [ChoreHistoryItem]
     func choreBreaks() async throws -> [ChoreBreak]
+    func schoolCalendar(date: String) async throws -> SchoolCalendarResponse
+    func changeSchoolDay(_ draft: SchoolDayOverrideDraft) async throws -> SchoolCalendarResponse
     func createChoreBreak(_ draft: ChoreBreakDraft) async throws -> ChoreBreak
     func revokeChoreBreak(_ item: ChoreBreak, reason: String, mutationID: String) async throws -> ChoreBreak
     func createFrameAccessCode(scope: String, personID: String?) async throws -> FrameAccessCode
@@ -234,6 +236,8 @@ final class APIClient: FamilyAPI {
         let result: ChoreHistoryResponse = try await send("/api/chore-history?" + (query.percentEncodedQuery ?? "")); return result.history
     }
     func choreBreaks() async throws -> [ChoreBreak] { let result: ChoreBreaksResponse = try await send("/api/chore-exceptions"); return result.exceptions }
+    func schoolCalendar(date: String) async throws -> SchoolCalendarResponse { try await send("/api/school-calendar?date=\(date)") }
+    func changeSchoolDay(_ draft: SchoolDayOverrideDraft) async throws -> SchoolCalendarResponse { try await send("/api/school-calendar", method: "PATCH", body: encoded(draft)) }
     func createChoreBreak(_ draft: ChoreBreakDraft) async throws -> ChoreBreak { try await send("/api/chore-exceptions", method: "POST", body: encoded(draft)) }
     func revokeChoreBreak(_ item: ChoreBreak, reason: String, mutationID: String) async throws -> ChoreBreak {
         struct Revoke: Encodable { let expectedVersion: Int; let reason: String; let mutationId: String }

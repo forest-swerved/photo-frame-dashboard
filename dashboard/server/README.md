@@ -14,7 +14,7 @@ node --env-file=.env.local server/verify-schema.js
 node --test server/backend.test.js server/calendar-normalize.test.js server/calendar-normalize-bounded.test.js server/icloud-caldav.test.js
 ```
 
-The complete migration manages thirty-five `family_*` tables. Each has RLS enabled, no browser policies, and no PUBLIC/anon/authenticated/service_role table privileges. The server role `family_frame_server` owns only these tables and retains owner access. It has no superuser, role/database creation, replication, BYPASSRLS, or inherited role privileges. Provision table creation separately, then revoke its schema CREATE privilege. Database connections use node-postgres with verified TLS; URL flags cannot disable certificate verification or replace the explicit CA configuration.
+The complete migration manages thirty-six `family_*` tables. Each has RLS enabled, no browser policies, and no PUBLIC/anon/authenticated/service_role table privileges. The server role `family_frame_server` owns only these tables and retains owner access. It has no superuser, role/database creation, replication, BYPASSRLS, or inherited role privileges. Provision table creation separately, then revoke its schema CREATE privilege. Database connections use node-postgres with verified TLS; URL flags cannot disable certificate verification or replace the explicit CA configuration.
 
 The privileged setup process also provisions a non-exposed `family_internal.auth_sessions` view, owned by `postgres`, with exactly `id`, `user_id`, and `not_after` from managed `auth.sessions`. Only the server role receives schema USAGE and view SELECT. PUBLIC and API roles receive neither. This intentional private definer view gives the application a narrow revocation lookup without auth-schema USAGE, direct auth-table grants, auth DDL, or broad RLS bypass. `verify-schema.js` verifies both the household tables and this boundary.
 
@@ -23,6 +23,14 @@ Database race tests use the existing separate test database named **`family_fram
 ```sh
 FAMILY_RUN_DB_TESTS=1 node --env-file=.env.test.local --test server/backend.integration.test.js
 ```
+
+## School schedules and task sections
+
+The interface calls chores **Tasks**, while existing API routes, event kinds, and stored identifiers remain compatible. Repeating routines accept `schoolDayFilter` (`any`, `school_day`, `non_school_day`) alongside their weekdays. School-day routines can use `taskSection` (`before_school`, `after_school`, or the legacy `tasks` default). One-off and non-school routines normalize to `tasks`. Daily occurrences preserve their original filter and section when a routine changes.
+
+`GET /api/school-calendar?date=YYYY-MM-DD` returns the covering calendar and classification in household-local dates. A chore-authorized parent can `PUT` a validated calendar document or `PATCH` a version-checked date override for today or later. Source metadata and revisions live in the server-only `family_school_calendars` table. Overrides win over published closures, instructional weekdays and summer dates. Dates outside imported coverage stay unknown; school-dependent work waits, and uncertain required work cannot earn a reward. Importing another school year early preserves the current year's classification.
+
+A current-day calendar change exchanges pending task sets, preserving completed/submitted work, explicit parent reschedules, and the change history. School days show Before school/After school groups; non-school days use Tasks. Task breaks remain a separate way to excuse work entirely. Existing routines default to any day type and the general Tasks section until a parent assigns a schedule.
 
 ## Sign-in and household access
 
@@ -136,7 +144,7 @@ reuse the correct token rather than regenerate it on every send.
 
 ### Additive schema upgrade
 
-There are now thirty-five server-owned tables. `schema.sql`, `mobile-schema.sql`,
+There are now thirty-six server-owned tables. `schema.sql`, `mobile-schema.sql`,
 `notifications-schema.sql`, `child-accounts-schema.sql`, calendar synchronization, daily chores, account Activity, Internet rewards and account deletion owner schemas are applied together by
 `npm run db:migrate`. Existing households, calendars, chores and history are retained.
 The child upgrade revokes legacy anonymous child sessions and unused child pairing

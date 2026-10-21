@@ -128,7 +128,7 @@ function version(value) {
 export function completionBody(chore, date, completed, mutationId) {
   if (typeof completed !== 'boolean' || !mutationId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('Invalid completion request.');
   const expectedVersion = chore.completion?.date === date ? version(chore.completion.version) : 0;
-  if (expectedVersion < 0) throw new Error('Refresh this chore before saving.');
+  if (expectedVersion < 0) throw new Error('Refresh this task before saving.');
   return { completed, expectedVersion, mutationId };
 }
 

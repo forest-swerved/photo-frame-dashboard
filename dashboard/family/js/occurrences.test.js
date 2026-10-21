@@ -1,7 +1,7 @@
 import { frameCodeScopes } from './workbench.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { routinePayload, mergeOccurrence, scheduledItems } from './occurrences.js';
+import { routinePayload, mergeOccurrence, scheduledItems, schoolDayFilterLabel, schoolDayStatus, taskSections, taskProgress, taskAppliesToSchoolDay } from './occurrences.js';
 import { request, setFrameMode, setFrameAccess, frameAccessStatus } from './api.js';
 
 test('routine edits preserve existing step identities and distinguish optional one-off work', () => {
@@ -14,6 +14,75 @@ test('routine edits preserve existing step identities and distinguish optional o
   assert.equal(body.subtasks[0].id, 'existing-step'); assert.notEqual(body.subtasks[1].id, 'existing-step');
   assert.equal(body.expectedVersion, 4); assert.equal(body.instructions, 'Use the top cupboard.');
   form.set('scheduleType', 'weekly'); assert.throws(() => routinePayload(form), /repeat day/);
+});
+
+test('school-day filters stay separate from weekdays and one-off dates and preserve routine CAS', () => {
+  const form = new FormData();
+  for (const [key, value] of Object.entries({ title: 'Morning routine', scheduleType: 'weekly', schoolDayFilter: 'school_day', weekdays: '1', reminderMinutes: '15' })) form.set(key, value);
+  const weekly = routinePayload(form, { version: 7 });
+  assert.equal(weekly.schoolDayFilter, 'school_day');
+  assert.deepEqual(weekly.weekdays, [1]);
+  assert.equal(weekly.expectedVersion, 7);
+  form.set('scheduleType', 'one_off'); form.set('scheduledDate', '2026-12-25'); form.set('schoolDayFilter', 'non_school_day');
+  const oneOff = routinePayload(form);
+  assert.equal(oneOff.schoolDayFilter, 'any');
+  assert.equal(oneOff.scheduledDate, '2026-12-25');
+  assert.equal(oneOff.scheduleType, 'one_off');
+  form.delete('schoolDayFilter');
+  assert.equal(routinePayload(form).schoolDayFilter, 'any');
+  form.set('scheduleType', 'weekly');
+  assert.equal(routinePayload(form, { version: 8, schoolDayFilter: 'school_day' }).schoolDayFilter, 'school_day');
+  form.set('schoolDayFilter', 'school_days_maybe');
+  assert.throws(() => routinePayload(form), /valid school-day schedule/);
+});
+
+test('school calendar presentation distinguishes closure, unknown coverage, and chore breaks', () => {
+  assert.equal(schoolDayFilterLabel('school_day'), 'School days only');
+  assert.equal(schoolDayFilterLabel('non_school_day'), 'Non-school days only');
+  assert.equal(schoolDayFilterLabel(undefined), 'Any school-day type');
+  const closed = schoolDayStatus({ schoolDay: { date: '2026-10-21', type: 'non_school_day', label: 'No school', reason: '<Snow day>' } });
+  assert.match(closed, /No school/); assert.match(closed, /&lt;Snow day&gt;/);
+  const unknown = schoolDayStatus({ schoolDay: { date: '2027-09-01', type: 'unknown' }, routines: [{ schoolDayFilter: 'school_day' }] });
+  assert.match(unknown, /School schedule unknown/);
+  assert.match(unknown, /waiting for a confirmed school calendar date/);
+  assert.match(unknown, /Any-day tasks still apply/);
+  assert.equal(schoolDayStatus({}), '');
+});
+
+test('school-day task phases retain explicit parent choices and normalize non-school and one-off work', () => {
+  const form = new FormData();
+  for (const [key, value] of Object.entries({ title: 'Pack bag', scheduleType: 'weekly', schoolDayFilter: 'school_day', taskSection: 'before_school', weekdays: '1', reminderMinutes: '15' })) form.set(key, value);
+  assert.equal(routinePayload(form).taskSection, 'before_school');
+  form.set('taskSection', 'after_school'); assert.equal(routinePayload(form).taskSection, 'after_school');
+  form.delete('taskSection');
+  assert.equal(routinePayload(form, { version: 4, taskSection: 'after_school' }).taskSection, 'after_school');
+  assert.equal(routinePayload(form).taskSection, 'tasks', 'Old clients do not invent a before/after assignment.');
+  form.set('taskSection', 'before_school'); form.set('schoolDayFilter', 'non_school_day');
+  assert.equal(routinePayload(form).taskSection, 'tasks');
+  form.set('schoolDayFilter', 'school_day'); form.set('scheduleType', 'one_off'); form.set('scheduledDate', '2026-10-22');
+  assert.equal(routinePayload(form).taskSection, 'tasks');
+  form.set('scheduleType', 'weekly'); form.set('taskSection', 'during_school');
+  assert.throws(() => routinePayload(form), /valid task section/);
+});
+
+test('only school days split populated before/after groups, and previous schedule history does not inflate progress', () => {
+  const base = { date: '2026-10-21', originalDate: '2026-10-21', definitionSource: 'routine', schoolDayFilter: 'school_day' };
+  const items = [
+    { ...base, id: 'after', taskSection: 'after_school', status: 'pending' },
+    { ...base, id: 'before', taskSection: 'before_school', status: 'completed' },
+    { ...base, id: 'unassigned-phase', status: 'submitted' },
+  ];
+  assert.deepEqual(taskSections(items, { type: 'school_day' }).map(group => [group.label, group.items.map(item => item.id)]), [
+    ['Before school', ['before']], ['After school', ['after']], ['Tasks', ['unassigned-phase']],
+  ]);
+  assert.deepEqual(taskSections(items, { type: 'non_school_day' }).map(group => group.label), ['Tasks']);
+  assert.deepEqual(taskSections([], { type: 'school_day' }), []);
+  assert.deepEqual(taskProgress(items, { type: 'school_day' }), { total: 3, completed: 1, remaining: 2 });
+  assert.deepEqual(taskProgress(items, { type: 'non_school_day' }), { total: 0, completed: 0, remaining: 0 });
+  const moved = { ...items[0], schoolScheduleExempt: true };
+  assert.equal(taskAppliesToSchoolDay(moved, { type: 'non_school_day' }), true);
+  assert.equal(taskAppliesToSchoolDay({ ...items[0], date: '2026-10-22' }, { type: 'non_school_day' }), true);
+  assert.deepEqual(taskProgress([{ ...items[0], status: 'skipped' }, moved], { type: 'non_school_day' }), { total: 1, completed: 0, remaining: 1 });
 });
 
 test('occurrence acknowledgments cannot roll back a newer state or cross household dates', () => {

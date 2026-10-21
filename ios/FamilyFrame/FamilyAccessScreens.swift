@@ -34,7 +34,7 @@ struct FrameAccessScreen: View {
                     if scope == "child" {
                         Picker("Child", selection: $personID) { Text("Choose a child").tag(""); ForEach(model.snapshot?.people ?? []) { Text($0.name).tag($0.id) } }
                     }
-                } else if model.canManageChores { Text("Unlock parent chore controls.").foregroundStyle(Brand.cyanInk) }
+                } else if model.canManageChores { Text("Unlock parent task controls.").foregroundStyle(Brand.cyanInk) }
                 else { Text("Unlock your own profile.").foregroundStyle(Brand.cyanInk) }
                 Button { Task { await generate() } } label: { if generating { ProgressView() } else { Text("Create one-time unlock code") } }
                     .frame(minHeight: 44).disabled(generating || model.isStale || (scope == "child" && selectedPerson == nil))
@@ -76,7 +76,7 @@ struct CaregiverAccessScreen: View {
     @State private var error: String?
     var body: some View {
         List {
-            Section { Text("Give a caregiver permission to manage chores or Internet time independently. Only parent administrators can change these permissions.").font(.subheadline) }
+            Section { Text("Give a caregiver permission to manage tasks or Internet time independently. Only parent administrators can change these permissions.").font(.subheadline) }
             if loading { ProgressView("Loading family access…") }
             if let error { Text(error).foregroundStyle(Brand.red) }
             ForEach(members) { member in
@@ -85,7 +85,7 @@ struct CaregiverAccessScreen: View {
                         VStack(alignment: .leading, spacing: 6) {
                             Text(member.name).font(.headline)
                             Text(member.email).font(.caption).foregroundStyle(Brand.muted)
-                            Text([member.capabilities.manageChores ? "Chores" : nil, member.capabilities.manageInternet ? "Internet time" : nil].compactMap { $0 }.joined(separator: " · ").nilIfEmpty ?? "No management permissions").font(.subheadline).foregroundStyle(Brand.cyanInk)
+                            Text([member.capabilities.manageChores ? "Tasks" : nil, member.capabilities.manageInternet ? "Internet time" : nil].compactMap { $0 }.joined(separator: " · ").nilIfEmpty ?? "No management permissions").font(.subheadline).foregroundStyle(Brand.cyanInk)
                         }.padding(.vertical, 6)
                     }
                 } else {
@@ -119,7 +119,7 @@ private struct CaregiverPermissionEditor: View {
     var body: some View {
         Form {
             Section(member.name) {
-                Toggle("Manage chores and approvals", isOn: $chores)
+                Toggle("Manage tasks and approvals", isOn: $chores)
                 Toggle("Manage Internet access", isOn: $internet)
             }
             if uncertain { Text("Close this page and refresh the caregiver list to check which permissions were saved.").foregroundStyle(Brand.red) }

@@ -70,7 +70,7 @@ test('APNs never includes family/private event details in a lock-screen payload'
   assert.deepEqual(Object.keys(payload).sort(), ['aps', 'notificationId']);
   assert.equal(payload.aps.alert.title, 'Family Frame');
   assert.equal(JSON.stringify(payload).includes('choreId'), false);
-  assert.deepEqual(notificationText({ type: 'chore_completed', payload: { title: 'Private chore title' } }), ['Chore completed', 'Private chore title was marked done.']);
+  assert.deepEqual(notificationText({ type: 'chore_completed', payload: { title: 'Private chore title' } }), ['Task completed', 'Private chore title was marked done.']);
 });
 
 test('APNs distinguishes provider acceptance from retries, invalid tokens, and exhausted attempts', () => {

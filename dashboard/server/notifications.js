@@ -128,15 +128,15 @@ export async function registerPush(db, principal, body, env = process.env) {
 }
 
 export function notificationText(event) {
-  const chore = String(event.payload?.title || 'A chore').slice(0, 160);
+  const task = String(event.payload?.title || 'A task').slice(0, 160);
   const labels = {
-    chore_submitted: ['Ready for parent review', `${chore} is waiting for approval.`],
-    chore_completed: ['Chore completed', `${chore} was marked done.`], chore_reopened: ['Chore reopened', `${chore} was reopened.`],
-    chore_due_soon: ['Chore due soon', `${chore} is due soon.`], chore_overdue: ['Chore overdue', `${chore} has not been marked done.`],
+    chore_submitted: ['Ready for parent review', `${task} is waiting for approval.`],
+    chore_completed: ['Task completed', `${task} was marked done.`], chore_reopened: ['Task reopened', `${task} was reopened.`],
+    chore_due_soon: ['Task due soon', `${task} is due soon.`], chore_overdue: ['Task overdue', `${task} has not been marked done.`],
     calendar_upcoming: ['Calendar reminder', `${String(event.payload?.title || 'An event').slice(0, 160)} starts soon.`],
     calendar_unavailable: ['Calendar needs attention', 'The calendar has not synced recently. Check its connection in Setup.'],
     calendar_restored: ['Calendar restored', 'Your calendar is syncing again.'],
-    reward_earned: ['Internet time earned', 'Your required chores are complete. Use your reward now or save it for later.'],
+    reward_earned: ['Internet time earned', 'Your required tasks are complete. Use your reward now or save it for later.'],
     session_started: ['Internet session started', 'Your device access window has started.'],
     session_warning: ['Internet time ending soon', 'Your access window will end soon.'],
     session_expired: ['Internet time finished', 'Your access window has ended.'],

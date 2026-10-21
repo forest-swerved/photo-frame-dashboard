@@ -43,10 +43,10 @@ test('isolated Postgres authorization and concurrency boundaries', { skip: !enab
     assert.match(schema, /^family_test_[a-f0-9]{32}$/);
     await pool.query(`CREATE SCHEMA ${schema}`);
     created = true;
-    for (const name of ['schema.sql','mobile-schema.sql','notifications-schema.sql','child-accounts-schema.sql','calendar-sync-schema.sql','chore-schema.sql','account-notifications-schema.sql','internet-schema.sql','account-deletion-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
+    for (const name of ['schema.sql','mobile-schema.sql','notifications-schema.sql','child-accounts-schema.sql','calendar-sync-schema.sql','chore-schema.sql','school-schema.sql','account-notifications-schema.sql','internet-schema.sql','account-deletion-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
 
     await t.test('all server-only tables have RLS, owner access, and no PUBLIC policies', async () => {
-      assert.equal(await verifySchema(db, schema, 35), 35);
+      assert.equal(await verifySchema(db, schema, 36), 36);
     });
 
     await t.test('a short setup code cannot be claimed by a different signed-in account', async () => {

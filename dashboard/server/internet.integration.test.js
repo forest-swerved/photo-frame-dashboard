@@ -56,9 +56,9 @@ test('reward reservation, frame authorization and durable provider reconciliatio
   try {
     assert.equal((await pool.query('SELECT current_database() AS name')).rows[0].name, 'family_frame_tests');
     await pool.query(`CREATE SCHEMA ${schema}`); created = true;
-    for (const name of ['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql', 'calendar-sync-schema.sql', 'chore-schema.sql', 'account-notifications-schema.sql', 'internet-schema.sql', 'account-deletion-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
+    for (const name of ['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql', 'calendar-sync-schema.sql', 'chore-schema.sql','school-schema.sql', 'account-notifications-schema.sql', 'internet-schema.sql', 'account-deletion-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
     await db.query(await readFile(new URL('internet-schema.sql', import.meta.url), 'utf8'));
-    assert.equal(await verifySchema(db, schema, 35), 35);
+    assert.equal(await verifySchema(db, schema, 36), 36);
     await db.query('CREATE TABLE fixture_auth_sessions(id uuid PRIMARY KEY,user_id uuid NOT NULL,not_after timestamptz)');
     await db.query('INSERT INTO fixture_auth_sessions(id,user_id) VALUES($1,$2)', [parent.sessionId, parent.user.id]);
     await db.query('INSERT INTO family_households(id,title,timezone) VALUES($1,$2,$3)', [household.id, household.title, household.timezone]);

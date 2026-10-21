@@ -4,14 +4,16 @@ import { requireHousehold } from './auth.js';
 import { requireChoreManager as requireAdmin } from './capabilities.js';
 import { digest } from './credentials.js';
 import { one, transaction } from './database.js';
+import { lockSchoolCalendar, routineSchoolMatches, schoolDayFilter, schoolDayForDate } from './school-calendar.js';
 
-const notFound = () => new ApiError(404, 'not_found', 'That chore does not exist in this household.');
+const notFound = () => new ApiError(404, 'not_found', 'That task does not exist in this household.');
 const plainDate = row => row?.date instanceof Date ? row.date.toISOString().slice(0, 10) : String(row?.date || '').slice(0, 10);
 const dateOf = value => value instanceof Date ? value.toISOString().slice(0, 10) : String(value || '').slice(0, 10);
 const instant = value => value ? new Date(value).toISOString() : null;
 const completed = row => ['submitted', 'completed'].includes(row.status);
 const stateForEvent = row => ({ status: row.status, date: plainDate(row), dueTime: row.due_time?.slice(0, 5) || null,
-  version: row.version, completionVersion: row.completion_version, completedSubtaskIds: row.completed_subtask_ids || [], skipReason: row.skip_reason || null });
+  version: row.version, completionVersion: row.completion_version, completedSubtaskIds: row.completed_subtask_ids || [], skipReason: row.skip_reason || null,
+  schoolScheduleExempt: row.school_schedule_exempt || false });
 
 export function routineDetails(body, current = {}) {
   const required = body.required === undefined ? current.required ?? true : body.required;
@@ -20,7 +22,7 @@ export function routineDetails(body, current = {}) {
   const instructions = body.instructions === undefined ? current.instructions || '' : body.instructions;
   requireValue(typeof instructions === 'string' && instructions.length <= 3000, 422, 'invalid_chore', 'Instructions may contain at most 3000 characters.');
   let subtasks = body.subtasks === undefined ? current.subtasks || [] : body.subtasks;
-  requireValue(Array.isArray(subtasks) && subtasks.length <= 20, 422, 'invalid_subtasks', 'Add at most 20 chore steps.');
+  requireValue(Array.isArray(subtasks) && subtasks.length <= 20, 422, 'invalid_subtasks', 'Add at most 20 task steps.');
   subtasks = subtasks.map(item => typeof item === 'string' ? { id: randomUUID(), title: textField(item, 'Step', 160) }
     : { id: uuidField(item?.id, 'Step ID'), title: textField(item?.title, 'Step', 160) });
   requireValue(new Set(subtasks.map(item => item.id)).size === subtasks.length, 422, 'invalid_subtasks', 'Each step must have its own ID.');
@@ -28,8 +30,13 @@ export function routineDetails(body, current = {}) {
   requireValue(['weekly', 'one_off'].includes(scheduleType), 422, 'invalid_schedule', 'Choose weekly or one-off scheduling.');
   const scheduledDate = scheduleType === 'one_off' ? dateField(body.scheduledDate === undefined ? current.scheduled_date && dateOf(current.scheduled_date) : body.scheduledDate) : null;
   requireValue(scheduleType !== 'weekly' || body.scheduledDate === undefined || body.scheduledDate === null,
-    422, 'invalid_schedule', 'A weekly chore cannot have a one-off date.');
-  return { required, requiresApproval, instructions: instructions.trim(), subtasks, scheduleType, scheduledDate };
+    422, 'invalid_schedule', 'A weekly task cannot have a one-off date.');
+  const schoolFilter = schoolDayFilter(body.schoolDayFilter === undefined ? scheduleType === 'one_off' ? 'any' : current.school_day_filter ?? 'any' : body.schoolDayFilter);
+  requireValue(scheduleType !== 'one_off' || schoolFilter === 'any', 422, 'invalid_school_filter', 'One-off tasks use their chosen date. Use a repeating routine for school-day filtering.');
+  const taskSection = body.taskSection === undefined ? current.task_section ?? 'tasks' : body.taskSection;
+  requireValue(['tasks', 'before_school', 'after_school'].includes(taskSection), 422, 'invalid_task_section', 'Choose Tasks, Before school, or After school.');
+  return { required, requiresApproval, instructions: instructions.trim(), subtasks, scheduleType, scheduledDate, schoolDayFilter: schoolFilter,
+    taskSection: scheduleType === 'weekly' && schoolFilter === 'school_day' ? taskSection : 'tasks' };
 }
 
 export function occurrenceDto(row) {
@@ -44,6 +51,8 @@ export function occurrenceDto(row) {
     dueTime: row.due_time?.slice(0, 5) || null, reminderMinutes: row.reminder_minutes,
     skipReason: row.skip_reason || null, rescheduledFrom: date === originalDate ? null : originalDate,
     completedAt: instant(row.completed_at), approvedAt: instant(row.approved_at),
+    schoolDayFilter: row.school_day_filter || 'any', schoolExcused: row.school_excused || false, schoolScheduleExempt: row.school_schedule_exempt || false,
+    taskSection: row.task_section || 'tasks',
     definitionSource: row.definition_source, routineVersion: row.routine_version, createdAt: instant(row.created_at), updatedAt: instant(row.updated_at) };
 }
 
@@ -51,6 +60,9 @@ export function occurrenceDto(row) {
 // same household-local date lock before occurrence locks. It is intentionally
 // broader than one child, preventing two completions from minting independently.
 export async function lockChoreDay(client, householdId, date) {
+  // Every chore/reward writer takes the calendar lock first, including writers
+  // that do not materialize routines. Calendar edits take this same order.
+  await lockSchoolCalendar(client, householdId);
   await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`chores:${householdId}:${date}`]);
 }
 
@@ -70,18 +82,42 @@ async function appendEvent(client, principal, row, type, before = null, reason =
   [randomUUID(), row.household_id, row.id, type, principal.actor || 'system:daily-routines', actorName, reason, before ? JSON.stringify(stateForEvent(before)) : null, JSON.stringify(stateForEvent(row)), now]);
 }
 
+async function reconcileSchoolOccurrences(client, household, date, schoolDay, now) {
+  // Reclassifying today may excuse or restore untouched work. Completed,
+  // submitted, explicitly moved and parent-corrected facts remain intact.
+  const rows = (await client.query(`SELECT *,date::text,original_date::text FROM family_chore_occurrences
+    WHERE household_id=$1 AND date=$2::date AND original_date=date AND definition_source='routine' AND NOT school_schedule_exempt AND school_day_filter<>'any'
+      AND (status='pending' OR (status='skipped' AND school_excused)) ORDER BY id FOR UPDATE`, [household.id, date])).rows;
+  const exceptions = rows.length ? (await client.query(`SELECT * FROM family_chore_exceptions
+    WHERE household_id=$1 AND from_date<=$2::date AND to_date>$2::date AND revoked_at IS NULL ORDER BY created_at,id`, [household.id, date])).rows : [];
+  for (const row of rows) {
+    const matches = routineSchoolMatches(row.school_day_filter, schoolDay);
+    if (row.status === 'pending' && matches || row.school_excused && !matches) continue;
+    const exception = matches ? exceptions.find(item => (!item.chore_id || item.chore_id === row.chore_id) && (!item.person_id || item.person_id === row.person_id)) : null;
+    const status = matches && !exception ? 'pending' : 'skipped';
+    const reason = !matches ? `School schedule: ${schoolDay.reason}` : exception?.reason || 'The school schedule now includes this task.';
+    const updated = await one(client, `UPDATE family_chore_occurrences SET status=$3,school_excused=$4,skip_reason=$5,exception_id=$6,
+      version=version+1,updated_at=$7 WHERE household_id=$1 AND id=$2 RETURNING *,date::text,original_date::text`,
+    [household.id, row.id, status, !matches, status === 'skipped' ? reason : null, exception?.id || null, now]);
+    await appendEvent(client, { household, actor: 'system:school-calendar' }, updated, 'school_schedule_changed', row, reason, now);
+  }
+}
+
 export async function ensureDailyOccurrences(client, household, date, { now = new Date(), allowCorrection = false, reason = null } = {}) {
   dateField(date);
   const today = householdDate(household.timezone, now);
   if (date !== today && !allowCorrection) return (await client.query('SELECT *,date::text,original_date::text FROM family_chore_occurrences WHERE household_id=$1 AND date=$2::date ORDER BY created_at,id', [household.id, date])).rows;
   if (date !== today) textField(reason, 'Reason for correcting another day', 500);
   await lockChoreDay(client, household.id, date);
+  const schoolDay = await schoolDayForDate(client, household.id, date);
+  await reconcileSchoolOccurrences(client, household, date, schoolDay, now);
   const day = new Date(`${date}T12:00:00Z`).getUTCDay();
   const routines = (await client.query(`SELECT c.*,p.name AS person_name FROM family_chores c LEFT JOIN family_people p ON p.household_id=c.household_id AND p.id=c.person_id
     WHERE c.household_id=$1 AND c.deleted_at IS NULL AND ((c.schedule_type='weekly' AND $2::smallint=ANY(c.weekdays)) OR (c.schedule_type='one_off' AND c.scheduled_date=$3::date))
+      AND (c.school_day_filter='any' OR c.school_day_filter=$4)
       AND NOT EXISTS(SELECT 1 FROM family_chore_occurrences existing WHERE existing.household_id=c.household_id AND existing.chore_id=c.id
         AND (existing.original_date=$3::date OR existing.date=$3::date))
-    ORDER BY c.created_at,c.id LIMIT 501 FOR SHARE OF c`, [household.id, day, date])).rows;
+    ORDER BY c.created_at,c.id LIMIT 501 FOR SHARE OF c`, [household.id, day, date, schoolDay.type])).rows;
   requireValue(routines.length <= 500, 503, 'chore_limit', 'Too many routines are scheduled for this day.');
   const exceptions = routines.length ? (await client.query(`SELECT * FROM family_chore_exceptions WHERE household_id=$1 AND from_date<=$2::date AND to_date>$2::date AND revoked_at IS NULL ORDER BY created_at,id`, [household.id, date])).rows : [];
   if (routines.length) {
@@ -90,14 +126,15 @@ export async function ensureDailyOccurrences(client, household, date, { now = ne
       return { chore_id: routine.id, routine_version: routine.version, title: routine.title, person_id: routine.person_id,
         person_name: routine.person_name, required: routine.required, instructions: routine.instructions,
         subtask_definitions: routine.subtasks, requires_approval: routine.requires_approval, due_time: routine.due_time,
-        reminder_minutes: routine.reminder_minutes, status: exception ? 'skipped' : 'pending', skip_reason: exception?.reason || null, exception_id: exception?.id || null };
+        reminder_minutes: routine.reminder_minutes, school_day_filter: routine.school_day_filter, task_section: routine.task_section,
+        status: exception ? 'skipped' : 'pending', skip_reason: exception?.reason || null, exception_id: exception?.id || null };
     });
     const inserted = (await client.query(`INSERT INTO family_chore_occurrences(household_id,chore_id,original_date,date,routine_version,definition_source,title,person_id,person_name,required,instructions,
-      subtask_definitions,requires_approval,original_due_time,due_time,reminder_minutes,status,skip_reason,exception_id,created_at,updated_at)
+      subtask_definitions,requires_approval,original_due_time,due_time,reminder_minutes,school_day_filter,task_section,status,skip_reason,exception_id,created_at,updated_at)
       SELECT $1,x.chore_id,$2::date,$2::date,x.routine_version,$3,x.title,x.person_id,x.person_name,x.required,x.instructions,
-        x.subtask_definitions,x.requires_approval,x.due_time,x.due_time,x.reminder_minutes,x.status,x.skip_reason,x.exception_id,$5,$5
+        x.subtask_definitions,x.requires_approval,x.due_time,x.due_time,x.reminder_minutes,x.school_day_filter,x.task_section,x.status,x.skip_reason,x.exception_id,$5,$5
       FROM jsonb_to_recordset($4::jsonb) AS x(chore_id uuid,routine_version integer,title text,person_id uuid,person_name text,required boolean,instructions text,
-        subtask_definitions jsonb,requires_approval boolean,due_time time,reminder_minutes smallint,status text,skip_reason text,exception_id uuid)
+        subtask_definitions jsonb,requires_approval boolean,due_time time,reminder_minutes smallint,school_day_filter text,task_section text,status text,skip_reason text,exception_id uuid)
       ON CONFLICT(household_id,chore_id,original_date) DO NOTHING RETURNING *,date::text,original_date::text`,
     [household.id, date, date === today ? 'routine' : 'parent_correction', JSON.stringify(definitions), now])).rows;
     if (inserted.length) await client.query(`INSERT INTO family_chore_events(id,household_id,occurrence_id,type,actor,actor_name,reason,after_state,created_at)
@@ -110,12 +147,17 @@ export async function ensureDailyOccurrences(client, household, date, { now = ne
 
 export async function getRequiredProgress(client, householdId, personId, date) {
   uuidField(personId, 'Child profile'); dateField(date);
-  const rows = (await client.query("SELECT id,status,required FROM family_chore_occurrences WHERE household_id=$1 AND person_id=$2 AND date=$3::date AND status<>'skipped' ORDER BY id", [householdId, personId, date])).rows;
-  const required = rows.filter(row => row.required);
+  const schoolDay = await schoolDayForDate(client, householdId, date);
+  const rows = (await client.query("SELECT id,status,required,school_day_filter,school_schedule_exempt,school_excused,date::text,original_date::text,definition_source FROM family_chore_occurrences WHERE household_id=$1 AND person_id=$2 AND date=$3::date ORDER BY id", [householdId, personId, date])).rows;
+  const required = rows.filter(row => row.required && row.status !== 'skipped' && (row.school_schedule_exempt || row.date !== row.original_date || row.definition_source === 'parent_correction' || routineSchoolMatches(row.school_day_filter, schoolDay)));
+  const weekday = new Date(`${date}T12:00:00Z`).getUTCDay();
+  const blocked = schoolDay.type === 'unknown' && (rows.some(row => row.required && row.school_day_filter !== 'any' && (row.status !== 'skipped' || row.school_excused) && !row.school_schedule_exempt && row.date === row.original_date && row.definition_source !== 'parent_correction')
+    || Boolean(await one(client, `SELECT id FROM family_chores WHERE household_id=$1 AND person_id=$2
+    AND deleted_at IS NULL AND required AND schedule_type='weekly' AND school_day_filter<>'any' AND $3::smallint=ANY(weekdays) LIMIT 1`, [householdId, personId, weekday])));
   const completedCount = required.filter(row => row.status === 'completed').length;
   const pendingApprovalCount = required.filter(row => row.status === 'submitted').length;
   return { personId, date, requiredCount: required.length, completedCount, pendingApprovalCount,
-    remainingCount: required.length - completedCount, eligible: required.length > 0 && completedCount === required.length,
+    remainingCount: required.length - completedCount, eligible: !blocked && required.length > 0 && completedCount === required.length, scheduleBlocked: blocked,
     occurrenceIds: required.map(row => row.id) };
 }
 
@@ -153,8 +195,11 @@ async function applyCompletion(client, principal, row, body, expectedKind, now, 
   if (principal.role === 'child' && row.person_id !== principal.personId) throw notFound();
   const current = occurrenceDto(row);
   requireValue((expectedKind === 'occurrence' ? row.version : row.completion_version) === body.expectedVersion,
-    409, 'version_conflict', 'This chore was changed on another screen.', { current: expectedKind === 'occurrence' ? current : { choreId: row.chore_id, ...current.completion } });
-  requireValue(row.status !== 'skipped', 409, 'chore_skipped', 'A parent has excused this chore for this day.');
+    409, 'version_conflict', 'This task was changed on another screen.', { current: expectedKind === 'occurrence' ? current : { choreId: row.chore_id, ...current.completion } });
+  requireValue(row.status !== 'skipped', 409, 'chore_skipped', 'A parent has excused this task for this day.');
+  if (body.completed && row.status === 'pending' && row.school_day_filter !== 'any' && !row.school_schedule_exempt && plainDate(row) === dateOf(row.original_date) && row.definition_source === 'routine')
+    requireValue(routineSchoolMatches(row.school_day_filter, await schoolDayForDate(client, row.household_id, plainDate(row))),
+      409, 'school_schedule_changed', 'The school schedule changed. Refresh to see the tasks for this day.');
   const status = body.completed ? row.requires_approval && principal.role !== 'admin' && !principal.verifiedCapabilities?.manageChores ? 'submitted' : 'completed' : 'pending';
   // Retrying an already completed approval never demotes it back to submitted.
   if (body.completed === completed(row)) return row;
@@ -209,7 +254,7 @@ export async function setOccurrenceCompletion(db, principal, id, body, { now = n
     requireChoreWriteDate(principal, candidate.date, reason, now);
     await lockChoreDay(client, householdId, candidate.date);
     const row = await one(client, 'SELECT *,date::text,original_date::text FROM family_chore_occurrences WHERE household_id=$1 AND id=$2 FOR UPDATE', [householdId, id]);
-    requireValue(row.date === candidate.date, 409, 'version_conflict', 'This chore moved. Refresh the day.');
+    requireValue(row.date === candidate.date, 409, 'version_conflict', 'This task moved. Refresh the day.');
     const updated = await applyCompletion(client, principal, row, { ...body, reason }, 'occurrence', now, onChange);
     return rememberMutation(client, householdId, principal, body.mutationId, hash, { ...occurrenceDto(updated), mutationId: body.mutationId });
   });
@@ -218,7 +263,7 @@ export async function setOccurrenceCompletion(db, principal, id, body, { now = n
 export async function changeChoreOccurrence(db, principal, id, body, { now = new Date(), onChange } = {}) {
   const householdId = requireHousehold(principal); uuidField(id); uuidField(body.mutationId, 'Mutation ID'); versionField(body.expectedVersion);
   const action = body.action;
-  requireValue(['approve', 'reject', 'skip', 'reschedule', 'subtasks'].includes(action), 422, 'invalid_occurrence_action', 'Choose a supported chore action.');
+  requireValue(['approve', 'reject', 'skip', 'reschedule', 'subtasks'].includes(action), 422, 'invalid_occurrence_action', 'Choose a supported task action.');
   if (action !== 'subtasks') requireAdmin(principal);
   const reason = ['skip', 'reschedule', 'reject'].includes(action) ? textField(body.reason, 'Reason', 500) : body.reason ? textField(body.reason, 'Reason', 500) : null;
   const toDate = action === 'reschedule' ? dateField(body.toDate) : null;
@@ -232,13 +277,13 @@ export async function changeChoreOccurrence(db, principal, id, body, { now = new
     for (const date of [...new Set([candidate.date, toDate].filter(Boolean))].sort()) await lockChoreDay(client, householdId, date);
     const row = await one(client, 'SELECT *,date::text,original_date::text FROM family_chore_occurrences WHERE household_id=$1 AND id=$2 FOR UPDATE', [householdId, id]);
     if (principal.role === 'child' && row.person_id !== principal.personId) throw notFound();
-    requireValue(row.date === candidate.date && row.version === body.expectedVersion, 409, 'version_conflict', 'This chore changed. Refresh and try again.', { current: occurrenceDto(row) });
+    requireValue(row.date === candidate.date && row.version === body.expectedVersion, 409, 'version_conflict', 'This task changed. Refresh and try again.', { current: occurrenceDto(row) });
     let status = row.status, dueTime = row.due_time, checked = row.completed_subtask_ids;
-    if (action === 'approve') { requireValue(status === 'submitted', 409, 'approval_not_pending', 'This chore is not waiting for approval.'); status = 'completed'; }
-    if (action === 'reject') { requireValue(status === 'submitted', 409, 'approval_not_pending', 'This chore is not waiting for approval.'); status = 'pending'; }
-    if (action === 'skip') { requireValue(status === 'pending', 409, 'chore_not_pending', 'Reopen this chore before excusing it.'); status = 'skipped'; }
+    if (action === 'approve') { requireValue(status === 'submitted', 409, 'approval_not_pending', 'This task is not waiting for approval.'); status = 'completed'; }
+    if (action === 'reject') { requireValue(status === 'submitted', 409, 'approval_not_pending', 'This task is not waiting for approval.'); status = 'pending'; }
+    if (action === 'skip') { requireValue(status === 'pending', 409, 'chore_not_pending', 'Reopen this task before excusing it.'); status = 'skipped'; }
     if (action === 'reschedule') {
-      requireValue(status === 'pending', 409, 'chore_not_pending', 'Reopen this chore before moving it.');
+      requireValue(status === 'pending', 409, 'chore_not_pending', 'Reopen this task before moving it.');
       const collision = await one(client, "SELECT id FROM family_chore_occurrences WHERE household_id=$1 AND chore_id=$2 AND date=$3::date AND status<>'skipped' AND id<>$4", [householdId, row.chore_id, toDate, id]);
       requireValue(!collision, 409, 'chore_date_occupied', 'This routine already has work on that day. Choose another day.');
       if (body.dueTime !== undefined) {
@@ -247,17 +292,18 @@ export async function changeChoreOccurrence(db, principal, id, body, { now = new
       }
     }
     if (action === 'subtasks') {
-      requireValue(status === 'pending', 409, 'chore_not_pending', 'Reopen this chore before changing its steps.');
+      requireValue(status === 'pending', 409, 'chore_not_pending', 'Reopen this task before changing its steps.');
       requireValue(Array.isArray(body.completedSubtaskIds) && body.completedSubtaskIds.length <= 20
-        && body.completedSubtaskIds.every(value => (row.subtask_definitions || []).some(item => item.id === value)), 422, 'invalid_subtasks', 'Choose steps from this chore.');
+        && body.completedSubtaskIds.every(value => (row.subtask_definitions || []).some(item => item.id === value)), 422, 'invalid_subtasks', 'Choose steps from this task.');
       checked = [...new Set(body.completedSubtaskIds)];
     }
     const updated = await one(client, `UPDATE family_chore_occurrences SET status=$3,date=$4::date,due_time=$5::time,completed_subtask_ids=$6::jsonb,version=version+1,
       completion_version=completion_version+CASE WHEN $7 THEN 1 ELSE 0 END,approved_at=$8,approved_by=$9,
       completed_at=CASE WHEN $10 THEN NULL ELSE completed_at END,completed_by=CASE WHEN $10 THEN NULL ELSE completed_by END,
-      skip_reason=$11,exception_id=CASE WHEN $12 THEN NULL ELSE exception_id END,updated_at=$13 WHERE household_id=$1 AND id=$2 RETURNING *,date::text,original_date::text`,
+      skip_reason=$11,exception_id=CASE WHEN $12 THEN NULL ELSE exception_id END,updated_at=$13,
+      school_schedule_exempt=school_schedule_exempt OR $14 WHERE household_id=$1 AND id=$2 RETURNING *,date::text,original_date::text`,
     [householdId, id, status, toDate || row.date, dueTime, JSON.stringify(checked), ['approve', 'reject'].includes(action), action === 'approve' ? now : row.approved_at,
-      action === 'approve' ? principal.actor : row.approved_by, action === 'reject', action === 'skip' ? reason : row.skip_reason, action === 'skip', now]);
+      action === 'approve' ? principal.actor : row.approved_by, action === 'reject', action === 'skip' ? reason : row.skip_reason, action === 'skip', now, action === 'reschedule']);
     if (['approve', 'reject'].includes(action)) await writeLegacyCompletion(client, updated, principal, now);
     await appendEvent(client, principal, updated, { approve: 'approved', reject: 'rejected', skip: 'skipped', reschedule: 'rescheduled', subtasks: 'subtasks_changed' }[action], row, reason, now);
     if (onChange) await onChange(client, { householdId, personId: row.person_id, date: row.date,

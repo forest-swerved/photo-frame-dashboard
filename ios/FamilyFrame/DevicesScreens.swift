@@ -97,7 +97,7 @@ private struct DevicesContent: View {
     private var rewards: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Your saved rewards").font(.title2.bold()).accessibilityAddTraits(.isHeader)
-            if network.availableCredits.isEmpty && network.snapshot != nil { Text("Finish your required chores to earn Internet time. Chores needing approval count after a parent approves them.").font(.subheadline).foregroundStyle(Brand.muted) }
+            if network.availableCredits.isEmpty && network.snapshot != nil { Text("Finish your required tasks to earn Internet time. Tasks needing approval count after a parent approves them.").font(.subheadline).foregroundStyle(Brand.muted) }
             ForEach((network.snapshot?.credits ?? []).filter { $0.personId == network.personID && !["spent", "expired"].contains($0.status) }) { credit in
                 FrameCard(accent: Brand.lime) {
                     Text("\(credit.minutes) minutes").font(.title2.bold())
@@ -116,7 +116,7 @@ private struct DevicesContent: View {
                 NavigationLink { RewardPolicyEditor(network: network, policy: policy) } label: {
                     FrameCard(accent: Brand.lime) {
                         HStack { Text(personName(policy.personId)).font(.headline); Spacer(); Image(systemName: "chevron.right").font(.caption) }
-                        Text(policy.enabled ? "\(policy.rewardMinutes) minutes per chore day · \(policy.dailyLimitMinutes) minute daily reward limit" : "Earning rewards is paused").font(.subheadline)
+                        Text(policy.enabled ? "\(policy.rewardMinutes) minutes per task day · \(policy.dailyLimitMinutes) minute daily reward limit" : "Earning rewards is paused").font(.subheadline)
                         if let bedtime = policy.bedtime { Text("Bedtime cutoff \(Dates.wallTime(bedtime, on: model.today, in: model.zone).map { Dates.time($0, in: model.zone) } ?? bedtime)").font(.caption) }
                     }.foregroundStyle(Brand.ink)
                 }.buttonStyle(.plain)
@@ -158,7 +158,7 @@ struct RewardHomeCard: View {
         if network.isChild, let reward = network.earnedReward, network.availableCredits.contains(where: { $0.id == reward.id }) {
             FrameCard(accent: Brand.lime) {
                 Label("Great job!", systemImage: "star.circle.fill").font(.title2.bold()).foregroundStyle(Brand.ink)
-                Text("Your required chores earned \(reward.minutes) minutes of Internet time.").font(.headline)
+                Text("Your required tasks earned \(reward.minutes) minutes of Internet time.").font(.headline)
                 Text("Choose one of your devices now, or save this reward for later.").font(.subheadline).foregroundStyle(Brand.muted)
                 Button("Use now") { selected = reward }.buttonStyle(PrimaryButton()).disabled(!network.canChange || !network.integrationReady)
                 Button("Save for later") { network.earnedReward = nil }.font(.headline).frame(maxWidth: .infinity, minHeight: 44)
@@ -229,7 +229,7 @@ struct InternetSessionDetail: View {
                     if !item.isTerminal { Text(InternetSession.durationLabel(item.remaining(at: network.serverNow))).font(.largeTitle.bold()).monospacedDigit() }
                     if item.hasPendingWindow { Text("Reserved time · the access window is not confirmed yet.").font(.caption).foregroundStyle(Brand.muted) }
                 }
-                Text(item.source == "reward" ? "Earned chore reward" : "Parent allowance").font(.subheadline)
+                Text(item.source == "reward" ? "Earned task reward" : "Parent allowance").font(.subheadline)
                 if item.allDay { Text("All day, until household midnight. A paused all-day window still ends at its original midnight.").font(.caption).foregroundStyle(Brand.muted) }
             }
             Section("Times · \(model.session?.household.timezone ?? "household timezone")") {

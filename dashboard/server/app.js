@@ -15,6 +15,7 @@ import { parentCapabilities, changeMemberCapabilities, createFrameAccessCode, re
 import { deleteAccount } from './account-deletion.js';
 import { internetSnapshot, saveRewardPolicy, saveManagedDevice, startInternetSession, changeInternetSession, internetHistory, syncChoreReward, resolveRewardReview } from './internet.js';
 import { processInternetJobs } from './internet-worker.js';
+import { saveSchoolCalendar, schoolCalendarSnapshot } from './school-calendar.js';
 
 export function apiPath(request) {
   const url = new URL(request.url);
@@ -47,7 +48,7 @@ export async function dispatch(request, db, principal, route, options = {}) {
   if (route === 'join' && method === 'POST') return json(await joinHousehold(db, principal, await readJson(request), { getVerifiedEmail: () => confirmedAccountEmail(request, principal, options) }));
   requireHousehold(principal);
   if (route === 'account/transfer-ownership' && method === 'POST') return json(await transferOwnership(db, principal, await readJson(request)));
-  if (principal.role === 'member' && /^(household|chores|chore-occurrences|chore-exceptions|chore-history)(\/|$)/.test(route)) principal = { ...principal, verifiedCapabilities: await parentCapabilities(db, principal) };
+  if (principal.role === 'member' && /^(household|chores|chore-occurrences|chore-exceptions|chore-history|school-calendar)(\/|$)/.test(route)) principal = { ...principal, verifiedCapabilities: await parentCapabilities(db, principal) };
   options = { ...options, choreOptions: { ...options.choreOptions, onChange: options.choreOptions?.onChange || ((client, change) => syncChoreReward(client, change)) } };
   if (route === 'frame-access-codes' && method === 'POST') return json(await createFrameAccessCode(db, principal, await readJson(request), options), 201);
   if (route === 'frame-access/redeem' && method === 'POST') {
@@ -94,6 +95,8 @@ export async function dispatch(request, db, principal, route, options = {}) {
     if (readNotification && method === 'POST') return json(await markNotificationRead(db, principal, readNotification[1]));
   }
   if (route === 'household' && method === 'GET') return json(await householdSnapshot(db, principal, url.searchParams.get('date')));
+  if (route === 'school-calendar' && method === 'GET') return json(await schoolCalendarSnapshot(db, principal, url.searchParams.get('date')));
+  if (route === 'school-calendar' && ['PUT', 'PATCH'].includes(method)) return json(await saveSchoolCalendar(db, principal, await readJson(request), { ...options.choreOptions, override: method === 'PATCH' }));
   if (route === 'chore-history' && method === 'GET') return json(await choreHistory(db, principal, Object.fromEntries(url.searchParams)));
   if (route === 'chore-exceptions' && method === 'GET') return json(await choreExceptions(db, principal));
   if (route === 'chore-exceptions' && method === 'POST') return json(await createChoreException(db, principal, await readJson(request)), 201);

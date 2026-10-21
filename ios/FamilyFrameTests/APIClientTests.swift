@@ -245,6 +245,31 @@ final class APIClientTests: XCTestCase {
         _ = try await api.revokeChoreBreak(item, reason: "Synthetic removal", mutationID: id)
         XCTAssertEqual(requests, 2)
     }
+    @MainActor func testSchoolCalendarReadAndVersionedOverrideUseAuthenticatedContract() async throws {
+        let api = client(); api.mobileToken = "test-school-token"
+        let response = Data(#"{"data":{"calendar":null,"schoolDay":{"date":"2026-10-18","type":"unknown","label":"School schedule needed","reason":"Synthetic missing calendar","calendarVersion":null}}}"#.utf8)
+        var requests = 0
+        MockProtocol.handler = { [self] request in
+            requests += 1; XCTAssertEqual(request.url?.path, "/api/school-calendar")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "FamilyMobile test-school-token")
+            if request.httpMethod == "GET" {
+                let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
+                XCTAssertEqual(query?.first(where: { $0.name == "date" })?.value, "2026-10-18")
+            } else {
+                XCTAssertEqual(request.httpMethod, "PATCH")
+                let payload = body(request), change = try XCTUnwrap(payload["override"] as? [String: Any])
+                XCTAssertEqual(payload["expectedVersion"] as? Int, 7)
+                XCTAssertEqual(change["date"] as? String, "2026-10-18"); XCTAssertEqual(change["type"] as? String, "school_day")
+                XCTAssertEqual(change["reason"] as? String, "Synthetic school date change")
+                XCTAssertNil(payload["householdId"], "The household is derived from the signed-in account")
+            }
+            return (200, response)
+        }
+        let calendar = try await api.schoolCalendar(date: "2026-10-18")
+        XCTAssertNil(calendar.calendar); XCTAssertFalse(calendar.schoolDay.isKnown)
+        _ = try await api.changeSchoolDay(.init(expectedVersion: 7, change: .init(date: "2026-10-18", type: "school_day", reason: "Synthetic school date change")))
+        XCTAssertEqual(requests, 2)
+    }
     @MainActor func testPasswordRecoveryUsesOnlyProofAndDoesNotCreateAMobileSession() async throws {
         let api = client(); var requests = 0
         MockProtocol.handler = { [self] request in

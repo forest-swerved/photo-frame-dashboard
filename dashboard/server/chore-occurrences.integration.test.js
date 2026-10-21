@@ -42,7 +42,7 @@ test('isolated PostgreSQL daily chore definitions, approvals and history', { ski
   try {
     assert.equal((await pool.query('SELECT current_database() AS name')).rows[0].name, 'family_frame_tests');
     await pool.query(`CREATE SCHEMA ${schema}`); created = true;
-    for (const name of ['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql', 'chore-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
+    for (const name of ['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql', 'chore-schema.sql','school-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
     await db.query(await readFile(new URL('chore-schema.sql', import.meta.url), 'utf8')); // Idempotent replay.
     await db.query('INSERT INTO family_households(id,title,timezone) VALUES($1,$2,$3)', [household.id, household.title, household.timezone]);
     for (const child of [childA, childB]) await db.query("INSERT INTO family_people(id,household_id,name,color) VALUES($1,$2,$3,'#00748c')", [child.personId, household.id, child.user.name]);
