@@ -86,6 +86,7 @@ BEGIN
   UPDATE family_chore_events SET actor='deleted:account',actor_name='Deleted account'
     WHERE actor=ANY(actor_ids) OR split_part(actor,':approval:',2)=ANY(grant_ids);
   UPDATE family_chore_exceptions SET created_by='deleted:account' WHERE created_by=ANY(actor_ids) OR created_by=account_id OR split_part(created_by,':approval:',2)=ANY(grant_ids);
+  UPDATE family_school_calendars SET created_by='deleted:account' WHERE created_by=ANY(actor_ids) OR created_by=account_id OR split_part(created_by,':approval:',2)=ANY(grant_ids);
   UPDATE family_internet_events SET actor='deleted:account' WHERE actor=ANY(actor_ids) OR split_part(actor,':approval:',2)=ANY(grant_ids);
   UPDATE family_internet_sessions SET created_by='deleted:account' WHERE created_by=ANY(actor_ids) OR split_part(created_by,':approval:',2)=ANY(grant_ids);
   DELETE FROM family_mutations WHERE actor=ANY(actor_ids) OR split_part(actor,':approval:',2)=ANY(grant_ids);
@@ -128,6 +129,7 @@ BEGIN
     DELETE FROM family_calendar_cache n WHERE n.household_id=delete_household_id;
     DELETE FROM family_calendar_sync_jobs n WHERE n.household_id=delete_household_id;
     DELETE FROM family_calendar_connections n WHERE n.household_id=delete_household_id;
+    DELETE FROM family_school_calendars n WHERE n.household_id=delete_household_id;
     DELETE FROM family_notification_events n WHERE n.household_id=delete_household_id;
     DELETE FROM family_notification_scan_state n WHERE n.household_id=delete_household_id;
     DELETE FROM family_mutations n WHERE n.household_id=delete_household_id;

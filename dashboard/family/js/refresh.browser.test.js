@@ -61,7 +61,7 @@ async function fixture({ frame = true, width = 1280, height = 800 } = {}) {
   });
   return { browser, page, state, origin, async open(view = 'today') {
     await page.goto(new URL(`/family.html${frame ? '?display=frame' : ''}#${view}`, origin).href);
-    await page.getByRole('heading', { name: view[0].toUpperCase() + view.slice(1), exact: true }).waitFor();
+    await page.getByRole('heading', { name: view === 'chores' ? 'Tasks' : view[0].toUpperCase() + view.slice(1), exact: true, level: 1 }).waitFor();
     if (view === 'today' || view === 'calendar') await page.locator('.calendar-meta').waitFor();
   } };
 }

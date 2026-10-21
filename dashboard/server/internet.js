@@ -259,13 +259,13 @@ export async function startInternetSession(db, principal, body, { reward = false
     if (reward) {
       credit = await one(client, 'SELECT *,earned_date::text FROM family_reward_credits WHERE household_id=$1 AND id=$2 AND person_id=$3', [householdId, body.creditId, principal.personId]);
       if (!credit) throw notFound();
-      requireValue(credit.status === 'available' && new Date(credit.expires_at) > now, 409, 'reward_unavailable', 'This reward is no longer available. Refresh your chores.');
+      requireValue(credit.status === 'available' && new Date(credit.expires_at) > now, 409, 'reward_unavailable', 'This reward is no longer available. Refresh your tasks.');
       // Redemption rechecks the frozen earning day as well as today's work;
-      // reopening or rescheduling a source chore cannot bypass the ledger.
+      // reopening or rescheduling a source task cannot bypass the ledger.
       await lockChoreDay(client, householdId, day(credit.earned_date));
       credit = await one(client, 'SELECT *,earned_date::text FROM family_reward_credits WHERE household_id=$1 AND id=$2 AND person_id=$3 FOR UPDATE', [householdId, body.creditId, principal.personId]);
-      requireValue(credit?.status === 'available' && new Date(credit.expires_at) > now, 409, 'reward_unavailable', 'This reward is no longer available. Refresh your chores.');
-      requireValue(await creditEligible(client, credit), 409, 'chores_incomplete', 'Finish the required chores for this reward before using it.');
+      requireValue(credit?.status === 'available' && new Date(credit.expires_at) > now, 409, 'reward_unavailable', 'This reward is no longer available. Refresh your tasks.');
+      requireValue(await creditEligible(client, credit), 409, 'chores_incomplete', 'Finish the required tasks for this reward before using it.');
     }
     const personId = credit?.person_id || body.personId;
     const device = await one(client, 'SELECT * FROM family_managed_devices WHERE household_id=$1 AND id=$2 AND removed_at IS NULL FOR UPDATE', [householdId, body.deviceId]);

@@ -61,7 +61,20 @@ struct Chore: Codable, Identifiable, Equatable {
     var dueTime: String?
     var reminderMinutes: Int?
     var completion: ChoreCompletion
+    var taskSection = "tasks"
+    private enum CodingKeys: String, CodingKey { case id, title, personId, weekdays, version, dueTime, reminderMinutes, completion, taskSection }
     func applies(on date: String) -> Bool { weekdays.contains(Dates.weekday(date)) }
+}
+
+extension Chore {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(id: try c.decode(String.self, forKey: .id), title: try c.decode(String.self, forKey: .title),
+                  personId: try c.decodeIfPresent(String.self, forKey: .personId), weekdays: try c.decode([Int].self, forKey: .weekdays),
+                  version: try c.decode(Int.self, forKey: .version), dueTime: try c.decodeIfPresent(String.self, forKey: .dueTime),
+                  reminderMinutes: try c.decodeIfPresent(Int.self, forKey: .reminderMinutes), completion: try c.decode(ChoreCompletion.self, forKey: .completion),
+                  taskSection: try c.decodeIfPresent(String.self, forKey: .taskSection) ?? "tasks")
+    }
 }
 
 struct HouseholdSnapshot: Codable {
@@ -73,6 +86,7 @@ struct HouseholdSnapshot: Codable {
     var routines: [ChoreRoutine]? = nil
     var occurrences: [ChoreOccurrence]? = nil
     var capabilities: ParentCapabilities? = nil
+    var schoolDay: SchoolDayStatus? = nil
     var todaysChores: [Chore] { chores.filter { $0.applies(on: date) } }
 }
 
@@ -98,6 +112,8 @@ struct ChoreDraft: Encodable {
     var scheduleType = "weekly"
     var scheduledDate: String? = nil
     var requiresApproval = false
+    var schoolDayFilter = "any"
+    var taskSection = "tasks"
     // Explicit nulls clear assignment/deadline when editing.
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -110,8 +126,10 @@ struct ChoreDraft: Encodable {
         try c.encode(required, forKey: .required); try c.encode(instructions, forKey: .instructions)
         try c.encode(subtasks, forKey: .subtasks); try c.encode(scheduleType, forKey: .scheduleType)
         try c.encode(scheduledDate, forKey: .scheduledDate); try c.encode(requiresApproval, forKey: .requiresApproval)
+        try c.encode(scheduleType == "one_off" ? "any" : schoolDayFilter, forKey: .schoolDayFilter)
+        try c.encode(scheduleType == "weekly" && schoolDayFilter == "school_day" ? taskSection : "tasks", forKey: .taskSection)
     }
-    enum CodingKeys: String, CodingKey { case title, personId, weekdays, dueTime, reminderMinutes, expectedVersion, required, instructions, subtasks, scheduleType, scheduledDate, requiresApproval }
+    enum CodingKeys: String, CodingKey { case title, personId, weekdays, dueTime, reminderMinutes, expectedVersion, required, instructions, subtasks, scheduleType, scheduledDate, requiresApproval, schoolDayFilter, taskSection }
 }
 
 struct CalendarEvent: Codable, Identifiable, Equatable {

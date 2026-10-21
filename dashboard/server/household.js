@@ -5,6 +5,7 @@ import { one, transaction } from './database.js';
 import { FRAME_COOKIE, FRAME_COOKIE_AGE, requireAdmin, requireHousehold } from './auth.js';
 import { requireChoreManager } from './capabilities.js';
 import { ensureDailyOccurrences, occurrenceDto, routineDetails, setRoutineCompletion } from './chore-occurrences.js';
+import { schoolDayForDate } from './school-calendar.js';
 
 const notFound = () => new ApiError(404, 'not_found', 'That item does not exist in this household.');
 export const personDto = row => ({ id: row.id, name: row.name, color: row.color, version: row.version });
@@ -187,10 +188,11 @@ export async function householdSnapshot(db, principal, requestedDate, { now = ne
       id: row.choreId, occurrenceId: row.id, title: row.title, personId: row.personId, weekdays: [weekday],
       version: currentVersions.get(row.choreId) || row.routineVersion,
       dueTime: row.dueTime, reminderMinutes: row.reminderMinutes, required: row.required,
-      instructions: row.instructions, subtasks: row.subtasks, requiresApproval: row.requiresApproval,
+      instructions: row.instructions, subtasks: row.subtasks, requiresApproval: row.requiresApproval, taskSection: row.taskSection,
+      schoolDayFilter: row.schoolDayFilter, schoolScheduleExempt: row.schoolScheduleExempt,
       status: row.status, completion: row.completion,
     }));
-    return { household: principal.household, role: principal.role, date, people, chores, routines, occurrences,
+    return { household: principal.household, role: principal.role, date, people, chores, routines, occurrences, schoolDay: await schoolDayForDate(client, householdId, date),
       capabilities: principal.verifiedCapabilities || { manageChores: principal.role === 'admin', manageInternet: principal.role === 'admin' } };
   });
 }
@@ -226,7 +228,7 @@ export async function changePerson(db, principal, id, body, remove = false) {
 
 const choreDto = row => ({ id: row.id, title: row.title, personId: row.person_id, weekdays: row.weekdays, version: row.version, dueTime: row.due_time?.slice(0, 5) || null, reminderMinutes: row.reminder_minutes ?? 15,
   required: row.required ?? true, instructions: row.instructions || '', subtasks: row.subtasks || [],
-  scheduleType: row.schedule_type || 'weekly', scheduledDate: row.scheduled_date ? row.scheduled_date instanceof Date ? row.scheduled_date.toISOString().slice(0, 10) : String(row.scheduled_date).slice(0, 10) : null, requiresApproval: row.requires_approval ?? false });
+  scheduleType: row.schedule_type || 'weekly', schoolDayFilter: row.school_day_filter || 'any', taskSection: row.task_section || 'tasks', scheduledDate: row.scheduled_date ? row.scheduled_date instanceof Date ? row.scheduled_date.toISOString().slice(0, 10) : String(row.scheduled_date).slice(0, 10) : null, requiresApproval: row.requires_approval ?? false });
 export function dueTimeField(value) {
   requireValue(value === null || typeof value === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value), 422, 'invalid_due_time', 'Choose a valid due time.');
   return value;
@@ -247,19 +249,19 @@ export async function createChore(db, principal, body) {
   requireChoreManager(principal);
   const details = routineDetails(body);
   return transaction(db, async client => choreDto(await one(client, `INSERT INTO family_chores(id,household_id,title,person_id,weekdays,due_time,reminder_minutes,
-    required,instructions,subtasks,schedule_type,scheduled_date,requires_approval) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12::date,$13) RETURNING *`,
-    [randomUUID(), principal.household.id, textField(body.title, 'Chore', 100), await checkedPerson(client, principal.household.id, body.personId), weekdaysField(body.weekdays), dueTimeField(body.dueTime ?? null), reminderMinutesField(body.reminderMinutes ?? 15),
-      details.required, details.instructions, JSON.stringify(details.subtasks), details.scheduleType, details.scheduledDate, details.requiresApproval])));
+    required,instructions,subtasks,schedule_type,scheduled_date,requires_approval,school_day_filter,task_section) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12::date,$13,$14,$15) RETURNING *`,
+    [randomUUID(), principal.household.id, textField(body.title, 'Task', 100), await checkedPerson(client, principal.household.id, body.personId), weekdaysField(body.weekdays), dueTimeField(body.dueTime ?? null), reminderMinutesField(body.reminderMinutes ?? 15),
+      details.required, details.instructions, JSON.stringify(details.subtasks), details.scheduleType, details.scheduledDate, details.requiresApproval, details.schoolDayFilter, details.taskSection])));
 }
 
 export async function changeChore(db, principal, id, body, remove = false) {
   requireChoreManager(principal); uuidField(id); versionField(body.expectedVersion);
   return transaction(db, async client => {
-    // Take the person reference lock before the chore, matching person deletion.
+    // Take the person reference lock before the task, matching person deletion.
     const checkedPersonId = body.personId === undefined ? undefined : await checkedPerson(client, principal.household.id, body.personId);
     const row = await one(client, 'SELECT * FROM family_chores WHERE id=$1 AND household_id=$2 AND deleted_at IS NULL FOR UPDATE', [id, principal.household.id]);
     if (!row) throw notFound();
-    requireValue(row.version === body.expectedVersion, 409, 'version_conflict', 'This chore changed. Refresh and try again.', { current: choreDto(row) });
+    requireValue(row.version === body.expectedVersion, 409, 'version_conflict', 'This task changed. Refresh and try again.', { current: choreDto(row) });
     if (remove) {
       await client.query('UPDATE family_chores SET deleted_at=now(),version=version+1 WHERE id=$1 AND household_id=$2', [id, principal.household.id]);
       return { deleted: true };
@@ -267,14 +269,14 @@ export async function changeChore(db, principal, id, body, remove = false) {
     const personId = body.personId === undefined ? row.person_id : checkedPersonId;
     const details = routineDetails(body, row);
     return choreDto(await one(client, `UPDATE family_chores SET title=$3,person_id=$4,weekdays=$5,due_time=$6,reminder_minutes=$7,
-      required=$8,instructions=$9,subtasks=$10::jsonb,schedule_type=$11,scheduled_date=$12::date,requires_approval=$13,version=version+1 WHERE id=$1 AND household_id=$2 RETURNING *`,
-      [id, principal.household.id, body.title === undefined ? row.title : textField(body.title, 'Chore', 100), personId, body.weekdays === undefined ? row.weekdays : weekdaysField(body.weekdays), body.dueTime === undefined ? row.due_time : dueTimeField(body.dueTime), body.reminderMinutes === undefined ? row.reminder_minutes : reminderMinutesField(body.reminderMinutes),
-        details.required, details.instructions, JSON.stringify(details.subtasks), details.scheduleType, details.scheduledDate, details.requiresApproval]));
+      required=$8,instructions=$9,subtasks=$10::jsonb,schedule_type=$11,scheduled_date=$12::date,requires_approval=$13,school_day_filter=$14,task_section=$15,version=version+1 WHERE id=$1 AND household_id=$2 RETURNING *`,
+      [id, principal.household.id, body.title === undefined ? row.title : textField(body.title, 'Task', 100), personId, body.weekdays === undefined ? row.weekdays : weekdaysField(body.weekdays), body.dueTime === undefined ? row.due_time : dueTimeField(body.dueTime), body.reminderMinutes === undefined ? row.reminder_minutes : reminderMinutesField(body.reminderMinutes),
+        details.required, details.instructions, JSON.stringify(details.subtasks), details.scheduleType, details.scheduledDate, details.requiresApproval, details.schoolDayFilter, details.taskSection]));
   });
 }
 
 export function completionDecision(current, desired, expectedVersion) {
-  requireValue(current.version === expectedVersion, 409, 'version_conflict', 'This chore was changed on another screen.', { current });
+  requireValue(current.version === expectedVersion, 409, 'version_conflict', 'This task was changed on another screen.', { current });
   return current.completed === desired ? current : { ...current, completed: desired, version: current.version + 1 };
 }
 

@@ -41,7 +41,7 @@ test('verified child account onboarding, concurrency, and live scope boundaries'
     await pool.query('CREATE TABLE IF NOT EXISTS family_internal.auth_sessions(id uuid PRIMARY KEY,user_id uuid NOT NULL,not_after timestamptz)');
     for (const account of Object.values(accounts)) await pool.query('INSERT INTO family_internal.auth_sessions(id,user_id) VALUES($1,$2)', [account.sessionId, account.id]);
     await pool.query(`CREATE SCHEMA ${schema}`); created = true;
-    for (const name of ['schema.sql','mobile-schema.sql','notifications-schema.sql','calendar-sync-schema.sql','chore-schema.sql','account-notifications-schema.sql','internet-schema.sql','account-deletion-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
+    for (const name of ['schema.sql','mobile-schema.sql','notifications-schema.sql','calendar-sync-schema.sql','chore-schema.sql','school-schema.sql','account-notifications-schema.sql','internet-schema.sql','account-deletion-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
     await db.query('INSERT INTO family_households(id,title,timezone) VALUES($1,$2,$3)', [household.id, household.title, household.timezone]);
     await db.query("INSERT INTO family_members(household_id,user_id,name,email,role) VALUES($1,$2,'Parent',$3,'admin')", [household.id, accounts.parent.id, accounts.parent.email]);
     for (const [key, id] of Object.entries(profiles)) await db.query("INSERT INTO family_people(id,household_id,name,color) VALUES($1,$2,$3,'#00aabb')", [id, household.id, `Test profile ${key}`]);

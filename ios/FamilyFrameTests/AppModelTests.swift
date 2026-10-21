@@ -57,6 +57,9 @@ final class DashboardAPI: FamilyAPI {
     var occurrenceHandler: ((ChoreOccurrence, Bool) async throws -> ChoreOccurrence)?
     var actionHandler: ((String, OccurrenceAction) async throws -> ChoreOccurrence)?
     var occurrenceCalls = 0, actionCalls = 0, breakCalls = 0
+    var schoolReadCalls = 0, schoolChangeCalls = 0
+    var schoolReadHandler: (() async throws -> SchoolCalendarResponse)?
+    var schoolChangeHandler: ((SchoolDayOverrideDraft) async throws -> SchoolCalendarResponse)?
     var historyPersonID: String?
     var internetData: InternetSnapshot?
     var internetHandler: (() async throws -> InternetSnapshot)?
@@ -94,6 +97,8 @@ final class DashboardAPI: FamilyAPI {
     func changeOccurrence(_ id: String, action: OccurrenceAction) async throws -> ChoreOccurrence { actionCalls += 1; guard let actionHandler else { throw unexpected }; return try await actionHandler(id, action) }
     func choreHistory(from: String, to: String, personID: String?) async throws -> [ChoreHistoryItem] { historyPersonID = personID; return [] }
     func choreBreaks() async throws -> [ChoreBreak] { breakCalls += 1; return [] }
+    func schoolCalendar(date: String) async throws -> SchoolCalendarResponse { schoolReadCalls += 1; guard let schoolReadHandler else { throw unexpected }; return try await schoolReadHandler() }
+    func changeSchoolDay(_ draft: SchoolDayOverrideDraft) async throws -> SchoolCalendarResponse { schoolChangeCalls += 1; guard let schoolChangeHandler else { throw unexpected }; return try await schoolChangeHandler(draft) }
     func createChoreBreak(_ draft: ChoreBreakDraft) async throws -> ChoreBreak { breakCalls += 1; throw unexpected }
     func revokeChoreBreak(_ item: ChoreBreak, reason: String, mutationID: String) async throws -> ChoreBreak { breakCalls += 1; throw unexpected }
     private var unexpected: APIError { APIError(status: 0, code: "unexpected_test_call", message: "No account calls belong in dashboard state tests.") }
@@ -275,6 +280,33 @@ final class AppModelTests: XCTestCase {
         _ = try? await model.loadChoreHistory(from: "2026-10-01", to: "2026-10-18", personID: "fixture-sibling")
         XCTAssertEqual(api.historyPersonID, "fixture-child")
     }
+    func testChildCannotChangeSchoolDayAndUnknownSchoolStatusRemainsReadable() async throws {
+        let (model, api, _, _) = fixture(role: "child", personID: "fixture-child")
+        let status = SchoolDayStatus(date: "2026-10-17", type: "unknown", label: "Calendar not confirmed", reason: "Synthetic missing year", calendarVersion: nil)
+        api.data.schoolDay = status; api.schoolReadHandler = { SchoolCalendarResponse(calendar: nil, schoolDay: status) }
+        await model.start()
+        let response = try await model.loadSchoolCalendar(date: model.today)
+        XCTAssertFalse(response.schoolDay.isKnown)
+        let changed = await model.changeSchoolDay(.init(expectedVersion: 1, change: .init(date: model.today, type: "school_day", reason: "Synthetic parent change")))
+        XCTAssertFalse(changed); XCTAssertEqual(api.schoolReadCalls, 1); XCTAssertEqual(api.schoolChangeCalls, 0)
+    }
+    func testUncertainSchoolCalendarMutationRequiresReviewBeforeRetry() async {
+        let (model, api, _, _) = fixture(); await model.start()
+        api.schoolChangeHandler = { _ in throw APIError(status: 0, code: "network_error", message: "Synthetic uncertain school date change") }
+        let draft = SchoolDayOverrideDraft(expectedVersion: 1, change: .init(date: model.today, type: "non_school_day", reason: "Synthetic date change"))
+        let changed = await model.changeSchoolDay(draft)
+        XCTAssertFalse(changed); XCTAssertTrue(model.lastMutationNeedsReview); XCTAssertTrue(model.isStale)
+        let replay = await model.changeSchoolDay(draft)
+        XCTAssertFalse(replay); XCTAssertEqual(api.schoolChangeCalls, 1)
+    }
+    func testPastSchoolDateChangesStayReadOnly() async {
+        let (model, api, _, _) = fixture(); await model.start()
+        let yesterday = Dates.shiftedDay(model.today, by: -1)
+        XCTAssertFalse(model.canEditSchoolDate(yesterday)); XCTAssertTrue(model.canEditSchoolDate(model.today))
+        XCTAssertTrue(model.canEditSchoolDate(Dates.shiftedDay(model.today, by: 1)))
+        let changed = await model.changeSchoolDay(.init(expectedVersion: 1, change: .init(date: yesterday, type: "school_day", reason: "Synthetic historical edit")))
+        XCTAssertFalse(changed); XCTAssertEqual(api.schoolChangeCalls, 0)
+    }
     func testRescheduleAcknowledgmentCannotBeResurrectedByOldRead() async {
         let (model, api, _, _) = fixture(); let item = occurrence(); api.data.occurrences = [item]
         api.actionHandler = { _, request in
@@ -322,10 +354,51 @@ final class AppModelTests: XCTestCase {
         let optional = occurrence("optional", personID: child.id, required: false, choreID: "optional-routine")
         api.data.people = [child]; api.data.occurrences = [submitted, optional]
         var routine = ChoreRoutine(legacy: api.data.chores[0]); routine.instructions = "Synthetic routine instructions"; routine.requiresApproval = true; routine.subtasks = submitted.subtasks
+        routine.schoolDayFilter = "school_day"
+        api.data.schoolDay = SchoolDayStatus(date: "2026-10-17", type: "non_school_day", label: "No school", reason: "Synthetic regular day off", calendarVersion: 1)
         api.data.routines = [routine]; await model.start()
         await attachLayout(NavigationStack { TodayScreen() }.environmentObject(model), name: "Synthetic Stage2 Today - submitted approval")
         await attachLayout(OccurrenceDetailScreen(original: optional).environmentObject(model).environment(\.dynamicTypeSize, .accessibility1), name: "Synthetic Stage2 chore details - accessible checklist")
         await attachLayout(ChoreEditor(routine: routine).environmentObject(model), name: "Synthetic Stage2 routine editor")
+    }
+    func testSyntheticSchoolCalendarLayouts() async {
+        let (model, api, _, _) = fixture()
+        let calendar = SchoolCalendarDocument(title: "Synthetic school year", sourceName: "Synthetic approved calendar", sourceSha256: nil, sourceUrl: "https://school.example.test/calendar", coverageStart: "2026-08-01", coverageEndExclusive: "2027-08-01", termStart: "2026-08-20", termEndExclusive: "2027-05-29", weekdays: [1,2,3,4,5], closures: [.init(fromDate: "2026-10-15", toDateExclusive: "2026-10-17", label: "Synthetic school break")], overrides: [], version: 1, updatedAt: nil)
+        let status = SchoolDayStatus(date: "2026-10-17", type: "non_school_day", label: "No school", reason: "Synthetic regular day off", calendarVersion: 1)
+        api.data.schoolDay = status; api.schoolReadHandler = { SchoolCalendarResponse(calendar: calendar, schoolDay: status) }
+        await model.start()
+        await attachLayout(NavigationStack { SchoolCalendarScreen() }.environmentObject(model), name: "Synthetic school calendar - approved schedule")
+        await attachLayout(SchoolDayCard().environmentObject(model).environment(\.dynamicTypeSize, .accessibility1), name: "Synthetic school-day status - accessible type")
+    }
+    func testEarlierSchoolScheduleStaysVisibleWithoutCountingTowardCurrentTasks() async {
+        let (model, api, _, _) = fixture()
+        var earlierDone = occurrence("earlier-done", status: "completed", choreID: "earlier-routine")
+        earlierDone.schoolDayFilter = "school_day"; earlierDone.taskSection = "before_school"
+        var earlierSubmitted = occurrence("earlier-submitted", approval: true, status: "submitted", choreID: "earlier-approval")
+        earlierSubmitted.schoolDayFilter = "school_day"; earlierSubmitted.taskSection = "after_school"
+        var current = occurrence("current-pending", choreID: "non-school-routine"); current.schoolDayFilter = "non_school_day"
+        var parentMoved = occurrence("parent-moved", choreID: "explicitly-moved"); parentMoved.schoolDayFilter = "school_day"; parentMoved.schoolScheduleExempt = true
+        api.data.occurrences = [earlierDone, earlierSubmitted, current, parentMoved]
+        api.data.schoolDay = SchoolDayStatus(date: "2026-10-17", type: "non_school_day", label: "No school", reason: "Synthetic parent change", calendarVersion: 2)
+        await model.start()
+        XCTAssertEqual(model.visibleOccurrences.count, 4, "Saved submitted/completed work remains available")
+        XCTAssertEqual(model.requiredCount, 2); XCTAssertEqual(model.completedCount, 0); XCTAssertEqual(model.approvalCount, 0)
+        XCTAssertFalse(model.isCurrentSchoolSchedule(earlierDone)); XCTAssertTrue(model.isCurrentSchoolSchedule(parentMoved))
+    }
+    func testSyntheticSchoolTaskSectionsAndEmptyOnboardingLayouts() async {
+        let (model, api, _, _) = fixture()
+        let child = Person(id: "fixture-child", name: "Synthetic child", color: "#00748c", version: 1)
+        var before = occurrence("before-school", personID: child.id, choreID: "before-routine"); before.schoolDayFilter = "school_day"; before.taskSection = "before_school"
+        var after = occurrence("after-school", personID: child.id, choreID: "after-routine"); after.schoolDayFilter = "school_day"; after.taskSection = "after_school"
+        api.data.people = [child]; api.data.occurrences = [before, after]
+        api.data.schoolDay = SchoolDayStatus(date: "2026-10-17", type: "school_day", label: "School day", reason: "Synthetic school schedule", calendarVersion: 1)
+        await model.start()
+        await attachLayout(NavigationStack { ScrollView { PersonOccurrencesCard(person: child, occurrences: model.visibleOccurrences, showEmptySections: true).padding(20) } }.environmentObject(model), name: "Synthetic Tasks - before and after school")
+        await attachLayout(NavigationStack { ScrollView { PersonOccurrencesCard(person: child, occurrences: [], showEmptySections: true).padding(20) } }.environmentObject(model), name: "Synthetic Tasks - empty school sections and add actions")
+        await attachLayout(ChoreEditor(routine: nil, assignedPersonID: child.id, initialSchoolDayFilter: "school_day", initialTaskSection: "before_school").environmentObject(model), name: "Synthetic task editor - before-school preset")
+        api.data.schoolDay = SchoolDayStatus(date: "2026-10-17", type: "non_school_day", label: "No school", reason: "Synthetic school break", calendarVersion: 2)
+        await model.refresh()
+        await attachLayout(NavigationStack { ScrollView { PersonOccurrencesCard(person: child, occurrences: model.visibleOccurrences, showEmptySections: true).padding(20) } }.environmentObject(model), name: "Synthetic Tasks - flat non-school day")
     }
     func testFreshChoresStayEditableWhileSlowCalendarIsLoading() async throws {
         let (model, api, _, _) = fixture(), delayed = Deferred<CalendarSnapshot>()

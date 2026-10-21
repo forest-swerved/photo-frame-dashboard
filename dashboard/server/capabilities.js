@@ -24,7 +24,7 @@ export function requireChoreManager(principal) {
   requireHousehold(principal);
   requireValue(['user', 'mobile'].includes(principal.authType) && principal.role === 'admin'
     || principal.verifiedCapabilities?.manageChores === true,
-  403, 'parent_required', 'A parent with chore permission must approve this action.');
+  403, 'parent_required', 'A parent with task permission must approve this action.');
 }
 
 export async function changeMemberCapabilities(db, principal, userId, body) {

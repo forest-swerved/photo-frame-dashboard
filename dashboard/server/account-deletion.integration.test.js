@@ -41,6 +41,7 @@ test('isolated owner cleanup removes private account data while preserving share
       VALUES($1,$2,$3,'completed',$4,'Private child login name','{"status":"completed"}')`, [randomUUID(), f.hh, f.occurrence, `mobile:${f.mobile}`]);
     await db.query(`INSERT INTO family_chore_exceptions(id,household_id,from_date,to_date,reason,created_by)
       VALUES($1,$2,'2026-12-20','2026-12-27','Family holiday',$3)`, [f.exception, f.hh, `mobile:${f.mobile}`]);
+    await db.query(`INSERT INTO family_school_calendars(household_id,version,document,created_by) VALUES($1,1,'{"title":"Shared school calendar"}',$2)`, [f.hh, `mobile:${f.mobile}`]);
     await db.query(`INSERT INTO family_mobile_sessions(id,household_id,token_hash,kind,user_id,provider_session_id,person_id,label) VALUES
       ($1,$2,'fixture-child-mobile','child',$3,$4,$5,'Private child phone'),($6,$2,'fixture-parent-mobile','parent',$7,$8,NULL,'Parent phone')`, [f.mobile, f.hh, f.child, randomUUID(), f.person, f.parentMobile, f.parent, randomUUID()]);
     await db.query(`INSERT INTO family_account_notification_preferences(household_id,user_id) VALUES($1,$2),($1,$3)`, [f.hh, f.child, f.parent]);
@@ -76,7 +77,7 @@ test('isolated owner cleanup removes private account data while preserving share
     await db.query(`CREATE SCHEMA ${schema} AUTHORIZATION ${ownerRole}`); created = true;
     await db.query(`SET ROLE ${ownerRole}`);
     await db.query(`SET search_path TO ${schema},pg_catalog`);
-    for (const name of ['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql', 'calendar-sync-schema.sql', 'chore-schema.sql', 'account-notifications-schema.sql', 'internet-schema.sql', 'account-deletion-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
+    for (const name of ['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql', 'calendar-sync-schema.sql', 'chore-schema.sql','school-schema.sql', 'account-notifications-schema.sql', 'internet-schema.sql', 'account-deletion-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
     await db.query(await readFile(new URL('account-deletion-schema.sql', import.meta.url), 'utf8'));
     assert.equal(await verifyAccountDeletionBoundary(db, schema, { requireServiceRole: false }), true);
 
@@ -110,7 +111,8 @@ test('isolated owner cleanup removes private account data while preserving share
       for (const table of ['family_push_installations', 'family_notification_deliveries', 'family_notification_inbox', 'family_notification_preferences', 'family_invites', 'family_mutations', 'family_frame_authorizations']) assert.equal(await count(table), 0, table);
       assert.equal(await count('family_mobile_sessions'), 1); assert.equal(await count('family_members'), 1);
       assert.equal(await count('family_account_notification_preferences'), 1); assert.equal(await count('family_account_notification_inbox'), 1);
-      for (const table of ['family_households', 'family_people', 'family_chores', 'family_chore_occurrences', 'family_completions', 'family_calendar_connections', 'family_internet_sessions']) assert.equal(await count(table), 1, table);
+      for (const table of ['family_households', 'family_people', 'family_chores', 'family_chore_occurrences', 'family_completions', 'family_calendar_connections', 'family_school_calendars', 'family_internet_sessions']) assert.equal(await count(table), 1, table);
+      assert.equal((await db.query('SELECT created_by FROM family_school_calendars')).rows[0].created_by, 'deleted:account');
       assert.equal((await db.query('SELECT actor,actor_name FROM family_chore_events')).rows[0].actor_name, 'Deleted account');
       assert.equal((await db.query('SELECT completed_by,approved_by FROM family_chore_occurrences')).rows[0].completed_by, 'deleted:account');
       assert.equal((await db.query('SELECT completed_by,approved_by FROM family_chore_occurrences')).rows[0].approved_by, `user:${f.parent}`);

@@ -16,28 +16,32 @@ struct ChoreEditor: View {
     @State private var instructions: String
     @State private var subtasks: [ChoreStep]
     @State private var scheduleType: String
+    @State private var schoolDayFilter: String
+    @State private var taskSection: String
     @State private var scheduledDate = Date()
     @State private var saving = false
     @State private var confirmDelete = false
     @State private var saveBlocked = false
     @State private var saveMessage: String?
-    init(routine: ChoreRoutine?) {
+    init(routine: ChoreRoutine?, assignedPersonID: String? = nil, initialSchoolDayFilter: String? = nil, initialTaskSection: String? = nil) {
         self.routine = routine
-        _title = State(initialValue: routine?.title ?? ""); _personID = State(initialValue: routine?.personId ?? "")
+        _title = State(initialValue: routine?.title ?? ""); _personID = State(initialValue: routine?.personId ?? assignedPersonID ?? "")
         _days = State(initialValue: Set(routine?.weekdays ?? Array(0...6))); _hasDeadline = State(initialValue: routine?.dueTime != nil)
         _reminder = State(initialValue: routine?.reminderMinutes ?? 15); _required = State(initialValue: routine?.required ?? true)
         _requiresApproval = State(initialValue: routine?.requiresApproval ?? false); _instructions = State(initialValue: routine?.instructions ?? "")
         _subtasks = State(initialValue: routine?.subtasks ?? []); _scheduleType = State(initialValue: routine?.scheduleType ?? "weekly")
+        _schoolDayFilter = State(initialValue: routine?.schoolDayFilter ?? initialSchoolDayFilter ?? "any")
+        _taskSection = State(initialValue: routine?.taskSection ?? initialTaskSection ?? "before_school")
     }
     var body: some View {
         NavigationStack {
             Form {
-                Section("The chore") {
-                    TextField("What needs doing?", text: $title).textInputAutocapitalization(.sentences).accessibilityLabel("Chore title")
+                Section("The task") {
+                    TextField("What needs doing?", text: $title).textInputAutocapitalization(.sentences).accessibilityLabel("Task title")
                     Picker("Assigned to", selection: $personID) {
                         Text("Family / unassigned").tag(""); ForEach(model.snapshot?.people ?? []) { Text($0.name).tag($0.id) }
                     }
-                    Toggle("Required chore", isOn: $required)
+                    Toggle("Required task", isOn: $required)
                     Toggle("Parent approval required", isOn: $requiresApproval)
                 }
                 Section("Schedule") {
@@ -45,6 +49,19 @@ struct ChoreEditor: View {
                     if scheduleType == "one_off" {
                         DatePicker("On", selection: $scheduledDate, displayedComponents: .date).environment(\.timeZone, model.zone)
                     } else {
+                        Picker("School schedule", selection: $schoolDayFilter) {
+                            Text("Any school status").tag("any")
+                            Text("School days only").tag("school_day")
+                            Text("Non-school days only").tag("non_school_day")
+                        }
+                        if schoolDayFilter == "school_day" {
+                            Picker("School-day section", selection: $taskSection) {
+                                Text("Before school").tag("before_school")
+                                Text("After school").tag("after_school")
+                                Text("Any time").tag("tasks")
+                            }
+                        }
+                        Text("The school calendar checks the selected weekdays automatically. Early dismissal still counts as a school day. Task breaks are managed separately.").font(.caption).foregroundStyle(Brand.muted)
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 64))], spacing: 12) {
                             ForEach(0..<7) { day in
                                 Button { if days.contains(day) { days.remove(day) } else { days.insert(day) } } label: {
@@ -72,10 +89,10 @@ struct ChoreEditor: View {
                     }
                     Button("Add a step") { subtasks.append(ChoreStep(title: "")) }.disabled(subtasks.count >= 20)
                 } header: { Text("Checklist") } footer: { Text("Up to 20 steps, each at most 160 characters.") }
-                Section { Text("Changes apply to newly generated days. Today's saved chores keep their instructions, assignment, and approval rules.").font(.footnote).foregroundStyle(Brand.muted) }
+                Section { Text("Changes apply to newly generated days. Today's saved tasks keep their instructions, assignment, and approval rules.").font(.footnote).foregroundStyle(Brand.muted) }
                 if let saveMessage { Section { Text(saveMessage).font(.subheadline).foregroundStyle(Brand.red) } }
                 if routine != nil { Section { Button("Delete routine", role: .destructive) { confirmDelete = true }.disabled(saving || !model.canChange) } }
-            }.navigationTitle(routine == nil ? "Add a chore" : "Edit routine").navigationBarTitleDisplayMode(.inline)
+            }.navigationTitle(routine == nil ? "Add a task" : "Edit routine").navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(saving) }
                     ToolbarItem(placement: .confirmationAction) { Button { Task { await save() } } label: { if saving { ProgressView() } else { Text("Save").bold() } }.disabled(!valid || saving || saveBlocked || !model.canChange) }
@@ -84,10 +101,15 @@ struct ChoreEditor: View {
                     dueDate = Dates.wallTime(routine?.dueTime ?? "18:00", on: model.today, in: model.zone) ?? Date()
                     scheduledDate = Dates.wallTime("12:00", on: routine?.scheduledDate ?? model.today, in: model.zone) ?? Date()
                 }
+                .onChange(of: scheduleType) { _, value in if value == "one_off" { schoolDayFilter = "any"; taskSection = "tasks" } }
+                .onChange(of: schoolDayFilter) { _, value in
+                    if value != "school_day" { taskSection = "tasks" }
+                    else if routine == nil && taskSection == "tasks" { taskSection = "before_school" }
+                }
                 .confirmationDialog("Delete this routine?", isPresented: $confirmDelete, titleVisibility: .visible) {
                     Button("Delete routine", role: .destructive) { Task { saving = true; if let routine, await model.deleteRoutine(routine) { dismiss() }; saving = false } }
                     Button("Cancel", role: .cancel) { }
-                } message: { Text("Saved daily chores and history remain. No new days will be generated from this routine.") }
+                } message: { Text("Saved daily tasks and history remain. No new days will be generated from this routine.") }
         }.interactiveDismissDisabled(saving)
     }
     private var valid: Bool {
@@ -98,6 +120,8 @@ struct ChoreEditor: View {
         var draft = ChoreDraft(title: title.trimmingCharacters(in: .whitespacesAndNewlines), personId: personID.isEmpty ? nil : personID, weekdays: scheduleType == "one_off" ? Array(0...6) : days.sorted(), dueTime: hasDeadline ? Dates.wallTimeString(dueDate, in: model.zone) : nil, reminderMinutes: reminder, expectedVersion: routine?.version)
         draft.required = required; draft.requiresApproval = requiresApproval; draft.instructions = instructions
         draft.subtasks = subtasks; draft.scheduleType = scheduleType; draft.scheduledDate = scheduleType == "one_off" ? Dates.day(scheduledDate, in: model.zone) : nil
+        draft.schoolDayFilter = scheduleType == "one_off" ? "any" : schoolDayFilter
+        draft.taskSection = draft.scheduleType == "weekly" && draft.schoolDayFilter == "school_day" ? taskSection : "tasks"
         if await model.saveChore(draft, id: routine?.id) { dismiss() }
         else { saveBlocked = model.lastMutationNeedsReview; saveMessage = model.message }
     }
@@ -147,9 +171,10 @@ struct SettingsScreen: View {
                     Link("Parent invitations and frame setup", destination: APIClient.configuredURL)
                 }
             }
-            if model.canManageChores { Section("Chore routines") { NavigationLink("Holidays and chore breaks") { ChoreBreaksScreen() } } }
+            if model.canManageChores { Section("Task routines") { NavigationLink("Holidays and task breaks") { ChoreBreaksScreen() } } }
             if model.canManageChores || model.canManageInternet || model.session?.isChild == true { Section("Shared frame") { NavigationLink("Create a frame unlock code") { FrameAccessScreen() } } }
             Section("Your household") {
+                NavigationLink("School calendar") { SchoolCalendarScreen() }
                 LabeledContent("Timezone", value: model.session?.household.timezone ?? "")
                 if let last = model.lastUpdated { LabeledContent("Last refreshed", value: last.formatted(date: .abbreviated, time: .shortened)) }
                 Button("Refresh current data") { Task { await model.refresh(includePreferences: true, includeStatus: true) } }.disabled(model.isLoading)
@@ -191,7 +216,7 @@ struct NotificationPreferencesScreen: View {
     var body: some View {
         Form {
             Section { Toggle("Send push notifications", isOn: $value.pushEnabled) }
-            Section("Chores") {
+            Section("Tasks") {
                 Toggle("Marked complete", isOn: $value.choreCompleted)
                 Toggle("Reopened", isOn: $value.choreReopened)
                 Toggle("Due soon", isOn: $value.choreDueSoon)
@@ -232,7 +257,7 @@ struct ChildInvitationScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 FrameCard(accent: Brand.magenta) {
-                    Text("Their account. Their chores.").font(.title2.bold())
+                    Text("Their account. Their tasks.").font(.title2.bold())
                     Text("Choose a child profile and enter that child's real email. They create or sign into their own account, confirm their email, then accept this invitation. The server links them only to the chosen profile.").font(.subheadline).foregroundStyle(Brand.muted)
                     Picker("Child profile", selection: $personID) {
                         Text("Choose a person").tag("")

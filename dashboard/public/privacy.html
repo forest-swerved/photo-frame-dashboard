@@ -16,20 +16,20 @@
   <a href="/">← Family Frame</a>
   <p><span class="badge">Your family’s information stays private</span></p>
   <h1>Family Frame privacy</h1>
-  <p class="muted">Updated October 17, 2026</p>
-  <p>Family Frame helps a household share calendars, manage chores, receive notifications, and manage access to devices on its home network. This page explains what the website, iOS app, and paired frame use to provide those features.</p>
+  <p class="muted">Updated October 20, 2026</p>
+  <p>Family Frame helps a household share calendars, manage tasks, receive notifications, and manage access to devices on its home network. This page explains what the website, iOS app, and paired frame use to provide those features.</p>
 
   <h2>Information we use</h2>
   <ul>
     <li><strong>Accounts and family profiles:</strong> account email, display name, household membership and role, and the child profiles a parent creates. Supabase Auth handles passwords; Family Frame does not keep a separate copy of your password.</li>
-    <li><strong>Chores and Activity:</strong> routines, instructions and steps, dates, due times, completion and approval status, exceptions, rewards, and the history of who made changes.</li>
-    <li><strong>Calendars:</strong> the calendars you choose, event information used by the dashboard, cached results, and the connection status. Apple Calendar uses your Apple Account email and an app-specific password stored encrypted on the server. Disconnecting the calendar removes the saved connection and cache; it does not delete events from iCloud.</li>
-    <li><strong>Devices and notifications:</strong> paired frame and phone identifiers, session credentials, notification preferences, Activity read status, and encrypted Apple push notification tokens. Push alerts use generic text; private chore and calendar details are fetched only after the app checks your account access.</li>
+    <li><strong>Tasks and Activity:</strong> routines, instructions and steps, school-day schedules and sections, dates, due times, completion and approval status, exceptions, rewards, and the history of who made changes.</li>
+    <li><strong>Calendars:</strong> the calendars you choose, event information used by the dashboard, cached results, and the connection status. Imported school calendars retain their source, school-day dates, and parent date changes so task schedules can follow the school year. Apple Calendar uses your Apple Account email and an app-specific password stored encrypted on the server. Disconnecting the Apple calendar removes its saved connection and cache; it does not delete events from iCloud.</li>
+    <li><strong>Devices and notifications:</strong> paired frame and phone identifiers, session credentials, notification preferences, Activity read status, and encrypted Apple push notification tokens. Push alerts use generic text; private task and calendar details are fetched only after the app checks your account access.</li>
     <li><strong>Optional home-network controls:</strong> device names, stable MAC addresses, assignments to children, access windows, rewards, parent adjustments, and enforcement results. The UniFi connection controls your enrolled home-network devices. It does not follow a device onto cellular, school, or hotel networks and does not collect browsing history.</li>
   </ul>
 
   <h2>Who can see it</h2>
-  <p>Parents administer their household. A child account is linked to its own profile and its permitted chores, rewards, and devices. A paired family frame shows the shared household dashboard. Sensitive parent controls on a frame require a separate short-lived parent authorization.</p>
+  <p>Parents administer their household. A child account is linked to its own profile and its permitted tasks, rewards, and devices. A paired family frame shows the shared household dashboard. Sensitive parent controls on a frame require a separate short-lived parent authorization.</p>
   <p>Vercel hosts the website and its server functions. Supabase provides account authentication and the dedicated household database. Apple delivers iOS push notifications and provides iCloud Calendar when you connect it. Ubiquiti processes the network-control requests you enable for your home. These services process information needed to provide their parts of the app.</p>
 
   <h2>No advertising or tracking analytics</h2>
@@ -37,12 +37,12 @@
 
   <h2>Your controls and deletion</h2>
   <p>You can change notification preferences, sign out of a phone, revoke paired devices, disconnect your calendar, and ask a parent to change household data. Turning off notifications does not remove shared household Activity.</p>
-  <p>Account deletion requires your current password and an explicit confirmation. It removes your login, account membership, phone sessions, push tokens, invitations associated with your account, and private Activity/preferences. Shared family calendars, child profiles, chores, and completion history remain with a household that still has an administrator. Your account identifier and actor display name are removed from retained change history.</p>
-  <p>A sole household administrator must transfer ownership to an existing adult while other active members remain. To delete the final household, Internet sessions must have ended and managed network devices must first be unenrolled and their firewall policies verified removed. This prevents orphaned network restrictions. Deleting the final household removes its stored calendars, encrypted calendar credentials, chores, profiles, device records, and history. It does not delete events from iCloud or reset a physical frame.</p>
+  <p>Account deletion requires your current password and an explicit confirmation. It removes your login, account membership, phone sessions, push tokens, invitations associated with your account, and private Activity/preferences. Shared family calendars, child profiles, tasks, and completion history remain with a household that still has an administrator. Your account identifier and actor display name are removed from retained change history.</p>
+  <p>A sole household administrator must transfer ownership to an existing adult while other active members remain. To delete the final household, Internet sessions must have ended and managed network devices must first be unenrolled and their firewall policies verified removed. This prevents orphaned network restrictions. Deleting the final household removes its stored calendars, encrypted calendar credentials, tasks, profiles, device records, and history. It does not delete events from iCloud or reset a physical frame.</p>
   <p>A small deletion recovery record containing only the account’s random ID, deletion stage, and timestamps is retained to finish interrupted deletion safely. Provider backups and operational logs may persist until their normal retention periods expire. Messages or screenshots you have already saved on your devices are outside the app’s control.</p>
 
   <h2>Children and family use</h2>
-  <p>Parents decide which child profiles and accounts belong to their household and what children can access. The app uses children’s information to provide family scheduling, chores, notifications, and optional Internet-time rewards. It does not use that information for advertising or sell it to others.</p>
+  <p>Parents decide which child profiles and accounts belong to their household and what children can access. The app uses children’s information to provide family scheduling, tasks, notifications, and optional Internet-time rewards. It does not use that information for advertising or sell it to others.</p>
   <p class="contact">For privacy questions or help with a deletion request, contact <a href="mailto:family-calendar@swerved.com">family-calendar@swerved.com</a>. Do not email passwords, app-specific passwords, API keys, or pairing codes.</p>
   <footer>Family Frame · Swerved</footer>
 </main>

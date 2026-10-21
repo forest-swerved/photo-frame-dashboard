@@ -66,7 +66,9 @@ final class AppModel: ObservableObject {
         }
         return people
     }
-    var requiredOccurrences: [ChoreOccurrence] { visibleOccurrences.filter { $0.required && !$0.isSkipped } }
+    var isSchoolDay: Bool { snapshot?.schoolDay?.date == snapshot?.date && snapshot?.schoolDay?.type == "school_day" }
+    func isCurrentSchoolSchedule(_ item: ChoreOccurrence) -> Bool { item.applies(to: snapshot?.schoolDay) }
+    var requiredOccurrences: [ChoreOccurrence] { visibleOccurrences.filter { $0.required && !$0.isSkipped && isCurrentSchoolSchedule($0) } }
     var requiredCount: Int { snapshot?.occurrences == nil ? visibleChores.count : requiredOccurrences.count }
     var completedCount: Int { snapshot?.occurrences == nil ? visibleChores.filter { $0.completion.completed }.count : requiredOccurrences.filter(\.isDone).count }
     var approvalCount: Int { requiredOccurrences.filter(\.isSubmitted).count }
@@ -316,7 +318,7 @@ final class AppModel: ObservableObject {
             guard started == generation else { return }
             uncertaintyVersion += 1; isStale = true
             if let apiError = error as? APIError, apiError.isConflict {
-                message = "This chore changed on another device. Your change was not forced. Refresh, review the current status, then try again."
+                message = "This task changed on another device. Your change was not forced. Refresh, review the current status, then try again."
             } else { message = error.localizedDescription }
         }
     }
@@ -358,7 +360,7 @@ final class AppModel: ObservableObject {
             let result = try await operation()
             guard started == generation else { return false }
             guard result.id == occurrence.id, result.choreId == occurrence.choreId, result.date == (expectedDate ?? occurrence.date) else {
-                throw APIError(status: 0, code: "invalid_response", message: "The chore change could not be confirmed. Refresh before trying again.")
+                throw APIError(status: 0, code: "invalid_response", message: "The task change could not be confirmed. Refresh before trying again.")
             }
             if result.version >= (confirmedOccurrences[result.id]?.version ?? 0) { confirmedOccurrences[result.id] = result }
             if snapshot?.date == sourceDay, let current = snapshot { snapshot = mergeHousehold(current) }
@@ -385,7 +387,7 @@ final class AppModel: ObservableObject {
         let failure = error as? APIError
         lastMutationNeedsReview = failure.map { $0.isConflict || $0.status == 0 || $0.status >= 500 } ?? true
         if lastMutationNeedsReview { uncertaintyVersion += 1; isStale = true }
-        message = lastMutationNeedsReview ? "This change could not be confirmed or the chore changed elsewhere. Refresh and review its current state before trying again." : error.localizedDescription
+        message = lastMutationNeedsReview ? "This change could not be confirmed or the task changed elsewhere. Refresh and review its current state before trying again." : error.localizedDescription
     }
     func loadChoreHistory(from: String, to: String, personID: String?) async throws -> [ChoreHistoryItem] {
         let started = generation
@@ -395,11 +397,24 @@ final class AppModel: ObservableObject {
         } catch { guard started == generation else { throw CancellationError() }; throw error }
     }
     func loadChoreBreaks() async throws -> [ChoreBreak] {
-        guard canManageChores else { throw APIError(status: 403, code: "parent_required", message: "A parent with chore permission must manage chore breaks.") }
+        guard canManageChores else { throw APIError(status: 403, code: "parent_required", message: "A parent with task permission must manage task breaks.") }
         let started = generation
         do { let result = try await api.choreBreaks(); guard started == generation else { throw CancellationError() }; return result }
         catch { guard started == generation else { throw CancellationError() }; throw error }
     }
+    func loadSchoolCalendar(date: String) async throws -> SchoolCalendarResponse {
+        let started = generation
+        do { let result = try await api.schoolCalendar(date: date); guard started == generation else { throw CancellationError() }; return result }
+        catch { guard started == generation else { throw CancellationError() }; throw error }
+    }
+    func changeSchoolDay(_ draft: SchoolDayOverrideDraft) async -> Bool {
+        guard canEditSchoolDate(draft.change.date) else { return false }; lastMutationNeedsReview = false; let started = generation
+        do {
+            _ = try await api.changeSchoolDay(draft); guard started == generation else { return false }
+            await refresh(); return true
+        } catch { await failedChoreMutation(error, generation: started); return false }
+    }
+    func canEditSchoolDate(_ date: String) -> Bool { canManageChores && canChange && Dates.dayDate(date) != nil && date >= today }
     func createChoreBreak(_ draft: ChoreBreakDraft) async -> Bool {
         guard canManageChores, canChange else { return false }; lastMutationNeedsReview = false; let started = generation
         do { _ = try await api.createChoreBreak(draft); guard started == generation else { return false }; Task { await refresh() }; return true }

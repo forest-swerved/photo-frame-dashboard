@@ -41,7 +41,7 @@ async function fixture({ role = 'admin', frame = false, signedOut = false, width
       data = occurrence;
     } else if (url.pathname === '/api/chore-history') data = { history: [{ id: 'fixture-history', occurrenceId: occurrence.id, title: occurrence.title, personName: person.name, type: 'submitted', actorName: 'Synthetic child', reason: null, createdAt: '2026-10-17T18:00:00Z' }] };
     else if (url.pathname === '/api/chore-exceptions') data = method === 'GET' ? { exceptions: [] } : { id: 'fixture-break', ...body, version: 1 };
-    else if (url.pathname === '/api/notifications') data = { notifications: [{ id: 'fixture-notification', kind: 'chore_submitted', title: 'Chore ready for approval', body: 'Synthetic child submitted a chore.', target: 'chores', readAt: state.notificationRead ? '2026-10-17T18:00:00Z' : null, createdAt: '2026-10-17T18:00:00Z' }] };
+    else if (url.pathname === '/api/notifications') data = { notifications: [{ id: 'fixture-notification', kind: 'chore_submitted', title: 'Task ready for approval', body: 'Synthetic child submitted a chore.', target: 'chores', readAt: state.notificationRead ? '2026-10-17T18:00:00Z' : null, createdAt: '2026-10-17T18:00:00Z' }] };
     else if (url.pathname.endsWith('/read')) { state.notificationRead = true; data = { read: true }; }
     else if (url.pathname === '/api/notification-preferences') data = method === 'GET' ? { pushEnabled: true, choreCompleted: true, choreReopened: true, choreDueSoon: true, choreOverdue: true, rewards: true, internetSessions: true, calendarEvents: true, frameStatus: true, timezone: 'America/Denver', quietStart: null, quietEnd: null } : body;
     else if (url.pathname === '/api/frame-access-codes') data = { code: '123456', scope: body.scope, personId: body.personId || null, expiresAt: '2026-10-17T18:05:00Z' };
@@ -52,7 +52,7 @@ async function fixture({ role = 'admin', frame = false, signedOut = false, width
   });
   return { browser, page, state, async open(view = 'chores') {
     await page.goto(new URL(`/family.html${frame ? '?display=frame' : ''}#${view}`, origin).href);
-    if (!signedOut) await page.getByRole('heading', { name: view[0].toUpperCase() + view.slice(1), exact: true }).waitFor();
+    if (!signedOut) await page.getByRole('heading', { name: view === 'chores' ? 'Tasks' : view[0].toUpperCase() + view.slice(1), exact: true, level: 1 }).waitFor();
     else await page.getByRole('heading', { name: 'Your family, together.', exact: true }).waitFor();
   } };
 }
@@ -66,7 +66,7 @@ test('child submits the dated occurrence with CAS, sees approval waiting, and ca
     const call = f.state.calls.find(item => item.path.endsWith('/completion'));
     assert.equal(call.body.expectedVersion, 3); assert.equal(call.body.completed, true); assert.ok(call.body.mutationId);
     assert.equal(await f.page.getByRole('button', { name: 'Approve', exact: true }).count(), 0);
-    assert.equal(await f.page.getByRole('button', { name: 'Holidays & chore breaks' }).count(), 0);
+    assert.equal(await f.page.getByRole('button', { name: 'Task breaks' }).count(), 0);
     assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth), 390);
     assert.deepEqual(f.state.errors, []);
   } finally { await f.browser.close(); }
@@ -77,32 +77,32 @@ test('parent creates an advanced one-off routine, approves work, and creates an 
   try {
     f.state.occurrence.status = 'submitted'; f.state.occurrence.completion.completed = true;
     await f.open();
-    await f.page.getByRole('button', { name: '+ Add a chore', exact: true }).click();
-    await f.page.getByLabel('Chore', { exact: true }).fill('Fixture one-off');
+    await f.page.getByRole('button', { name: '+ Add a task', exact: true }).click();
+    await f.page.getByLabel('Task', { exact: true }).fill('Fixture one-off');
     await f.page.getByLabel('Schedule', { exact: true }).selectOption('one_off');
     await f.page.getByLabel('One-off date').fill('2026-10-24');
     await f.page.getByLabel('Required for daily rewards').uncheck();
     await f.page.getByLabel('A parent must approve completion').check();
     await f.page.getByLabel('Instructions', { exact: true }).fill('Read these fixture steps.');
     await f.page.getByLabel('Steps · one per line, up to 20').fill('First step\nSecond step');
-    await f.page.getByRole('button', { name: 'Save chore', exact: true }).click();
+    await f.page.getByRole('button', { name: 'Save task', exact: true }).click();
     await f.page.waitForFunction(() => !document.querySelector('dialog').open);
     const routine = f.state.calls.find(item => item.path === '/api/chores' && item.method === 'POST').body;
     assert.equal(routine.scheduleType, 'one_off'); assert.equal(routine.scheduledDate, '2026-10-24');
     assert.equal(routine.required, false); assert.equal(routine.requiresApproval, true); assert.equal(routine.subtasks.length, 2);
     await f.page.getByRole('button', { name: 'Approve', exact: true }).click();
-    await f.page.getByRole('dialog').getByRole('button', { name: 'Approve chore', exact: true }).click();
+    await f.page.getByRole('dialog').getByRole('button', { name: 'Approve task', exact: true }).click();
     await f.page.waitForFunction(() => !document.querySelector('dialog').open);
     assert.equal(f.state.occurrence.status, 'completed');
-    await f.page.getByRole('button', { name: 'Holidays & chore breaks', exact: true }).click();
+    await f.page.getByRole('button', { name: 'Task breaks', exact: true }).click();
     await f.page.getByLabel('First day').fill('2026-10-24'); await f.page.getByLabel('Last day (included)').fill('2026-10-26');
     await f.page.getByLabel('Reason', { exact: true }).fill('Synthetic school holiday');
-    await f.page.getByRole('button', { name: 'Add chore break', exact: true }).click();
+    await f.page.getByRole('button', { name: 'Add task break', exact: true }).click();
     await f.page.waitForFunction(() => !document.querySelector('dialog').open);
     const holiday = f.state.calls.find(item => item.path === '/api/chore-exceptions' && item.method === 'POST').body;
     assert.equal(holiday.toDateExclusive, '2026-10-27'); assert.ok(holiday.mutationId);
-    await f.page.getByRole('button', { name: 'Chore history', exact: true }).click();
-    await f.page.getByRole('heading', { name: 'Chore history', exact: true }).waitFor();
+    await f.page.getByRole('button', { name: 'Task history', exact: true }).click();
+    await f.page.getByRole('heading', { name: 'Task history', exact: true }).waitFor();
     assert.ok(await f.page.getByText('submitted', { exact: false }).count() > 0);
     assert.deepEqual(f.state.errors, []);
   } finally { await f.browser.close(); }
@@ -112,7 +112,7 @@ test('account Activity can mark read and notification settings submit account-sc
   const f = await fixture({ width: 390 });
   try {
     await f.open('activity');
-    await f.page.getByText('Chore ready for approval', { exact: true }).waitFor();
+    await f.page.getByText('Task ready for approval', { exact: true }).waitFor();
     await f.page.getByRole('button', { name: 'Mark read', exact: true }).click();
     await f.page.getByText('Read', { exact: true }).waitFor(); assert.equal(f.state.notificationRead, true);
     await f.page.getByRole('link', { name: 'Setup', exact: true }).click();
@@ -138,12 +138,12 @@ test('frame approval lives only in memory and the private header, with timed loc
     assert.ok(f.state.calls.some(call => call.path === '/api/household' && call.headers['x-family-authorization'] === 'fixture-private-grant'));
     assert.equal((await f.page.locator('body').innerText()).includes('fixture-private-grant'), false);
     assert.deepEqual(await f.page.evaluate(() => ({ local: Object.keys(localStorage), session: Object.keys(sessionStorage) })), { local: [], session: [] });
-    await f.page.getByRole('link', { name: 'Chores', exact: true }).click();
-    await f.page.getByRole('button', { name: '+ Add a chore', exact: true }).click();
-    await f.page.getByLabel('Chore', { exact: true }).fill('Private unsaved routine');
+    await f.page.getByRole('link', { name: 'Tasks', exact: true }).click();
+    await f.page.getByRole('button', { name: '+ Add a task', exact: true }).click();
+    await f.page.getByLabel('Task', { exact: true }).fill('Private unsaved routine');
     await f.page.clock.runFor(4000);
     await f.page.waitForFunction(() => !document.querySelector('dialog').open);
-    assert.equal(await f.page.getByLabel('Chore', { exact: true }).count(), 0);
+    assert.equal(await f.page.getByLabel('Task', { exact: true }).count(), 0);
     await f.page.getByRole('link', { name: 'Setup', exact: true }).click();
     await f.page.getByRole('button', { name: 'Enter unlock code', exact: true }).waitFor();
     const households = f.state.calls.filter(call => call.path === '/api/household');

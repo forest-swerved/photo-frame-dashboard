@@ -82,4 +82,84 @@ final class ModelTests: XCTestCase {
         XCTAssertEqual(json["rewards"] as? Bool, false); XCTAssertEqual(json["internetSessions"] as? Bool, true)
         XCTAssertNil(json["timezone"], "Household timezone is server-owned")
     }
+    func testExistingRoutinesDecodeWithAnySchoolStatusAndKeepExplicitFilters() throws {
+        let legacy = #"{"id":"synthetic-routine","title":"Synthetic chore","weekdays":[1,2,3,4,5],"version":1,"required":true,"instructions":"","subtasks":[],"scheduleType":"weekly","requiresApproval":false}"#
+        let old = try JSONDecoder().decode(ChoreRoutine.self, from: Data(legacy.utf8))
+        XCTAssertEqual(old.schoolDayFilter, "any")
+        XCTAssertEqual(old.taskSection, "tasks")
+        for filter in ["school_day", "non_school_day"] {
+            let updated = String(legacy.dropLast()) + ",\"schoolDayFilter\":\"" + filter + "\"}"
+            let routine = try JSONDecoder().decode(ChoreRoutine.self, from: Data(updated.utf8))
+            XCTAssertEqual(routine.schoolDayFilter, filter)
+            let roundtrip = try JSONDecoder().decode(ChoreRoutine.self, from: JSONEncoder().encode(routine))
+            XCTAssertEqual(roundtrip.schoolDayFilter, filter)
+        }
+        XCTAssertEqual(SchoolSchedule.filterLabel("unknown-future-filter"), "School schedule unavailable")
+    }
+    func testSchoolAwareRoutineDraftEncodesSchoolFilter() throws {
+        var draft = ChoreDraft(title: "Synthetic school chore", personId: nil, weekdays: [1,2,3,4,5], dueTime: nil, reminderMinutes: 15)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(draft)) as? [String: Any])
+        XCTAssertEqual(json["schoolDayFilter"] as? String, "any")
+        draft.schoolDayFilter = "non_school_day"
+        json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(draft)) as? [String: Any])
+        XCTAssertEqual(json["schoolDayFilter"] as? String, "non_school_day")
+        draft.scheduleType = "one_off"; draft.scheduledDate = "2026-10-18"
+        json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(draft)) as? [String: Any])
+        XCTAssertEqual(json["schoolDayFilter"] as? String, "any", "One-time chores must not be silently omitted by a school-day filter")
+    }
+    func testTaskPhasesOnlyEncodeForWeeklySchoolDays() throws {
+        var draft = ChoreDraft(title: "Synthetic phase task", personId: nil, weekdays: Array(0...6), dueTime: nil, reminderMinutes: 15)
+        draft.taskSection = "after_school"
+        for (frequency, filter, expected) in [("weekly", "school_day", "after_school"), ("weekly", "non_school_day", "tasks"), ("weekly", "any", "tasks"), ("one_off", "school_day", "tasks")] {
+            draft.scheduleType = frequency; draft.schoolDayFilter = filter
+            let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(draft)) as? [String: Any])
+            XCTAssertEqual(json["taskSection"] as? String, expected)
+        }
+    }
+    func testTaskSectionsDecodeFrozenPhasesAndFlattenForNonSchoolDays() throws {
+        let legacy = #"{"id":"synthetic-task","choreId":"synthetic-routine","date":"2026-10-18","originalDate":"2026-10-18","title":"Synthetic task","required":true,"instructions":"","subtasks":[],"requiresApproval":false,"status":"pending","version":1,"completion":{"date":"2026-10-18","completed":false,"version":0},"definitionSource":"routine","routineVersion":1}"#
+        let original = try JSONDecoder().decode(ChoreOccurrence.self, from: Data(legacy.utf8))
+        XCTAssertEqual(original.taskSection, "tasks"); XCTAssertEqual(original.schoolDayFilter, "any"); XCTAssertFalse(original.schoolScheduleExempt)
+        let beforeJSON = String(legacy.dropLast()) + #","taskSection":"before_school","schoolDayFilter":"school_day"}"#
+        let before = try JSONDecoder().decode(ChoreOccurrence.self, from: Data(beforeJSON.utf8))
+        var after = before; after.taskSection = "after_school"
+        let school = TaskSections.groups([after, original, before], schoolDay: true)
+        XCTAssertEqual(school.map(\.title), ["Before school", "After school", "Any time"])
+        XCTAssertEqual(school.first?.items.first?.taskSection, "before_school")
+        var editedRoutine = ChoreRoutine(legacy: before.legacy); editedRoutine.taskSection = "after_school"
+        XCTAssertEqual(before.taskSection, "before_school", "A routine edit must not relabel the saved occurrence")
+        let off = TaskSections.groups([after, original, before], schoolDay: false)
+        XCTAssertEqual(off.map(\.title), ["Tasks"]); XCTAssertEqual(off.first?.items.count, 3)
+        let empty: [ChoreOccurrence] = []
+        XCTAssertEqual(TaskSections.groups(empty, schoolDay: true, showEmpty: true).map(\.title), ["Before school", "After school"])
+        XCTAssertEqual(TaskSections.groups(empty, schoolDay: false, showEmpty: true).map(\.title), ["Tasks"])
+        XCTAssertTrue(TaskSections.groups(empty, schoolDay: true).isEmpty)
+    }
+    func testSchoolDaySnapshotAcceptsOlderServerAndDoesNotTreatUnknownAsSchoolOff() throws {
+        let legacy = #"{"household":{"id":"test-home","title":"Synthetic home","timezone":"America/Denver"},"role":"admin","date":"2026-10-18","people":[],"chores":[]}"#
+        let old = try JSONDecoder().decode(HouseholdSnapshot.self, from: Data(legacy.utf8))
+        XCTAssertNil(old.schoolDay)
+        let updated = String(legacy.dropLast()) + #","schoolDay":{"date":"2026-10-18","type":"unknown","label":"Calendar not confirmed","reason":"No school calendar for this date","calendarVersion":null}}"#
+        let snapshot = try JSONDecoder().decode(HouseholdSnapshot.self, from: Data(updated.utf8))
+        XCTAssertFalse(try XCTUnwrap(snapshot.schoolDay).isKnown)
+        XCTAssertNil(snapshot.schoolDay?.calendarVersion)
+    }
+    func testRemovingSchoolOverrideEncodesExplicitNullWithVersionAndReason() throws {
+        let draft = SchoolDayOverrideDraft(expectedVersion: 7, change: .init(date: "2026-10-18", type: nil, reason: "Use the published schedule"))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(draft)) as? [String: Any])
+        XCTAssertEqual(json["expectedVersion"] as? Int, 7)
+        let change = try XCTUnwrap(json["override"] as? [String: Any])
+        XCTAssertTrue(change["type"] is NSNull); XCTAssertEqual(change["date"] as? String, "2026-10-18")
+        XCTAssertEqual(change["reason"] as? String, "Use the published schedule")
+    }
+    func testSchoolCalendarCoverageIsExclusiveAndSourceLinkRequiresSafeHTTPS() throws {
+        let template = #"{"title":"Synthetic school year","sourceName":"Synthetic school calendar","sourceSha256":null,"coverageStart":"2026-08-01","coverageEndExclusive":"2027-08-01","termStart":"2026-08-20","termEndExclusive":"2027-05-29","weekdays":[1,2,3,4,5],"closures":[],"overrides":[],"version":1,"sourceUrl":"SOURCE"}"#
+        for source in ["https://school.example.test/calendar", "http://school.example.test", "javascript:alert(1)", "https://user:password@school.example.test"] {
+            let json = template.replacingOccurrences(of: "SOURCE", with: source)
+            let calendar = try JSONDecoder().decode(SchoolCalendarDocument.self, from: Data(json.utf8))
+            XCTAssertEqual(calendar.sourceURL != nil, source == "https://school.example.test/calendar")
+            XCTAssertTrue(calendar.covers("2026-08-01")); XCTAssertTrue(calendar.covers("2027-07-31"))
+            XCTAssertFalse(calendar.covers("2027-08-01")); XCTAssertFalse(calendar.covers("invalid"))
+        }
+    }
 }

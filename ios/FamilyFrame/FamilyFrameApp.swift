@@ -46,7 +46,7 @@ private struct DashboardTabContent: View {
     var body: some View {
         TabView(selection: $model.selectedTab) {
             NavigationStack { TodayScreen().modifier(SettingsToolbar()) }.tabItem { Label("Today", systemImage: "house.fill") }.tag(0)
-            NavigationStack { ChoresScreen().modifier(SettingsToolbar()) }.tabItem { Label("Chores", systemImage: "checklist") }.tag(1)
+            NavigationStack { ChoresScreen().modifier(SettingsToolbar()) }.tabItem { Label("Tasks", systemImage: "checklist") }.tag(1)
             NavigationStack { CalendarScreen().modifier(SettingsToolbar()) }.tabItem { Label("Calendar", systemImage: "calendar") }.tag(2)
             NavigationStack { DevicesScreen().modifier(SettingsToolbar()) }.tabItem { Label("Devices", systemImage: "gamecontroller.fill") }.tag(3)
             NavigationStack { ActivityScreen().modifier(SettingsToolbar()) }.tabItem { Label("Activity", systemImage: "bell.fill") }.badge(model.unreadCount).tag(4)
@@ -82,7 +82,7 @@ struct WelcomeScreen: View {
                 HStack(spacing: 14) { BrandMark(); Text("FAMILY FRAME").font(.caption.weight(.heavy)).tracking(2) }.padding(.top, 30)
                 VStack(alignment: .leading, spacing: 12) {
                     Text("A little more\ntogether.").font(.largeTitle.bold()).fixedSize(horizontal: false, vertical: true)
-                    Text("The family calendar, everyone's chores, and the moments that keep your home moving.").font(.title3).foregroundStyle(Brand.muted)
+                    Text("The family calendar, everyone's tasks, and the moments that keep your home moving.").font(.title3).foregroundStyle(Brand.muted)
                 }
                 HStack(spacing: 8) {
                     Capsule().fill(Brand.cyan).frame(width: 62, height: 6)
@@ -114,7 +114,7 @@ struct WelcomeScreen: View {
         VStack(alignment: .leading, spacing: 16) {
             Picker("Account access", selection: $creating) { Text("Sign in").tag(false); Text("Create account").tag(true) }.pickerStyle(.segmented).disabled(model.isSigningIn)
             Text(creating ? "Your own account." : "Welcome home.").font(.title2.bold())
-            Text(creating ? "Create an account with your own email. A parent invitation connects a child's account to their chores." : "Parents and kids sign in here with their own email and password.").font(.subheadline).foregroundStyle(Brand.muted)
+            Text(creating ? "Create an account with your own email. A parent invitation connects a child's account to their tasks." : "Parents and kids sign in here with their own email and password.").font(.subheadline).foregroundStyle(Brand.muted)
             if creating {
                 TextField("Name", text: $name).textContentType(.name).focused($focus, equals: .name).id(Field.name).textFieldStyle(.roundedBorder).accessibilityLabel("Your name")
             }

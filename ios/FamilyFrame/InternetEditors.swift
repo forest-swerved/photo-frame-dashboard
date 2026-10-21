@@ -59,7 +59,7 @@ struct InternetGrantEditor: View {
                     if !allDay { Stepper("\(minutes) minutes", value: $minutes, in: 1...1439, step: 5) }
                 }
                 Section { TextField("Optional reason", text: $reason, axis: .vertical).lineLimit(2...5) }
-                Section { Text(allDay ? "This allowance ends at the next midnight in \(model.session?.household.timezone ?? "your household timezone"). It does not use a chore reward." : "A parent allowance does not spend a chore reward. It can be paused, ended or adjusted after the network confirms it.").font(.footnote).foregroundStyle(Brand.muted) }
+                Section { Text(allDay ? "This allowance ends at the next midnight in \(model.session?.household.timezone ?? "your household timezone"). It does not use a task reward." : "A parent allowance does not spend a task reward. It can be paused, ended or adjusted after the network confirms it.").font(.footnote).foregroundStyle(Brand.muted) }
                 if let message = network.message { Text(message).foregroundStyle(Brand.red) }
                 if review { Text("Close and refresh Devices to review the outcome before making another allowance.").foregroundStyle(Brand.red) }
             }.navigationTitle("Allow Internet time").navigationBarTitleDisplayMode(.inline)
@@ -222,7 +222,7 @@ struct RewardPolicyEditor: View {
         Form {
             Section(model.snapshot?.people.first(where: { $0.id == policy.personId })?.name ?? "Child") {
                 Toggle("Earn Internet rewards", isOn: $enabled)
-                Stepper("\(reward) minutes per chore day", value: $reward, in: 1...1439, step: 5)
+                Stepper("\(reward) minutes per task day", value: $reward, in: 1...1439, step: 5)
                 Stepper("Daily reward limit: \(limit) minutes", value: $limit, in: 1...1440, step: 5)
                 Stepper(carryover == 0 ? "Use rewards on their earning day" : "Carry rewards for \(carryover) extra days", value: $carryover, in: 0...365)
                 Stepper("Warn \(warning) minutes before ending", value: $warning, in: 0...60)
