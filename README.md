@@ -112,14 +112,12 @@ Many people are working on these frames at the same time. New hardware variants,
 routes arrive as issues and pull requests, often before they are merged. Your local copy may be
 out of date.
 
-**Check before you start, and again before each write and at the start of each new session:**
+**Once per session, fetch upstream and skim open issues and PRs that mention your device:**
 
 ```sh
 git fetch origin && git log --oneline HEAD..origin/main   # new commits on main
-gh issue list --repo wesbos/photo-frame-dashboard --state all --limit 30
-gh pr list --repo wesbos/photo-frame-dashboard --state all --limit 30
-gh pr view <number> --repo wesbos/photo-frame-dashboard   # read anything about your device
-gh pr diff <number> --repo wesbos/photo-frame-dashboard
+gh issue list --repo wesbos/photo-frame-dashboard --state all --limit 10
+gh pr list --repo wesbos/photo-frame-dashboard --state all --limit 10
 ```
 
 Without `gh`, use <https://github.com/wesbos/photo-frame-dashboard/issues> and
@@ -146,10 +144,9 @@ For a PF1007L, include the [report template](docs/pf1007l-start-here.md#report-y
 
 ### Keep a private record of each frame
 
-Keep what you changed on the owner's frame, where the backups are and how to undo it in the
-ignored `frames/` folder, and read it at the start of the next session. Re-check the frame before
-trusting it, and remember that a past approval is not permission for a new write. See
-[frame-records.md](docs/frame-records.md).
+Keep notes about your device in a file you choose; read it only when the request concerns that
+device. Re-check the frame before trusting it, and remember that a past approval is not permission
+for a new write. See [frame-records.md](docs/frame-records.md).
 
 ### Phase map
 
