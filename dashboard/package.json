@@ -11,7 +11,7 @@
     "test:db": "FAMILY_RUN_DB_TESTS=1 node --env-file=.env.test.local --test server/*.integration.test.js",
     "db:migrate": "node --env-file=.env.local server/migrate.js",
     "db:verify": "node --env-file=.env.local server/verify-schema.js",
-    "deploy": "vite build && wrangler deploy"
+    "deploy:static-cloudflare": "vite build && wrangler deploy"
   },
   "devDependencies": {
     "vite": "^8.3.1",
