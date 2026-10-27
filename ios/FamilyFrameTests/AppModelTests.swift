@@ -120,8 +120,13 @@ final class DashboardAPI: FamilyAPI {
         return internetData ?? InternetSnapshot(serverTime: "2026-10-17T18:00:00Z", timezone: current.household.timezone, role: current.role, capabilities: ParentCapabilities(manageChores: current.isAdmin, manageInternet: current.isAdmin), integration: InternetIntegration(state: "unconfigured", managementHost: "frame.test", managementAccessVerifiedAt: nil, lastCheckedAt: nil, error: nil), policies: [], credits: [], devices: [], sessions: [], progress: [])
     }
     func redeemInternet(creditID: String, deviceID: String, mutationID: String) async throws -> InternetSession { redeemCalls += 1; guard let redeemHandler else { throw unexpected }; return try await redeemHandler() }
+    var requestAccessHandler: (() async throws -> DeviceAccessRequest)?
+    var decideAccessHandler: (() async throws -> DeviceAccessRequest)?
+    func requestDeviceAccess(deviceID: String, minutes: Int, reason: String?, mutationID: String) async throws -> DeviceAccessRequest { guard let requestAccessHandler else { throw unexpected }; return try await requestAccessHandler() }
+    func decideDeviceAccess(_ item: DeviceAccessRequest, approve: Bool, mutationID: String) async throws -> DeviceAccessRequest { guard let decideAccessHandler else { throw unexpected }; return try await decideAccessHandler() }
     func grantInternet(personID: String, deviceID: String, minutes: Int?, allDay: Bool, reason: String?, mutationID: String) async throws -> InternetSession { grantCalls += 1; guard let grantHandler else { throw unexpected }; return try await grantHandler() }
     func changeInternetSession(_ id: String, action: InternetSessionAction) async throws -> InternetSession { internetActionCalls += 1; guard let internetActionHandler else { throw unexpected }; return try await internetActionHandler(id, action) }
+    func changeDeviceAccess(_ device: ManagedInternetDevice, access: String, mutationID: String) async throws -> ManagedInternetDevice { throw APIError(status: 0, code: "unavailable", message: "Not configured in this fixture") }
     func saveInternetDevice(_ draft: ManagedDeviceDraft, id: String?) async throws -> ManagedInternetDevice { internetManagementCalls += 1; throw unexpected }
     func deleteInternetDevice(_ item: ManagedInternetDevice, mutationID: String) async throws { internetManagementCalls += 1; throw unexpected }
     func saveInternetPolicy(_ personID: String, draft: RewardPolicyDraft) async throws -> RewardPolicy { internetManagementCalls += 1; throw unexpected }
@@ -445,6 +450,16 @@ final class AppModelTests: XCTestCase {
         await attachLayout(NavigationStack { ChoresScreen() }.environmentObject(child), name: "Synthetic Stage3 child - earned reward now or later")
         await attachLayout(RewardDevicePicker(network: child.internet, credit: InternetFixtures.credit()).environmentObject(child), name: "Synthetic Stage3 child - one device reward picker")
     }
+    func testSyntheticDeviceRequestAndParentQueueLayouts() async {
+        let (parent, api, _, _) = fixture()
+        api.data.people = [Person(id: InternetFixtures.child, name: "Andre", color: "#00748c", version: 1)]
+        let request = DeviceAccessRequest(id: "synthetic-request", personId: InternetFixtures.child, deviceId: InternetFixtures.device.id, minutes: 60, reason: "Play with friends after dinner", status: "pending", version: 1, requestedAt: InternetFixtures.time, expiresAt: "2026-10-18T18:00:00Z", decidedAt: nil, sessionId: nil)
+        api.internetData = InternetFixtures.snapshot(role: "admin"); api.internetData?.requests = [request]
+        await parent.start()
+        await attachLayout(NavigationStack { DevicesScreen() }.environmentObject(parent).environment(\.dynamicTypeSize, .accessibility1), name: "Family notifications - parent request queue")
+        await attachLayout(DeviceAccessRequestEditor(network: parent.internet, device: InternetFixtures.device).environmentObject(parent), name: "Family notifications - request duration and optional reason")
+        await attachLayout(NavigationStack { NotificationPreferencesScreen(initial: NotificationPreferences()) }.environmentObject(parent), name: "Family notifications - category and privacy settings")
+    }
     func testSyntheticAccountDeletionAndUnlinkedRecoveryLayouts() async {
         let (model, api, _, _) = fixture(); await model.start()
         await attachLayout(AccountDeletionScreen().environmentObject(model), name: "Synthetic Stage3 account deletion - password and exact confirmation")
@@ -646,7 +661,7 @@ final class AppModelTests: XCTestCase {
         guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else { return XCTFail("Simulator window scene is required") }
         let previous = scene.windows.first(where: \.isKeyWindow)
         let window = UIWindow(windowScene: scene); window.frame = CGRect(x: 0, y: 0, width: 402, height: 874)
-        let host = UIHostingController(rootView: content.preferredColorScheme(.light).tint(Brand.red)); window.rootViewController = host; window.makeKeyAndVisible()
+        let host = UIHostingController(rootView: content.preferredColorScheme(.light).tint(Brand.primary)); window.rootViewController = host; window.makeKeyAndVisible()
         defer { window.isHidden = true; previous?.makeKey() }
         host.view.frame = window.bounds; host.view.setNeedsLayout(); host.view.layoutIfNeeded()
         try? await Task.sleep(for: .milliseconds(150))

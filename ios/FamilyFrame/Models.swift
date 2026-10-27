@@ -267,10 +267,14 @@ struct NotificationPreferences: Codable, Equatable {
     var frameStatus = true
     var rewards = true
     var internetSessions = true
+    var taskReminders = true
+    var dailyCompleted = true
+    var accessRequests = true
+    var showDetails = true
     var quietStart: String? = nil
     var quietEnd: String? = nil
     var timezone = "America/Denver"
-    enum CodingKeys: String, CodingKey { case pushEnabled, choreCompleted, choreReopened, choreDueSoon, choreOverdue, calendarEvents, frameStatus, rewards, internetSessions, quietStart, quietEnd, timezone }
+    enum CodingKeys: String, CodingKey { case pushEnabled, choreCompleted, choreReopened, choreDueSoon, choreOverdue, calendarEvents, frameStatus, rewards, internetSessions, taskReminders, dailyCompleted, accessRequests, showDetails, quietStart, quietEnd, timezone }
     init() { }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -283,6 +287,10 @@ struct NotificationPreferences: Codable, Equatable {
         frameStatus = try c.decodeIfPresent(Bool.self, forKey: .frameStatus) ?? true
         rewards = try c.decodeIfPresent(Bool.self, forKey: .rewards) ?? true
         internetSessions = try c.decodeIfPresent(Bool.self, forKey: .internetSessions) ?? true
+        taskReminders = try c.decodeIfPresent(Bool.self, forKey: .taskReminders) ?? true
+        dailyCompleted = try c.decodeIfPresent(Bool.self, forKey: .dailyCompleted) ?? true
+        accessRequests = try c.decodeIfPresent(Bool.self, forKey: .accessRequests) ?? true
+        showDetails = try c.decodeIfPresent(Bool.self, forKey: .showDetails) ?? true
         quietStart = try c.decodeIfPresent(String.self, forKey: .quietStart); quietEnd = try c.decodeIfPresent(String.self, forKey: .quietEnd)
         timezone = try c.decodeIfPresent(String.self, forKey: .timezone) ?? "America/Denver"
     }
@@ -296,6 +304,8 @@ struct NotificationPreferences: Codable, Equatable {
         try c.encode(calendarEvents, forKey: .calendarEvents)
         try c.encode(frameStatus, forKey: .frameStatus)
         try c.encode(rewards, forKey: .rewards); try c.encode(internetSessions, forKey: .internetSessions)
+        try c.encode(taskReminders, forKey: .taskReminders); try c.encode(dailyCompleted, forKey: .dailyCompleted)
+        try c.encode(accessRequests, forKey: .accessRequests); try c.encode(showDetails, forKey: .showDetails)
         try c.encode(quietStart, forKey: .quietStart)
         try c.encode(quietEnd, forKey: .quietEnd)
     }

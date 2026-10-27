@@ -88,7 +88,7 @@ export function inspectPolicyInventory({ device, config, macs, policies, ordered
   const management = byId.get(ids.management), deny = byId.get(ids.deny), apple = byId.get(ids.applePush);
   const managementVerified = matches(management, plan.management) && orderedIds.includes(ids.management);
   const appleVerified = !device.allow_apple_push || matches(apple, plan.applePush) && orderedIds.includes(ids.applePush);
-  const permanentDenyVerified = matches(deny, plan.deny) && orderedIds.includes(ids.deny);
+  const permanentDenyVerified = matches(deny, { ...plan.deny, enabled: device.default_access !== 'allowed' }) && orderedIds.includes(ids.deny);
   let pilotDenyVerified = false;
   if (deny?.schedule?.mode === 'ONE_TIME_ONLY' && deny.schedule.timeFilter && matches(deny, { ...plan.deny, schedule: deny.schedule })) {
     try {
@@ -102,7 +102,7 @@ export function inspectPolicyInventory({ device, config, macs, policies, ordered
     } catch { /* A broad, ambiguous or stale pilot is not accepted. */ }
   }
   const identity = { deviceId: device.id, householdId: device.household_id, name: device.name, kind: device.kind,
-    personIds: [...device.person_ids].sort(), macAddresses: macs, allowApplePush: device.allow_apple_push === true,
+    personIds: [...device.person_ids].sort(), defaultAccess: device.default_access || 'blocked', macAddresses: macs, allowApplePush: device.allow_apple_push === true,
     timezone: device.timezone, consoleId, applicationVersion, ...config, managementHost: plan.managementHost, beforePolicyId: before };
   const foreignDigest = hash({ order: foreign, policies: foreign.map(id => Object.fromEntries(Object.entries(byId.get(id)).filter(([key]) => !volatile.has(key)))) });
   const identityBinding = hash({ version: 1, identity });
@@ -157,6 +157,8 @@ async function exclusiveContext(client, original) {
   requireValue(household?.timezone === original.device.timezone && device?.version === original.device.version
     && (integration?.version || 0) === (original.integration?.version || 0),
     409, 'operator_plan_changed', 'The saved device, household timezone, or connection changed during inspection. Build a new plan.');
+  requireValue(!await one(client, "SELECT id FROM family_internet_commands WHERE household_id=$1 AND device_id IS NOT NULL AND state IN ('pending','leased','attention') LIMIT 1", [device.household_id]),
+    409, 'device_access_pending', 'Confirm pending parent device controls before changing network enrollment.');
   requireValue(!await one(client, `SELECT id FROM family_internet_sessions WHERE household_id=$1 AND ${live} LIMIT 1`, [device.household_id]),
     409, 'internet_sessions_active', 'End all household Internet sessions and confirm their blocking before enrollment.');
   return { device, integration };
@@ -247,7 +249,7 @@ export async function runOperator(db, command, input, options = {}) {
   }
   requireValue(['permanent-plan', 'activate'].includes(command), 422, 'invalid_command', 'Choose inventory, inspect, plan, begin-pilot, record-proof, pilot-plan, permanent-plan, or activate.');
   requireValue(checks.every(item => item.passed), 409, 'pilot_proofs_missing', `Enrollment is inactive. Missing or failed checks: ${checks.filter(item => !item.passed).map(item => item.check).join(', ')}.`);
-  if (command === 'permanent-plan') return { dryRun: true, providerWrites: false, deviceId: device.id, binding: plan.binding, permanentDeny: plan.policies.deny,
+  if (command === 'permanent-plan') return { dryRun: true, providerWrites: false, deviceId: device.id, binding: plan.binding, permanentDeny: { ...plan.policies.deny, enabled: device.default_access !== 'allowed' },
     instruction: 'Manually replace only the tested device deny with this permanent policy. Read back the full inventory before activate.' };
   requireValue(plan.reviewedFingerprint, 409, 'permanent_policies_unverified', 'The permanent exceptions, deny policy and full reviewed order must match before activation.');
   if (!input.apply) return { dryRun: true, activationAllowed: true, deviceId: device.id, providerWrites: false };
@@ -257,7 +259,7 @@ export async function runOperator(db, command, input, options = {}) {
     const latestProofs = await proofs(client, context, now);
     requireValue(latestProofs.every(item => item.passed), 409, 'pilot_proofs_missing', 'A required proof changed. Review the pilot before activation.');
     await client.query(`UPDATE family_managed_devices SET control_state='ready',management_policy_id=$2,deny_policy_id=$3,apple_push_policy_id=$4,
-      reviewed_policy_fingerprint=$5,management_verified_at=$6,version=version+1 WHERE id=$1`,
+      reviewed_policy_fingerprint=$5,management_verified_at=$6,desired_access=default_access,observed_access=default_access,access_verified_at=$6,access_error=NULL,version=version+1 WHERE id=$1`,
     [device.id, plan.policyIds.management, plan.policyIds.deny, plan.policyIds.applePush, plan.reviewedFingerprint, now]);
     await client.query(`UPDATE family_network_integrations SET state='ready',pilot_checks=pilot_checks||$2::jsonb,management_verified_at=$3,last_checked_at=$3,last_error=NULL,version=version+1 WHERE household_id=$1`,
       [device.household_id, JSON.stringify(Object.fromEntries(plan.requiredChecks.filter(check => !['identity_stability', 'management_preflight'].includes(check)).map(check => [check, true]))), now]);

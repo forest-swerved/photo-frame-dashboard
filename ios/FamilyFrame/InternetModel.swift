@@ -48,8 +48,12 @@ final class InternetModel: ObservableObject {
     var sessions: [InternetSession] {
         (snapshot?.sessions ?? []).filter { !isChild || $0.personId == personID }
     }
+    var accessRequests: [DeviceAccessRequest] { (snapshot?.requests ?? []).filter { !isChild || $0.personId == personID } }
+    func requestIsPending(_ item: DeviceAccessRequest) -> Bool {
+        item.status == "pending" && (Dates.instant(item.expiresAt) ?? .distantPast) > serverNow
+    }
     var liveSessions: [InternetSession] { sessions.filter { !$0.isTerminal } }
-    var hasPendingNetworkWork: Bool { liveSessions.contains { !$0.isStable } }
+    var hasPendingNetworkWork: Bool { liveSessions.contains { !$0.isStable } || devices.contains { $0.accessPending == true } }
     var devices: [ManagedInternetDevice] { (snapshot?.devices ?? []).filter { !isChild || $0.personIds.contains(personID ?? "") } }
     var availableCredits: [RewardCredit] {
         (snapshot?.credits ?? []).filter { $0.status == "available" && (!isChild || $0.personId == personID) && (Dates.instant($0.expiresAt) ?? .distantPast) > serverNow }
@@ -111,11 +115,11 @@ final class InternetModel: ObservableObject {
     }
     func deviceAvailable(_ device: ManagedInternetDevice, for person: String) -> Bool {
         guard let current = devices.first(where: { $0.id == device.id }) else { return false }
-        return current.isReady && current.personIds.contains(person) && !liveSessions.contains { $0.deviceId == current.id || $0.personId == person }
+        return current.isReady && current.isBlocked && current.personIds.contains(person) && !liveSessions.contains { $0.deviceId == current.id || $0.personId == person }
     }
     func redeem(_ credit: RewardCredit, device: ManagedInternetDevice) async -> Bool {
         guard canChange, isChild, credit.personId == personID, integrationReady,
-              availableCredits.contains(where: { $0.id == credit.id }), deviceAvailable(device, for: credit.personId) else { return false }
+              availableCredits.contains(where: { $0.id == credit.id }), deviceAvailable(device, for: credit.personId), device.defaultAccess == "blocked", device.rewardAvailable == true else { return false }
         return await change({ try await self.api.redeemInternet(creditID: credit.id, deviceID: device.id, mutationID: UUID().uuidString.lowercased()) }) { result in
             guard result.personId == credit.personId, result.deviceId == device.id, result.creditId == credit.id else { return false }
             self.mergeSession(result)
@@ -129,6 +133,30 @@ final class InternetModel: ObservableObject {
             guard result.personId == personID, result.deviceId == device.id, result.source == "parent" else { return false }; self.mergeSession(result); return true
         }
     }
+    func requestAccess(device: ManagedInternetDevice, minutes: Int, reason: String) async -> Bool {
+        let reason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard canChange, isChild, (1...1439).contains(minutes), reason.count <= 500,
+              devices.contains(where: { $0.id == device.id }), !accessRequests.contains(where: { $0.deviceId == device.id && requestIsPending($0) }) else { return false }
+        return await change({ try await self.api.requestDeviceAccess(deviceID: device.id, minutes: minutes, reason: reason.isEmpty ? nil : reason, mutationID: UUID().uuidString.lowercased()) }) { result in
+            guard result.personId == self.personID, result.deviceId == device.id, result.minutes == minutes, result.status == "pending" else { return false }
+            self.mergeRequest(result); return true
+        }
+    }
+    func decideAccess(_ item: DeviceAccessRequest, approve: Bool) async -> Bool {
+        guard canChange, canManage, !approve || integrationReady, requestIsPending(item),
+              accessRequests.contains(where: { $0.id == item.id && $0.version == item.version }) else { return false }
+        return await change({ try await self.api.decideDeviceAccess(item, approve: approve, mutationID: UUID().uuidString.lowercased()) }) { result in
+            guard result.id == item.id, result.personId == item.personId, result.deviceId == item.deviceId,
+                  result.version > item.version, result.status == (approve ? "approved" : "declined"), !approve || result.sessionId != nil else { return false }
+            self.mergeRequest(result); return true
+        }
+    }
+    private func mergeRequest(_ result: DeviceAccessRequest) {
+        var items = snapshot?.requests ?? []
+        if let i = items.firstIndex(where: { $0.id == result.id }) { if result.version >= items[i].version { items[i] = result } }
+        else { items.insert(result, at: 0) }
+        snapshot?.requests = items
+    }
     func act(_ original: InternetSession, action: String, deltaMinutes: Int? = nil, reason: String? = nil) async -> Bool {
         let item = original
         guard currentSession(original).version == original.version, currentSession(original).state == original.state else {
@@ -139,6 +167,22 @@ final class InternetModel: ObservableObject {
         return await change({ try await self.api.changeInternetSession(item.id, action: request) }) { result in
             guard result.id == item.id, result.deviceId == item.deviceId, result.personId == item.personId, result.version >= item.version else { return false }; self.mergeSession(result); return true
         }
+    }
+    func internetIsOn(_ device: ManagedInternetDevice) -> Bool {
+        device.desiredAccess == "allowed" || device.observedAccess == "allowed" || liveSessions.contains { $0.deviceId == device.id && $0.desiredState == "allowed" }
+    }
+    func controlDevice(_ original: ManagedInternetDevice) async -> Bool {
+        guard canChange, canManage, integrationReady, let device = devices.first(where: { $0.id == original.id }),
+              device.version == original.version, device.isReady, device.accessPending != true || device.desiredAccess == "allowed" else { return false }
+        let access = internetIsOn(device) ? "blocked" : "allowed"
+        return await change({ try await self.api.changeDeviceAccess(device, access: access, mutationID: UUID().uuidString.lowercased()) }) { result in
+            guard result.id == device.id, result.version > device.version, result.desiredAccess == access, result.accessPending == true else { return false }
+            if let i = self.snapshot?.devices.firstIndex(where: { $0.id == result.id }) { self.snapshot?.devices[i] = result }; return true
+        }
+    }
+    func rewardDevices(for person: String) -> [ManagedInternetDevice] {
+        guard integrationReady else { return [] }
+        return devices.filter { $0.defaultAccess == "blocked" && $0.rewardAvailable == true && deviceAvailable($0, for: person) }
     }
     func saveDevice(_ draft: ManagedDeviceDraft, id: String?) async -> Bool {
         guard canChange, canManage else { return false }

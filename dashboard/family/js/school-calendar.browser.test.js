@@ -58,12 +58,13 @@ async function fixture({ role = 'admin', frame = false, width = 390, unknown = f
     } else if (url.pathname === '/api/chores/fixture-routine' && req.method() === 'PATCH') {
       assert.equal(body.expectedVersion, routine.version); Object.assign(routine, body, { version: routine.version + 1 }); data = routine;
     } else if (url.pathname === '/api/chores' && req.method() === 'POST') data = { id: 'fixture-new-routine', ...body, version: 1 };
+    else if (url.pathname === '/api/notifications') data = { notifications: [] };
     else throw new Error(`Unexpected synthetic route ${req.method()} ${url.pathname}`);
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(url.pathname.startsWith('/api/auth/') ? data : { data }) });
   });
   return { browser, page, state, async open(view = 'chores') {
     await page.goto(new URL(`/family.html${frame ? '?display=frame' : ''}#${view}`, origin).href);
-    await page.getByRole('heading', { name: view === 'chores' ? 'Tasks' : view[0].toUpperCase() + view.slice(1), exact: true, level: 1 }).waitFor();
+    await page.getByRole('heading', { name: view === 'setup' ? 'Settings' : view === 'chores' ? (role === 'child' ? 'My tasks' : 'Tasks') : view[0].toUpperCase() + view.slice(1), exact: true, level: 1 }).waitFor();
   } };
 }
 
@@ -71,7 +72,8 @@ test('parent edits the school-day filter with routine CAS and one-off chores res
   const f = await fixture();
   try {
     await f.open();
-    await f.page.locator('.all-chores').getByRole('button', { name: 'Edit', exact: true }).click();
+    await f.page.getByRole('button', { name: 'Routines', exact: true }).click();
+    await f.page.locator('.all-chores').getByRole('button', { name: 'Edit Synthetic school morning', exact: true }).click();
     assert.equal(await f.page.getByLabel('School-day schedule', { exact: true }).inputValue(), 'school_day');
     assert.equal(await f.page.getByLabel('School-day task section', { exact: true }).inputValue(), 'tasks', 'Existing tasks keep their unspecified phase.');
     await f.page.getByLabel('School-day schedule', { exact: true }).selectOption('non_school_day');
@@ -103,8 +105,8 @@ test('empty school-day sections are visible immediately and add-task actions pre
   try {
     await f.open('today');
     const todayPanel = f.page.locator('.chores-panel');
-    assert.equal(await todayPanel.getByRole('heading', { name: 'Before school', exact: true }).count(), 1);
-    assert.equal(await todayPanel.getByRole('heading', { name: 'After school', exact: true }).count(), 1);
+    assert.equal(await todayPanel.getByText('No unfinished tasks. Nice work!', { exact: true }).count(), 1);
+    assert.equal(await todayPanel.getByRole('link', { name: 'View all tasks →', exact: true }).count(), 1);
     await f.page.getByRole('link', { name: 'Tasks', exact: true }).click();
     await f.page.getByRole('heading', { name: 'Tasks', exact: true, level: 1 }).waitFor();
     await f.page.getByRole('button', { name: 'Add a task after school for Synthetic child', exact: true }).click();
@@ -126,7 +128,7 @@ test('empty school-day sections are visible immediately and add-task actions pre
 });
 
 for (const width of [1280, 390]) {
-  test(`Today limits full task sections without inventing an empty after-school section at ${width}px`, { skip: !baseUrl }, async () => {
+  test(`Today shows a bounded unfinished-task preview with an explicit path to every school task at ${width}px`, { skip: !baseUrl }, async () => {
     const f = await fixture({ role: 'frame', frame: true, width });
     try {
       f.state.occurrences = Array.from({ length: 8 }, (_, index) => ({
@@ -137,22 +139,18 @@ for (const width of [1280, 390]) {
       }));
       await f.open('today');
       const panel = f.page.locator('.chores-panel');
-      const before = panel.locator('[data-key="task-section-before_school"]'), after = panel.locator('[data-key="task-section-after_school"]');
-      assert.ok(await panel.locator('.chore-row').count() <= 6);
-      assert.equal(await before.locator('.chore-row').count(), 3);
-      assert.equal(await before.getByRole('link', { name: 'View 4 more tasks in Before school', exact: true }).count(), 1);
-      assert.equal(await after.getByText('Synthetic afternoon task 8', { exact: true }).count(), 1);
-      assert.equal(await after.getByText('No tasks scheduled here yet.', { exact: true }).count(), 0);
-      await before.getByRole('link', { name: 'View 4 more tasks in Before school', exact: true }).click();
+      assert.equal(await panel.locator('.chore-row').count(), 4);
+      assert.equal(await panel.getByRole('link', { name: 'View 4 more tasks →', exact: true }).count(), 1);
+      await panel.getByRole('link', { name: 'View 4 more tasks →', exact: true }).click();
       await f.page.getByRole('heading', { name: 'Tasks', exact: true, level: 1 }).waitFor();
       assert.equal(await f.page.locator('.person-lane .chore-row').count(), 8);
       f.state.schoolDay.type = 'non_school_day'; f.state.schoolDay.label = 'No school';
       await f.page.getByRole('link', { name: 'Today', exact: true }).click();
       await f.page.getByRole('heading', { name: 'Today', exact: true, level: 1 }).waitFor();
       await f.page.reload();
-      await f.page.locator('.school-day-note').getByText('No school', { exact: true }).waitFor();
-      assert.equal(await panel.locator('.chore-row').count(), 6);
-      assert.equal(await panel.getByRole('link', { name: 'View 2 more tasks in Tasks', exact: true }).count(), 1);
+      await f.page.locator('.welcome-summary').getByText(/No school/).waitFor();
+      assert.equal(await panel.locator('.chore-row').count(), 0);
+      assert.equal(await panel.getByText('No unfinished tasks. Nice work!', { exact: true }).count(), 1);
       assert.equal(await panel.getByRole('heading', { name: 'After school', exact: true }).count(), 0);
       assert.deepEqual(f.state.errors, []); assert.deepEqual(f.state.external, []);
     } finally { await f.browser.close(); }
@@ -169,37 +167,41 @@ for (const width of [1280, 390]) {
       })));
       f.state.occurrences.push({ ...f.state.occurrences[0], id: 'fixture-anytime', title: 'Andre any-time fixture', taskSection: 'tasks', status: 'pending', schoolDayFilter: 'any', completion: { date: today, completed: false, version: 0 } });
       await f.open();
+      assert.equal(await f.page.locator('.person-lane .chore-row').count(), 3, 'Completed morning work is tucked away by default.');
       for (const person of f.state.people) {
-        const lane = f.page.locator(`.person-lane[data-key="person-${person.id}"]`);
-        assert.equal(await lane.getByRole('heading', { name: 'Before school', exact: true }).count(), 1);
+        await f.page.getByRole('button', { name: new RegExp('^' + person.name + ' ·') }).click();
+        const lane = f.page.locator('.person-lane');
+        assert.equal(await lane.getByRole('heading', { name: 'Before school', exact: true }).count(), 0, 'Completed-only sections stay in the Done filter.');
         assert.equal(await lane.getByRole('heading', { name: 'After school', exact: true }).count(), 1);
+        assert.equal(await lane.getByText(`${person.name} afternoon fixture`, { exact: true }).count(), 1);
+        assert.equal(await lane.getByText(`${person.name} morning fixture`, { exact: true }).count(), 0);
+        await f.page.getByRole('button', { name: /^Done ·/ }).click();
         assert.equal(await lane.getByText(`${person.name} morning fixture`, { exact: true }).count(), 1);
+        await f.page.getByRole('button', { name: /^To do ·/ }).click();
       }
-      const andre = f.page.locator('.person-lane[data-key="person-fixture-andre"]');
-      assert.equal(await andre.getByRole('heading', { name: 'Tasks', exact: true }).count(), 1);
+      await f.page.getByRole('button', { name: 'Everyone', exact: true }).click();
       if (process.env.FAMILY_UI_SCREENSHOT_DIR) {
         await mkdir(process.env.FAMILY_UI_SCREENSHOT_DIR, { recursive: true });
         await f.page.screenshot({ path: `${process.env.FAMILY_UI_SCREENSHOT_DIR}/task-sections-school-${width}.png`, fullPage: true });
       }
       await f.page.getByRole('link', { name: 'Today', exact: true }).click();
       await f.page.getByRole('heading', { name: 'Today', exact: true, level: 1 }).waitFor();
-      assert.equal(await f.page.locator('.chores-panel').getByRole('heading', { name: 'Before school', exact: true }).count(), 1);
-      assert.equal(await f.page.locator('.chores-panel').getByRole('heading', { name: 'After school', exact: true }).count(), 1);
-      assert.equal(await f.page.getByRole('progressbar', { name: "Today's tasks complete", exact: true }).getAttribute('aria-valuemax'), '5');
+      assert.equal(await f.page.locator('.chores-panel .chore-row').count(), 3);
+      assert.equal(await f.page.getByRole('progressbar', { name: "Required tasks complete", exact: true }).getAttribute('aria-valuemax'), '5');
       f.state.schoolDay.type = 'non_school_day'; f.state.schoolDay.label = 'No school';
       await f.page.reload();
-      await f.page.locator('.school-day-note').getByText('No school', { exact: true }).waitFor();
+      await f.page.locator('.welcome-summary').getByText(/No school/).waitFor();
       assert.equal(await f.page.getByRole('heading', { name: 'Before school', exact: true }).count(), 0);
       assert.equal(await f.page.getByRole('heading', { name: 'After school', exact: true }).count(), 0);
-      assert.equal(await f.page.locator('.chores-panel').getByRole('heading', { name: 'Tasks', exact: true }).count(), 1);
-      const progress = f.page.getByRole('progressbar', { name: "Today's tasks complete", exact: true });
+      assert.equal(await f.page.locator('.chores-panel .chore-row').count(), 1);
+      const progress = f.page.getByRole('progressbar', { name: "Required tasks complete", exact: true });
       assert.equal(await progress.getAttribute('aria-valuemax'), '1'); assert.equal(await progress.getAttribute('aria-valuenow'), '0');
-      assert.equal(await f.page.getByText('Earlier school schedule', { exact: true }).count(), 4);
       await f.page.getByRole('link', { name: 'Tasks', exact: true }).click();
       await f.page.getByRole('heading', { name: 'Tasks', exact: true, level: 1 }).waitFor();
-      for (const person of f.state.people) {
-        assert.equal(await f.page.locator(`.person-lane[data-key="person-${person.id}"]`).getByRole('heading', { name: 'Tasks', exact: true }).count(), 1);
-      }
+      await f.page.getByText('Earlier schedule and excused work · 4', { exact: true }).click();
+      assert.equal(await f.page.locator('.earlier-schedule .chore-row').count(), 4);
+      assert.equal(await f.page.locator('.earlier-schedule .chore-deadline').count(), 0);
+      assert.equal(await f.page.locator('.person-lane .chore-row').count(), 1);
       assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth), width);
       assert.deepEqual(f.state.errors, []); assert.deepEqual(f.state.external, []);
     } finally { await f.browser.close(); }
@@ -210,6 +212,7 @@ test('parents review imported dates, set a day off, and restore the imported cal
   const f = await fixture();
   try {
     await f.open();
+    if (await f.page.locator('.task-tools:not([open])').count()) await f.page.getByText('History and schedule tools', { exact: true }).click();
     await f.page.getByRole('button', { name: 'School calendar', exact: true }).click();
     await f.page.getByRole('heading', { name: f.state.calendar.title, exact: true }).waitFor();
     const source = f.page.getByRole('link', { name: 'School calendar source', exact: false });
@@ -240,6 +243,7 @@ test('parents review imported dates, set a day off, and restore the imported cal
     let patches = f.state.calls.filter(call => call.path === '/api/school-calendar' && call.method === 'PATCH');
     assert.deepEqual(patches[0].body, { expectedVersion: 3, override: { date: today, type: 'non_school_day', reason: 'Synthetic confirmed day off' } });
     assert.equal(f.state.calls.some(call => call.path === '/api/chore-exceptions'), false);
+    if (await f.page.locator('.task-tools:not([open])').count()) await f.page.getByText('History and schedule tools', { exact: true }).click();
     await f.page.getByRole('button', { name: 'School calendar', exact: true }).click();
     await f.page.getByLabel('Day type', { exact: true }).selectOption('clear');
     await f.page.getByLabel('Reason for date change', { exact: true }).fill('Restore published schedule');
@@ -247,7 +251,8 @@ test('parents review imported dates, set a day off, and restore the imported cal
     await f.page.waitForFunction(() => !document.querySelector('dialog').open);
     patches = f.state.calls.filter(call => call.path === '/api/school-calendar' && call.method === 'PATCH');
     assert.equal(patches[1].body.expectedVersion, 4); assert.equal(patches[1].body.override.type, null);
-    await f.page.getByRole('link', { name: 'Setup', exact: true }).click();
+    await f.page.getByRole('link', { name: 'Settings', exact: true }).click();
+    await f.page.locator('.settings-row[data-id="tasks"]').click();
     await f.page.getByRole('button', { name: 'View school calendar', exact: true }).waitFor();
     assert.deepEqual(f.state.errors, []); assert.deepEqual(f.state.external, []);
   } finally { await f.browser.close(); }
@@ -256,7 +261,8 @@ test('parents review imported dates, set a day off, and restore the imported cal
 test('a conflicting school-calendar save requires review instead of a blind retry', { skip: !baseUrl }, async () => {
   const f = await fixture();
   try {
-    await f.open(); await f.page.getByRole('button', { name: 'School calendar', exact: true }).click();
+    await f.open(); if (await f.page.locator('.task-tools:not([open])').count()) await f.page.getByText('History and schedule tools', { exact: true }).click();
+    await f.page.getByRole('button', { name: 'School calendar', exact: true }).click();
     await f.page.getByLabel('Reason for date change', { exact: true }).fill('Synthetic date change');
     f.state.failSave = true;
     await f.page.getByRole('button', { name: 'Save school date', exact: true }).click();
@@ -289,7 +295,8 @@ test('an unlocked caregiver frame can manage school dates and untrusted source s
   const f = await fixture({ role: 'caregiver', frame: true, width: 1280 });
   try {
     f.state.calendar.sourceUrl = 'javascript:alert("fixture")';
-    await f.open(); await f.page.getByRole('button', { name: 'School calendar', exact: true }).click();
+    await f.open(); if (await f.page.locator('.task-tools:not([open])').count()) await f.page.getByText('History and schedule tools', { exact: true }).click();
+    await f.page.getByRole('button', { name: 'School calendar', exact: true }).click();
     await f.page.getByRole('heading', { name: f.state.calendar.title, exact: true }).waitFor();
     assert.equal(await f.page.getByRole('link', { name: 'School calendar source', exact: false }).count(), 0);
     if (process.env.FAMILY_UI_SCREENSHOT_DIR) {
@@ -309,14 +316,14 @@ test('frame Today and Tasks explain unknown school coverage without excusing all
   try {
     await f.open('today');
     await f.page.getByText('School-dependent tasks are waiting for a confirmed school calendar date.', { exact: false }).waitFor();
-    assert.equal(await f.page.getByText('School schedule unknown', { exact: true }).count(), 1);
+    assert.equal(await f.page.locator('.school-day-note').getByText('School schedule unknown', { exact: true }).count(), 1);
     assert.equal(await f.page.getByText('Any-day tasks still apply.', { exact: false }).count(), 1);
     if (process.env.FAMILY_UI_SCREENSHOT_DIR) {
       await mkdir(process.env.FAMILY_UI_SCREENSHOT_DIR, { recursive: true });
       await f.page.screenshot({ path: `${process.env.FAMILY_UI_SCREENSHOT_DIR}/school-calendar-frame-unknown.png`, fullPage: true });
     }
     await f.page.getByRole('link', { name: 'Tasks', exact: true }).click();
-    await f.page.getByText('School schedule unknown', { exact: true }).waitFor();
+    await f.page.locator('.school-day-note').getByText('School schedule unknown', { exact: true }).waitFor();
     assert.equal(await f.page.getByRole('button', { name: 'School calendar', exact: true }).count(), 0);
     assert.deepEqual(f.state.errors, []); assert.deepEqual(f.state.external, []);
     assert.equal(f.state.calls.some(call => call.method !== 'GET'), false);

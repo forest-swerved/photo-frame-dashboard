@@ -13,7 +13,7 @@ import { preflightApns } from './apns.js';
 import { setOccurrenceCompletion, changeChoreOccurrence, choreHistory, choreExceptions, createChoreException, revokeChoreException } from './chore-occurrences.js';
 import { parentCapabilities, changeMemberCapabilities, createFrameAccessCode, redeemFrameAccess, frameAuthorization, transferOwnership } from './capabilities.js';
 import { deleteAccount } from './account-deletion.js';
-import { internetSnapshot, saveRewardPolicy, saveManagedDevice, startInternetSession, changeInternetSession, internetHistory, syncChoreReward, resolveRewardReview } from './internet.js';
+import { internetSnapshot, saveRewardPolicy, saveManagedDevice, changeDeviceAccess, startInternetSession, changeInternetSession, internetHistory, syncChoreReward, resolveRewardReview, requestDeviceAccess, decideDeviceAccess } from './internet.js';
 import { processInternetJobs } from './internet-worker.js';
 import { saveSchoolCalendar, schoolCalendarSnapshot } from './school-calendar.js';
 
@@ -64,10 +64,15 @@ export async function dispatch(request, db, principal, route, options = {}) {
   const rewardReview = /^internet\/credits\/([^/]+)\/resolve$/.exec(route);
   if (rewardReview && method === 'POST') return json(await resolveRewardReview(db, principal, rewardReview[1], await readJson(request), options));
   if (route === 'internet/redeem' && method === 'POST') return json(await startInternetSession(db, principal, await readJson(request), { ...options, reward: true }), 202);
+  if (route === 'internet/requests' && method === 'POST') return json(await requestDeviceAccess(db, principal, await readJson(request), options), 201);
+  const accessDecision = /^internet\/requests\/([^/]+)\/decision$/.exec(route);
+  if (accessDecision && method === 'POST') return json(await decideDeviceAccess(db, principal, accessDecision[1], await readJson(request), options), 202);
   if (route === 'internet/grants' && method === 'POST') return json(await startInternetSession(db, principal, await readJson(request), options), 202);
   const internetSession = /^internet\/sessions\/([^/]+)\/actions$/.exec(route);
   if (internetSession && method === 'POST') return json(await changeInternetSession(db, principal, internetSession[1], await readJson(request), options), 202);
   if (route === 'internet/devices' && method === 'POST') return json(await saveManagedDevice(db, principal, null, await readJson(request)), 201);
+  const deviceAccess = /^internet\/devices\/([^/]+)\/access$/.exec(route);
+  if (deviceAccess && method === 'POST') return json(await changeDeviceAccess(db, principal, deviceAccess[1], await readJson(request), options), 202);
   const managedDevice = /^internet\/devices\/([^/]+)$/.exec(route);
   if (managedDevice && ['PATCH', 'DELETE'].includes(method)) return json(await saveManagedDevice(db, principal, managedDevice[1], method === 'DELETE'
     ? { expectedVersion: deleteVersion(url), mutationId: url.searchParams.get('mutationId') || randomUUID() } : await readJson(request), method === 'DELETE'));

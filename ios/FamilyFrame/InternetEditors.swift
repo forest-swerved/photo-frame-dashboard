@@ -12,7 +12,7 @@ struct RewardDevicePicker: View {
             List {
                 Section { Text("Choose one device for your \(credit.minutes)-minute reward.").font(.headline); Text("Your other devices keep their default Internet block.").font(.subheadline).foregroundStyle(Brand.muted) }
                 if !network.integrationReady { Section { Text(network.snapshot?.integration.detail ?? "Network setup is not complete.").foregroundStyle(Brand.muted) } }
-                ForEach(network.devices.filter { $0.personIds.contains(credit.personId) }) { device in
+                ForEach(network.rewardDevices(for: credit.personId)) { device in
                     let available = network.deviceAvailable(device, for: credit.personId)
                     Button { selected = device.id } label: {
                         HStack(spacing: 12) {
@@ -22,7 +22,7 @@ struct RewardDevicePicker: View {
                         }.foregroundStyle(Brand.ink).frame(minHeight: 44)
                     }.disabled(!available || starting).accessibilityAddTraits(selected == device.id ? .isSelected : [])
                 }
-                if network.devices.isEmpty { Text("A parent needs to assign a device to your profile first.").foregroundStyle(Brand.muted) }
+                if network.rewardDevices(for: credit.personId).isEmpty { Text("No earned-time devices are currently blocked and available. Your reward stays saved; try again when a device is free.").foregroundStyle(Brand.muted) }
                 if let message = network.message { Text(message).foregroundStyle(Brand.red) }
                 if review { Text("Close this picker, refresh Devices and review your reward and any session before trying again.").foregroundStyle(Brand.red) }
                 Section {
@@ -50,28 +50,35 @@ struct InternetGrantEditor: View {
     @State private var reason = ""
     @State private var saving = false
     @State private var review = false
+    @State private var originalDraft: String?
+    private var draftSignature: String { draftFingerprint([personID, String(minutes), String(allDay), reason]) }
+    private var hasUnsavedChanges: Bool { originalDraft.map { $0 != draftSignature } ?? false }
     var body: some View {
         NavigationStack {
             Form {
                 Section(device.name) {
                     Picker("For", selection: $personID) { Text("Choose a child").tag(""); ForEach((model.snapshot?.people ?? []).filter { device.personIds.contains($0.id) }) { Text($0.name).tag($0.id) } }
                     Toggle("All day until midnight", isOn: $allDay)
-                    if !allDay { Stepper("\(minutes) minutes", value: $minutes, in: 1...1439, step: 5) }
+                    if !allDay {
+                        Stepper("\(minutes) minutes", value: $minutes, in: 1...1439, step: 5)
+                        HStack { ForEach([15, 30, 60, 120], id: \.self) { value in Button("\(value) min") { minutes = value }.buttonStyle(.bordered).font(.caption) } }
+                    }
                 }
                 Section { TextField("Optional reason", text: $reason, axis: .vertical).lineLimit(2...5) }
                 Section { Text(allDay ? "This allowance ends at the next midnight in \(model.session?.household.timezone ?? "your household timezone"). It does not use a task reward." : "A parent allowance does not spend a task reward. It can be paused, ended or adjusted after the network confirms it.").font(.footnote).foregroundStyle(Brand.muted) }
                 if let message = network.message { Text(message).foregroundStyle(Brand.red) }
                 if review { Text("Close and refresh Devices to review the outcome before making another allowance.").foregroundStyle(Brand.red) }
             }.navigationTitle("Allow Internet time").navigationBarTitleDisplayMode(.inline)
-                .onAppear { if device.personIds.count == 1 { personID = device.personIds[0] } }
+
+                .onAppear { if device.personIds.count == 1 { personID = device.personIds[0] }; if originalDraft == nil { originalDraft = draftSignature } }
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(saving) }
+                    ToolbarItem(placement: .cancellationAction) { DraftCancelButton(dirty: hasUnsavedChanges, saving: saving) { dismiss() } }
                     ToolbarItem(placement: .confirmationAction) { Button { Task {
                         saving = true; let success = await network.grant(personID: personID, device: device, minutes: minutes, allDay: allDay, reason: reason.trimmingCharacters(in: .whitespacesAndNewlines)); saving = false
                         if success { dismiss() } else { review = network.mutationNeedsReview }
                     } } label: { if saving { ProgressView() } else { Text("Allow").bold() } }.disabled(saving || review || reason.count > 500 || !network.canChange || !network.canManage || !network.integrationReady || personID.isEmpty || !network.deviceAvailable(device, for: personID)) }
                 }
-        }.interactiveDismissDisabled(saving)
+        }.interactiveDismissDisabled(saving || hasUnsavedChanges)
     }
 }
 
@@ -84,6 +91,9 @@ struct InternetTimeEditor: View {
     @State private var reason = ""
     @State private var saving = false
     @State private var review = false
+    @State private var originalDraft: String?
+    private var draftSignature: String { draftFingerprint([String(remove), String(minutes), reason]) }
+    private var hasUnsavedChanges: Bool { originalDraft.map { $0 != draftSignature } ?? false }
     var body: some View {
         NavigationStack {
             Form {
@@ -95,14 +105,15 @@ struct InternetTimeEditor: View {
                 if let message = network.message { Text(message).foregroundStyle(Brand.red) }
                 if review { Text("Close and review current session status before another change.").foregroundStyle(Brand.red) }
             }.navigationTitle("Adjust session time").navigationBarTitleDisplayMode(.inline)
+            .onAppear { if originalDraft == nil { originalDraft = draftSignature } }
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(saving) }
+                    ToolbarItem(placement: .cancellationAction) { DraftCancelButton(dirty: hasUnsavedChanges, saving: saving) { dismiss() } }
                     ToolbarItem(placement: .confirmationAction) { Button { Task {
                         saving = true; let success = await network.act(session, action: "adjust", deltaMinutes: remove ? -minutes : minutes, reason: reason.trimmingCharacters(in: .whitespacesAndNewlines)); saving = false
                         if success { dismiss() } else { review = network.mutationNeedsReview }
                     } } label: { if saving { ProgressView() } else { Text("Save").bold() } }.disabled(saving || review || !network.canChange || !network.canManage || !network.currentSession(session).isStable || reason.count > 500) }
                 }
-        }.interactiveDismissDisabled(saving)
+        }.interactiveDismissDisabled(saving || hasUnsavedChanges)
     }
 }
 
@@ -148,6 +159,7 @@ struct ManagedDeviceEditor: View {
     @State private var kind: String
     @State private var people: Set<String>
     @State private var addresses: String
+    @State private var defaultAccess: String
     @State private var allowApplePush: Bool
     @State private var saving = false
     @State private var review = false
@@ -156,8 +168,12 @@ struct ManagedDeviceEditor: View {
         self.network = network; self.device = device
         _name = State(initialValue: device?.name ?? ""); _kind = State(initialValue: device?.kind ?? "console")
         _people = State(initialValue: Set(device?.personIds ?? [])); _addresses = State(initialValue: device?.macAddresses?.joined(separator: "\n") ?? "")
+        _defaultAccess = State(initialValue: device?.defaultAccess ?? "blocked")
         _allowApplePush = State(initialValue: device?.allowApplePush ?? ["tablet", "phone"].contains(device?.kind ?? "console"))
     }
+    @State private var originalDraft: String?
+    private var draftSignature: String { draftFingerprint([name, kind, String(describing: people.sorted()), addresses, defaultAccess, String(allowApplePush)]) }
+    private var hasUnsavedChanges: Bool { originalDraft.map { $0 != draftSignature } ?? false }
     var body: some View {
         NavigationStack {
             Form {
@@ -165,6 +181,9 @@ struct ManagedDeviceEditor: View {
                     TextField("PS5, Switch 2, iPad…", text: $name).textInputAutocapitalization(.words)
                     Picker("Type", selection: $kind) { Text("Console").tag("console"); Text("Tablet").tag("tablet"); Text("Phone").tag("phone"); Text("Computer").tag("computer"); Text("TV").tag("tv"); Text("Other").tag("other") }
                 }
+                Section {
+                    Picker("Default Internet", selection: $defaultAccess) { Text("Blocked · kids earn time").tag("blocked"); Text("Allowed · parent control").tag("allowed") }
+                } footer: { Text("Only blocked-by-default devices enter the earned-time pool. Parent on/off controls work independently of tasks.") }
                 Section("Assigned children") {
                     ForEach(model.snapshot?.people ?? []) { person in
                         Toggle(person.name, isOn: Binding(get: { people.contains(person.id) }, set: { enabled in if enabled { people.insert(person.id) } else { people.remove(person.id) } }))
@@ -181,18 +200,21 @@ struct ManagedDeviceEditor: View {
                 if review { Text("Close and refresh the device list to review whether the change was saved.").foregroundStyle(Brand.red) }
                 if device != nil { Section { Button("Remove device", role: .destructive) { removing = true }.disabled(saving || review || !network.canChange) } }
             }.navigationTitle(device == nil ? "Add device" : "Edit device").navigationBarTitleDisplayMode(.inline)
+
+                .onAppear { if device == nil && people.isEmpty { people = Set((model.snapshot?.people ?? []).map(\.id)) }; if originalDraft == nil { originalDraft = draftSignature } }
                 .onChange(of: kind) { _, value in if device == nil { allowApplePush = ["tablet", "phone"].contains(value) } }
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(saving) }
+                    ToolbarItem(placement: .cancellationAction) { DraftCancelButton(dirty: hasUnsavedChanges, saving: saving) { dismiss() } }
                     ToolbarItem(placement: .confirmationAction) { Button { Task { await save() } } label: { if saving { ProgressView() } else { Text("Save").bold() } }.disabled(saving || review || !validMACs || people.isEmpty || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || name.count > 80 || !network.canChange || !network.canManage) }
                 }
                 .confirmationDialog("Remove this unenrolled device?", isPresented: $removing, titleVisibility: .visible) { Button("Remove device", role: .destructive) { Task { saving = true; if let device, await network.deleteDevice(device) { dismiss() } else { review = network.mutationNeedsReview }; saving = false } }; Button("Cancel", role: .cancel) { } }
-        }.interactiveDismissDisabled(saving)
+        }.interactiveDismissDisabled(saving || hasUnsavedChanges)
     }
     private var macs: [String] { addresses.split(whereSeparator: { $0.isWhitespace || $0 == "," }).map { String($0).lowercased().replacingOccurrences(of: "-", with: ":") } }
     private var validMACs: Bool { (1...8).contains(macs.count) && Set(macs).count == macs.count && macs.allSatisfy { $0.range(of: "^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$", options: .regularExpression) != nil } }
     private func save() async {
         saving = true; var draft = ManagedDeviceDraft(name: name.trimmingCharacters(in: .whitespacesAndNewlines), kind: kind, personIds: people.sorted(), macAddresses: macs.sorted(), mutationId: UUID().uuidString.lowercased(), expectedVersion: device?.version)
+        draft.defaultAccess = defaultAccess
         draft.allowApplePush = ["tablet", "phone"].contains(kind) && allowApplePush
         let success = await network.saveDevice(draft, id: device?.id); saving = false
         if success { dismiss() } else { review = network.mutationNeedsReview }
@@ -218,6 +240,9 @@ struct RewardPolicyEditor: View {
         _enabled = State(initialValue: policy.enabled); _reward = State(initialValue: min(policy.rewardMinutes, 1439)); _carryover = State(initialValue: policy.carryoverDays)
         _limit = State(initialValue: policy.dailyLimitMinutes); _warning = State(initialValue: policy.warningMinutes); _bedtime = State(initialValue: policy.bedtime != nil)
     }
+    @State private var originalDraft: String?
+    private var draftSignature: String { draftFingerprint([String(enabled), String(reward), String(carryover), String(limit), String(warning), String(bedtime), Dates.wallTimeString(cutoff, in: model.zone)]) }
+    private var hasUnsavedChanges: Bool { originalDraft.map { $0 != draftSignature } ?? false }
     var body: some View {
         Form {
             Section(model.snapshot?.people.first(where: { $0.id == policy.personId })?.name ?? "Child") {
@@ -235,7 +260,10 @@ struct RewardPolicyEditor: View {
             if let message = network.message { Text(message).foregroundStyle(Brand.red) }
             if review { Text("Close and refresh reward settings to review the saved policy before editing again.").foregroundStyle(Brand.red) }
         }.navigationTitle("Rewards and limits").navigationBarTitleDisplayMode(.inline)
-            .task { cutoff = Dates.wallTime(policy.bedtime ?? "21:00", on: model.today, in: model.zone) ?? Date() }
+            .navigationBarBackButtonHidden(hasUnsavedChanges).interactiveDismissDisabled(saving || hasUnsavedChanges)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { if hasUnsavedChanges { DraftCancelButton(dirty: true, saving: saving) { dismiss() } } } }
+            .task { cutoff = Dates.wallTime(policy.bedtime ?? "21:00", on: model.today, in: model.zone) ?? Date()
+                    if originalDraft == nil { originalDraft = draftSignature } }
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button { Task {
                 saving = true
                 let draft = RewardPolicyDraft(expectedVersion: policy.version, rewardMinutes: reward, carryoverDays: carryover, dailyLimitMinutes: limit, bedtime: bedtime ? Dates.wallTimeString(cutoff, in: model.zone) : nil, warningMinutes: warning, enabled: enabled)
@@ -252,6 +280,9 @@ struct CreditReviewScreen: View {
     @State private var reason = ""
     @State private var saving = false
     @State private var review = false
+    @State private var originalDraft: String?
+    private var draftSignature: String { draftFingerprint([action, reason]) }
+    private var hasUnsavedChanges: Bool { originalDraft.map { $0 != draftSignature } ?? false }
     var body: some View {
         Form {
             Section { Text("The network could not confirm whether this \(credit.minutes)-minute reward started before the session ended. Review the session and network history before deciding.").font(.subheadline) }
@@ -263,5 +294,8 @@ struct CreditReviewScreen: View {
             if review { Text("Close and refresh Devices to review this reward's current status.").foregroundStyle(Brand.red) }
             Button { Task { saving = true; if await network.resolve(credit, action: action, reason: reason.trimmingCharacters(in: .whitespacesAndNewlines)) { dismiss() } else { review = network.mutationNeedsReview }; saving = false } } label: { if saving { ProgressView() } else { Text("Record parent decision").font(.headline) } }.frame(minHeight: 44).disabled(saving || review || reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || reason.count > 500 || !network.canChange || !network.canManage)
         }.navigationTitle("Review reward").navigationBarTitleDisplayMode(.inline)
+            .onAppear { if originalDraft == nil { originalDraft = draftSignature } }
+            .navigationBarBackButtonHidden(hasUnsavedChanges).interactiveDismissDisabled(saving || hasUnsavedChanges)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { if hasUnsavedChanges { DraftCancelButton(dirty: true, saving: saving) { dismiss() } } } }
     }
 }

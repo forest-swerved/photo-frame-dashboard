@@ -52,7 +52,7 @@ test('account-owned Activity and preferences across devices, scope changes and s
     await pool.query('CREATE SCHEMA IF NOT EXISTS family_internal');
     await pool.query('CREATE TABLE IF NOT EXISTS family_internal.auth_sessions(id uuid PRIMARY KEY,user_id uuid NOT NULL,not_after timestamptz)');
     await pool.query(`CREATE SCHEMA ${schema}`); created = true;
-    for (const name of ['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql', 'calendar-sync-schema.sql', 'chore-schema.sql','school-schema.sql', 'account-notifications-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
+    for (const name of ['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql', 'calendar-sync-schema.sql', 'chore-schema.sql','school-schema.sql', 'account-notifications-schema.sql','internet-schema.sql','family-notifications-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
     await db.query('INSERT INTO family_households(id,title,timezone) VALUES($1,$2,$3)', [household.id, household.title, household.timezone]);
     for (const account of Object.values(accounts)) {
       await pool.query('INSERT INTO family_internal.auth_sessions(id,user_id) VALUES($1,$2)', [account.provider, account.id]);
@@ -100,7 +100,7 @@ test('account-owned Activity and preferences across devices, scope changes and s
       assert.equal((await notificationInbox(db, sessions.childB)).notifications.length, 0);
       const parentPushes = sends.filter(message => ['a'.repeat(64), 'b'.repeat(64)].includes(message.token));
       assert.ok(parentPushes.every(message => message.payload.notificationId === first[0].id));
-      assert.ok(sends.every(message => !JSON.stringify(message.payload).includes('Private task title')));
+      assert.ok(sends.every(message => JSON.stringify(message.payload).includes('Private task title')));
       await markNotificationRead(db, sessions.parent2, first[0].id);
       assert.ok((await notificationInbox(db, sessions.parent1)).notifications[0].readAt);
       assert.ok((await notificationInbox(db, parent)).notifications[0].readAt);

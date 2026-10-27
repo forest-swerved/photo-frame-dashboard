@@ -27,6 +27,14 @@ test('operator plan binds grouped fixed identities, exact exceptions, foreign co
   assert.notEqual(changed.binding, plan.binding);
   assert.notEqual(inspectPolicyInventory({ ...f, applicationVersion: '10.6.107' }).binding, plan.binding);
 });
+test('free-to-use enrollment retains the same blocking pilot but verifies its disabled default deny', () => {
+  const f = fixture(); f.device.default_access = 'allowed';
+  assert.equal(inspectPolicyInventory(f).observations.permanentDenyVerified, false);
+  const ready = inspectPolicyInventory({ ...f, policies: f.policies.map(p => p.id === f.input.denyPolicyId ? { ...p, enabled: false } : p) });
+  assert.equal(ready.observations.permanentDenyVerified, true); assert.ok(ready.reviewedFingerprint);
+  assert.equal(ready.policies.deny.enabled, true, 'Timed sessions and pilots keep an enabled deny template.');
+  assert.ok(ready.requiredChecks.includes('management_access')); assert.ok(ready.requiredChecks.includes('unrelated_internet_blocked'));
+});
 test('Apple readiness requires a permanent exact notification transport and its own proof', () => {
   const f = fixture(true), plan = inspectPolicyInventory(f);
   assert.ok(plan.requiredChecks.includes('apple_push')); assert.equal(plan.observations.appleVerified, true);
@@ -80,7 +88,7 @@ function simulatedOperatorStore({ transactionTimezone = 'America/Denver' } = {})
     if (sql.startsWith('SELECT details,created_at,id FROM family_internet_events')) return rows([]);
     if (sql.startsWith('SELECT timezone FROM family_households')) return rows([{ timezone: transactionTimezone }]);
     if (sql.startsWith('SELECT * FROM family_managed_devices WHERE id=')) return rows([{ ...device }]);
-    if (sql.startsWith('SELECT id FROM family_internet_sessions WHERE household_id=')) return rows([]);
+    if (sql.startsWith('SELECT id FROM family_internet_sessions WHERE household_id=') || sql.startsWith('SELECT id FROM family_internet_commands WHERE household_id=')) return rows([]);
     if (sql.startsWith('SELECT pg_advisory_xact_lock') || ['BEGIN', 'COMMIT', 'ROLLBACK'].includes(sql) || sql.startsWith('SET LOCAL')) return rows([]);
     if (/^(UPDATE|INSERT)/.test(sql)) { mutations.push(sql); return { rows: [], rowCount: 1 }; }
     throw Error(`Unexpected simulated operator query: ${sql}`);

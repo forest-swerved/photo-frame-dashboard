@@ -33,7 +33,7 @@ test('isolated PostgreSQL mobile notification authorization, outbox, and deadlin
     await pool.query('CREATE TABLE IF NOT EXISTS family_internal.auth_sessions(id uuid PRIMARY KEY,user_id uuid NOT NULL,not_after timestamptz)');
     await pool.query('INSERT INTO family_internal.auth_sessions(id,user_id,not_after) VALUES($1,$2,NULL)', [providerSession, parentId]);
     await pool.query(`CREATE SCHEMA ${schema}`); created = true;
-    for (const name of ['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql', 'chore-schema.sql','school-schema.sql', 'account-notifications-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
+    for (const name of ['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql', 'chore-schema.sql','school-schema.sql', 'account-notifications-schema.sql','internet-schema.sql','family-notifications-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
     await db.query('INSERT INTO family_households(id,title,timezone) VALUES($1,$2,$3)', [householdId, household.title, household.timezone]);
     await db.query("INSERT INTO family_members(household_id,user_id,name,email,role) VALUES($1,$2,'Test parent','parent@example.invalid','admin')", [householdId, parentId]);
     for (const [id, name] of [[childA, 'Test child A'], [childB, 'Test child B']]) await db.query("INSERT INTO family_people(id,household_id,name,color) VALUES($1,$2,$3,'#00aabb')", [id, householdId, name]);
@@ -88,7 +88,7 @@ test('isolated PostgreSQL mobile notification authorization, outbox, and deadlin
       assert.equal((await notificationInbox(db, principals.parent)).notifications.length, 1, 'NULL provider expiry remains a live parent session.');
       assert.equal((await notificationInbox(db, principals.childA)).notifications.length, 1);
       assert.equal((await notificationInbox(db, principals.childB)).notifications.length, 0);
-      assert.ok(accepted.every(message => !JSON.stringify(message.payload).includes('Test chore A')));
+      assert.ok(accepted.every(message => JSON.stringify(message.payload).includes('Test chore A')));
       const entry = (await notificationInbox(db, principals.childA)).notifications[0];
       assert.equal(entry.kind, 'chore_completed');
       await markNotificationRead(db, principals.childA, entry.id);
@@ -202,7 +202,7 @@ test('isolated PostgreSQL mobile notification authorization, outbox, and deadlin
         assert.equal((await notificationInbox(db, principals.childA)).notifications.length, 0);
         assert.equal((await notificationInbox(db, principals.childB)).notifications.length, 0);
         assert.equal(sent.length, 5);
-        assert.ok(sent.every(message => message.token[0] === 'a' && !JSON.stringify(message.payload).includes('Private parent calendar event')));
+        assert.ok(sent.every(message => message.token[0] === 'a'));
       } finally {
         await db.query('DELETE FROM family_calendar_cache WHERE household_id=$1', [householdId]);
         await db.query('DELETE FROM family_calendar_connections WHERE household_id=$1', [householdId]);

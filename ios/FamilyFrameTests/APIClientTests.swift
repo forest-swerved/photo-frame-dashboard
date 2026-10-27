@@ -401,4 +401,24 @@ final class APIClientTests: XCTestCase {
         do { try await api.transferOwnership(userID: "test-caregiver"); XCTFail("Transfer recipient must match") } catch let error as APIError { XCTAssertEqual(error.code, "transfer_unconfirmed") }
     }
 
+    @MainActor func testDeviceRequestAndParentDecisionUseDurationReasonMutationAndVersion() async throws {
+        let api = client(), mutation = UUID().uuidString.lowercased(); var calls = 0
+        let pending = #"{"id":"test-request","personId":"test-person","deviceId":"test-console","minutes":45,"reason":"Friends","status":"pending","version":1,"requestedAt":"2026-10-26T13:00:00Z","expiresAt":"2026-10-27T13:00:00Z"}"#
+        MockProtocol.handler = { [self] request in
+            calls += 1; let payload = body(request)
+            XCTAssertEqual(request.httpMethod, "POST"); XCTAssertEqual(payload["mutationId"] as? String, mutation)
+            if calls == 1 {
+                XCTAssertEqual(request.url?.path, "/api/internet/requests"); XCTAssertEqual(payload["minutes"] as? Int, 45)
+                XCTAssertEqual(payload["reason"] as? String, "Friends"); XCTAssertEqual(payload["deviceId"] as? String, "test-console"); XCTAssertNil(payload["personId"])
+                return (201, Data(("{\"data\":" + pending + "}").utf8))
+            }
+            XCTAssertEqual(request.url?.path, "/api/internet/requests/test-request/decision")
+            XCTAssertEqual(payload["action"] as? String, "approve"); XCTAssertEqual(payload["expectedVersion"] as? Int, 1)
+            return (202, Data(("{\"data\":" + pending.replacingOccurrences(of: "pending", with: "approved").replacingOccurrences(of: "\"version\":1", with: "\"version\":2") + "}").utf8))
+        }
+        let item = try await api.requestDeviceAccess(deviceID: "test-console", minutes: 45, reason: "Friends", mutationID: mutation)
+        let decision = try await api.decideDeviceAccess(item, approve: true, mutationID: mutation)
+        XCTAssertEqual(decision.status, "approved"); XCTAssertEqual(decision.version, 2); XCTAssertEqual(calls, 2)
+    }
+
 }

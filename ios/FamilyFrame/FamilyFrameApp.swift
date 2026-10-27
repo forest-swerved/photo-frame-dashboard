@@ -11,7 +11,7 @@ struct FamilyFrameApp: App {
             Group {
                 if model.session != nil { DashboardTabs() } else { WelcomeScreen() }
             }
-            .environmentObject(model).tint(Brand.red).preferredColorScheme(.light)
+            .environmentObject(model).tint(Brand.primary).preferredColorScheme(.light)
             .task { await model.start() }
             .task(id: phase) {
                 guard phase == .active else { return }
@@ -157,12 +157,19 @@ struct WelcomeScreen: View {
                 if model.isSigningIn { ProgressView().tint(.white) } else { Text("Accept family invitation") }
             }.buttonStyle(PrimaryButton()).disabled(invitation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isSigningIn)
             Text("An account without an accepted invitation has no access to household data.").font(.caption).foregroundStyle(Brand.muted)
+            Link("Setting up a new household? Continue on the web", destination: Brand.webSettings("family")).font(.subheadline).frame(minHeight: 44)
+            Text("The web dashboard may ask you to sign in again.").font(.caption).foregroundStyle(Brand.muted)
             Button("Delete this unlinked account", role: .destructive) { deleting = true }.font(.subheadline).frame(minHeight: 44).disabled(model.isSigningIn)
             backToSignIn
         }
     }
     private var invitationField: some View {
+        VStack(alignment: .leading, spacing: 8) {
         TextField("Invitation token", text: $invitation, axis: .vertical).lineLimit(2...4).keyboardType(.asciiCapable).textInputAutocapitalization(.never).autocorrectionDisabled().focused($focus, equals: .invitation).id(Field.invitation).textFieldStyle(.roundedBorder).accessibilityLabel("Family invitation token").privacySensitive()
+            PasteButton(payloadType: String.self) { values in
+                if let value = values.first { invitation = value.trimmingCharacters(in: .whitespacesAndNewlines) }
+            }.disabled(model.isSigningIn).accessibilityLabel("Paste family invitation token")
+        }
     }
     private var backToSignIn: some View {
         Button("Use a different account") { focus = nil; Task { await model.cancelAccountOnboarding(); email = ""; name = ""; password = ""; confirmPassword = ""; confirmationCode = ""; invitation = ""; confirmationNotice = nil } }.font(.subheadline).disabled(model.isSigningIn)

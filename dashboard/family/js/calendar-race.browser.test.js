@@ -95,7 +95,8 @@ for (const obsoleteResponse of ['success', 'unauthorized']) {
       try { await page.getByRole('heading', { name: 'Today', exact: true }).waitFor({ timeout: 5000 }); }
       catch { throw new Error(`UI fixture startup failed. Routes: ${apiRequests.join(', ')}. Screen: ${(await page.locator('body').innerText()).slice(0, 600)}`); }
       await page.waitForFunction(() => document.querySelector('.status-note')?.textContent.includes('Checking'));
-      await page.getByRole('link', { name: 'Setup', exact: true }).click();
+      await page.getByRole('link', { name: 'Settings', exact: true }).click();
+      await page.locator('.settings-row[data-action="settings-section"][data-id="calendar"]').click();
       await page.getByRole('button', { name: 'Disconnect Apple Calendar', exact: true }).click();
       await page.getByRole('button', { name: 'Disconnect calendar', exact: true }).click();
       await page.getByRole('button', { name: 'Connect Apple Calendar', exact: true }).waitFor();

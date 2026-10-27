@@ -52,7 +52,7 @@ async function fixture({ role = 'admin', frame = false, signedOut = false, width
   });
   return { browser, page, state, async open(view = 'chores') {
     await page.goto(new URL(`/family.html${frame ? '?display=frame' : ''}#${view}`, origin).href);
-    if (!signedOut) await page.getByRole('heading', { name: view === 'chores' ? 'Tasks' : view[0].toUpperCase() + view.slice(1), exact: true, level: 1 }).waitFor();
+    if (!signedOut) await page.getByRole('heading', { name: view === 'setup' ? 'Settings' : view === 'chores' ? (role === 'child' ? 'My tasks' : 'Tasks') : view[0].toUpperCase() + view.slice(1), exact: true, level: 1 }).waitFor();
     else await page.getByRole('heading', { name: 'Your family, together.', exact: true }).waitFor();
   } };
 }
@@ -83,6 +83,7 @@ test('parent creates an advanced one-off routine, approves work, and creates an 
     await f.page.getByLabel('One-off date').fill('2026-10-24');
     await f.page.getByLabel('Required for daily rewards').uncheck();
     await f.page.getByLabel('A parent must approve completion').check();
+    await f.page.getByText('Instructions & checklist', { exact: true }).click();
     await f.page.getByLabel('Instructions', { exact: true }).fill('Read these fixture steps.');
     await f.page.getByLabel('Steps · one per line, up to 20').fill('First step\nSecond step');
     await f.page.getByRole('button', { name: 'Save task', exact: true }).click();
@@ -90,10 +91,13 @@ test('parent creates an advanced one-off routine, approves work, and creates an 
     const routine = f.state.calls.find(item => item.path === '/api/chores' && item.method === 'POST').body;
     assert.equal(routine.scheduleType, 'one_off'); assert.equal(routine.scheduledDate, '2026-10-24');
     assert.equal(routine.required, false); assert.equal(routine.requiresApproval, true); assert.equal(routine.subtasks.length, 2);
+    await f.page.getByRole('button', { name: /Waiting for approval ·/ }).click();
+    await f.page.getByRole('button', { name: 'Review work', exact: true }).click();
     await f.page.getByRole('button', { name: 'Approve', exact: true }).click();
     await f.page.getByRole('dialog').getByRole('button', { name: 'Approve task', exact: true }).click();
     await f.page.waitForFunction(() => !document.querySelector('dialog').open);
     assert.equal(f.state.occurrence.status, 'completed');
+    await f.page.getByText('History and schedule tools', { exact: true }).click();
     await f.page.getByRole('button', { name: 'Task breaks', exact: true }).click();
     await f.page.getByLabel('First day').fill('2026-10-24'); await f.page.getByLabel('Last day (included)').fill('2026-10-26');
     await f.page.getByLabel('Reason', { exact: true }).fill('Synthetic school holiday');
@@ -114,8 +118,9 @@ test('account Activity can mark read and notification settings submit account-sc
     await f.open('activity');
     await f.page.getByText('Task ready for approval', { exact: true }).waitFor();
     await f.page.getByRole('button', { name: 'Mark read', exact: true }).click();
-    await f.page.getByText('Read', { exact: true }).waitFor(); assert.equal(f.state.notificationRead, true);
-    await f.page.getByRole('link', { name: 'Setup', exact: true }).click();
+    await f.page.waitForFunction(() => !document.querySelector('.activity-item.unread')); assert.equal(f.state.notificationRead, true);
+    await f.page.getByRole('link', { name: 'Settings', exact: true }).click();
+    await f.page.locator('[data-action="settings-section"][data-id="notifications"]').click();
     await f.page.getByRole('button', { name: 'Notification preferences', exact: true }).click();
     await f.page.getByLabel('Enable quiet hours').check();
     await f.page.getByRole('button', { name: 'Save preferences', exact: true }).click();
@@ -144,7 +149,7 @@ test('frame approval lives only in memory and the private header, with timed loc
     await f.page.clock.runFor(4000);
     await f.page.waitForFunction(() => !document.querySelector('dialog').open);
     assert.equal(await f.page.getByLabel('Task', { exact: true }).count(), 0);
-    await f.page.getByRole('link', { name: 'Setup', exact: true }).click();
+    await f.page.getByRole('link', { name: 'Settings', exact: true }).click();
     await f.page.getByRole('button', { name: 'Enter unlock code', exact: true }).waitFor();
     const households = f.state.calls.filter(call => call.path === '/api/household');
     assert.equal(households.at(-1).headers['x-family-authorization'], undefined);
@@ -170,6 +175,50 @@ test('recovery uses a recovery-only proof and clears secrets without following t
     assert.deepEqual(Object.keys(body).sort(), ['password', 'recoveryLink']); assert.equal(body.recoveryLink, link);
     assert.equal(f.page.url().includes('fixture-proof'), false);
     assert.equal(await f.page.getByLabel('Password', { exact: true }).inputValue(), '');
+    assert.deepEqual(f.state.errors, []);
+  } finally { await f.browser.close(); }
+});
+
+test('task details keep checklist state in sync with the acknowledged occurrence version', { skip: !base }, async () => {
+  const f = await fixture({ role: 'child', width: 390 });
+  try {
+    await f.open();
+    await f.page.getByRole('button', { name: 'Details for Synthetic routine', exact: true }).click();
+    await f.page.getByText('Instructions & 1 steps', { exact: true }).click();
+    const step = f.page.getByRole('button', { name: /Prepare supplies/ });
+    await step.click();
+    await f.page.waitForFunction(() => document.querySelector('[data-action="occurrence-step"]')?.getAttribute('aria-pressed') === 'true');
+    assert.equal(f.state.calls.find(call => call.body?.action === 'subtasks').body.expectedVersion, 3);
+    assert.equal(await f.page.locator('.occurrence-info details').getAttribute('open'), '');
+    await f.page.getByRole('button', { name: 'Submit for approval', exact: true }).click();
+    await f.page.getByRole('dialog').getByText('Waiting for parent approval', { exact: true }).waitFor();
+    assert.equal(f.state.calls.find(call => call.path.endsWith('/completion')).body.expectedVersion, 4);
+    assert.deepEqual(f.state.errors, []);
+  } finally { await f.browser.close(); }
+});
+
+test('dirty drafts retain input on cancel and navigation, and the save bar stays visible on a phone', { skip: !base }, async () => {
+  const f = await fixture({ width: 390 });
+  try {
+    await f.open();
+    await f.page.getByRole('button', { name: '+ Add a task', exact: true }).click();
+    await f.page.getByLabel('Task', { exact: true }).fill('Unsaved synthetic task');
+    await f.page.getByText('Instructions & checklist', { exact: true }).click();
+    await f.page.getByLabel('Instructions', { exact: true }).fill('A long synthetic instruction. '.repeat(30));
+    const geometry = await f.page.locator('.dialog-footer').evaluate(element => ({ top:element.getBoundingClientRect().top,bottom:element.getBoundingClientRect().bottom,height:innerHeight }));
+    assert.ok(geometry.top >= 0 && geometry.bottom <= geometry.height, JSON.stringify(geometry));
+    await f.page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await f.page.getByText('Discard your unsaved changes?', { exact:true }).waitFor();
+    await f.page.getByRole('button', { name:'Keep editing', exact:true }).click();
+    assert.equal(await f.page.getByLabel('Task', { exact:true }).inputValue(), 'Unsaved synthetic task');
+    // A hash change is also possible via the browser's Back button while a dialog is open.
+    await f.page.evaluate(() => { location.hash = 'calendar'; });
+    await f.page.getByText('Discard your unsaved changes?', { exact:true }).waitFor();
+    assert.ok(f.page.url().endsWith('#chores'));
+    await f.page.getByRole('button', { name:'Discard changes', exact:true }).click();
+    await f.page.waitForFunction(() => !document.querySelector('dialog').open);
+    assert.equal(f.state.calls.filter(call => call.method === 'POST').length, 0);
+    assert.deepEqual(await f.page.evaluate(() => [Object.keys(localStorage),Object.keys(sessionStorage)]),[[],[]]);
     assert.deepEqual(f.state.errors, []);
   } finally { await f.browser.close(); }
 });

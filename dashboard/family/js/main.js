@@ -6,6 +6,7 @@ import { scheduledItems, mergeOccurrence, occurrenceDetails, schoolDayFilterLabe
 import { createWorkbench } from './workbench.js';
 import { createInternetUI } from './internet-ui.js';
 import { createAccountUI } from './account-ui.js';
+import { taskOverview, taskGroups, agendaParts, completionLabel, protectDialogDraft } from './presentation.js';
 
 const app = document.querySelector('#family-app');
 const dialog = document.querySelector('#family-dialog');
@@ -25,14 +26,15 @@ const icons = {
 const S = {
   booting: true, session: null, snapshot: null, calendar: null, connection: null, devices: [], members: [],
   view: views.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'today',
-  calendarMode: 'week', selectedDate: dateInZone(), authMode: 'sign-in',
+  calendarMode: 'day', taskPerson: 'all', taskMode: 'today', taskStatus: 'active', settingsSection: new URLSearchParams(location.search).get('settings') || '', selectedDate: dateInZone(), authMode: 'sign-in',
   verificationEmail: '', verificationMethod: 'code',
   entryPair: new URLSearchParams(location.search).get('display') === 'frame',
   inviteToken: '', generatedInvite: null, pairing: null, message: '', error: '', loading: false,
-  pending: new Map(), conflicts: new Map(), failures: new Map(), attempts: new Map(), calendarBusy: false, calendarShowingBusy: false, setupBusy: false,
+  recentTasks: new Set(), pending: new Map(), conflicts: new Map(), failures: new Map(), attempts: new Map(), calendarBusy: false, calendarShowingBusy: false, setupBusy: false,
 };
 let generation = 0;
 let noticeTimer;
+let closeDraftGuard;
 let pendingRender = false;
 let pollBusy = false;
 let queuedCalendar = null;
@@ -40,7 +42,7 @@ let calendarGeneration = 0;
 let paintedView = null;
 let pointerActive = false;
 const workbench = createWorkbench({ snapshot: () => S.snapshot, session: () => S.session, epoch: () => generation,
-  members: () => S.members, zone, today, frame, field, button, openDialog, dialog, toast, render,
+  members: () => S.members, zone, today, frame, field, button, openDialog, dialog, toast, render, refreshTaskDetails,
   reload: async () => { await loadHousehold(); if (internet.loaded() || S.view === 'devices') await internet.load(); }, reloadSetup: loadSetup, reboot: boot });
 const internet = createInternetUI({ snapshot: () => S.snapshot, session: () => S.session, epoch: () => generation,
   zone, frame, field, button, openDialog, dialog, toast, render, unlock: workbench.unlock });
@@ -107,14 +109,9 @@ function updateStamp(value) {
 }
 
 function shell(content) {
-  const labels = { today: 'Today', calendar: 'Calendar', chores: 'Tasks', devices: 'Devices', activity: 'Activity', setup: 'Setup' };
-  return `<div class="family-shell" data-key="family-shell">
-    <aside class="sidebar"><a class="brand" href="#today" aria-label="${h(title())} home"><span class="brand-mark">f<span>f</span></span><span class="brand-name">${h(title())}<small>A little more together.</small></span></a>
-      <nav aria-label="Main navigation">${views.filter(view => !frame() || view !== 'activity').map(view => `<a class="nav-item ${S.view === view ? 'active' : ''}" data-key="nav-${view}" href="#${view}" ${S.view === view ? 'aria-current="page"' : ''}>${icon(view)}<span>${labels[view]}</span></a>`).join('')}</nav>
-      <div class="sidebar-bottom"><span class="connection-dot ${S.error ? 'warning' : ''}"></span><span>${frame() ? 'Paired family frame' : 'Your family, connected'}</span></div>
-    </aside>
-    <main id="main-content" class="main-content" tabindex="-1"><header class="page-heading" data-key="page-heading"><div><p class="eyebrow">${h(title())}</p><h1>${labels[S.view]}</h1></div><div class="header-clock">${clockMarkup()}</div></header>${noticeBanner()}${content}</main>
-  </div>`;
+  const labels = { today: 'Today', calendar: 'Calendar', chores: S.session?.role === 'child' ? 'My tasks' : 'Tasks', devices: 'Devices', activity: 'Activity', setup: 'Settings' };
+  const nav = view => `<a class="nav-item ${S.view === view ? 'active' : ''}" data-key="nav-${view}" href="#${view}" aria-label="${labels[view]}" ${S.view === view ? 'aria-current="page"' : ''}>${icon(view)}<span>${labels[view]}</span>${view === 'activity' && workbench.unreadCount() ? `<span class="nav-badge" aria-label="${workbench.unreadCount()} unread">${workbench.unreadCount()}</span>` : ''}</a>`;
+  return `<div class="family-shell" data-key="family-shell"><aside class="sidebar"><a class="brand" href="#today" aria-label="${h(title())} home"><span class="brand-mark">f<span>f</span></span><span class="brand-name">${h(title())}<small>A little more together.</small></span></a><nav aria-label="Main navigation">${['today','chores','calendar','devices',...(!frame() ? ['activity'] : [])].map(nav).join('')}</nav><div class="sidebar-settings">${nav('setup')}</div><div class="sidebar-bottom"><span class="connection-dot ${S.error ? 'warning' : ''}"></span><span>${frame() ? 'Paired family frame' : 'Your family, connected'}</span></div></aside><main id="main-content" class="main-content ${S.view === 'today' ? 'today-content' : ''}" tabindex="-1"><header class="page-heading" data-key="page-heading"><div><p class="eyebrow">${h(title())}</p><h1>${labels[S.view]}</h1></div><div class="heading-actions"><div class="header-clock">${clockMarkup()}</div><a href="#setup" class="settings-shortcut icon-button" aria-label="Settings">${icon('setup')}</a></div></header>${noticeBanner()}${content}</main></div>`;
 }
 
 function calendarStatus() {
@@ -151,14 +148,14 @@ function eventCard(event, compact = false, date) {
   if (!event.allDay) {
     const formatter = dateFormatter({ timeZone: zone(), hour: 'numeric', minute: '2-digit' });
     time = `${formatter.format(new Date(event.startAt))} – ${formatter.format(new Date(event.endAt))}`;
-    if (compact && dateInZone(new Date(event.startAt), zone()) !== dateInZone(new Date(event.endAt), zone())) {
+    if (dateInZone(new Date(event.startAt), zone()) !== dateInZone(new Date(new Date(event.endAt).getTime() - 1), zone())) {
       const datedTime = dateFormatter({ timeZone: zone(), weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
       time = `${datedTime.format(new Date(event.startAt))} – ${datedTime.format(new Date(event.endAt))}`;
     }
   }
-  const timeMarkup = `<span class="event-time">${h(time)}</span>`;
+  const timeMarkup = `<time class="event-time" datetime="${h(event.allDay ? date || event.startDate : event.startAt)}">${h(time)}</time>`;
   const dateMarkup = compact ? `<time class="event-date" datetime="${h(date)}" aria-label="${h(dateLabel(date, { year: 'numeric' }))}"><span>${h(dateLabel(date, { weekday: 'long', month: undefined, day: undefined }))}</span><strong>${h(dateLabel(date, { weekday: undefined, month: 'short', day: 'numeric' }))}</strong></time>` : '';
-  return `<article class="event-card ${compact ? 'compact' : ''}" data-key="event-${h(event.calendarId)}-${h(event.id)}" style="--event:${eventColor}">${compact ? dateMarkup : timeMarkup}<div>${compact ? timeMarkup : ''}<h3>${h(event.title || 'Untitled event')}</h3>${event.location ? `<p>${h(event.location)}</p>` : ''}${metadata?.name && !compact ? `<span class="event-calendar">${h(metadata.name)}</span>` : ''}</div></article>`;
+  return `<article class="event-card ${compact ? 'compact' : ''}" data-key="event-${h(event.calendarId)}-${h(event.id)}" style="--event:${eventColor}" data-date="${h(date || S.selectedDate)}" aria-label="${h(event.title || 'Untitled event')}, ${h(dateLabel(date || S.selectedDate))}">${compact ? dateMarkup : timeMarkup}<div>${compact ? timeMarkup : ''}<h3>${h(event.title || 'Untitled event')}</h3>${event.location ? `<p>${h(event.location)}</p>` : ''}${metadata?.name && !compact ? `<span class="event-calendar">${h(metadata.name)}</span>` : ''}<button type="button" class="event-open" data-action="event-details" data-id="${h(event.id)}" data-calendar="${h(event.calendarId)}" data-date="${h(date || S.selectedDate)}" aria-label="Details for ${h(event.title || 'Untitled event')}">Details <span aria-hidden="true">↗</span></button></div></article>`;
 }
 
 function eventList(date, limit = Infinity) {
@@ -170,18 +167,12 @@ function eventList(date, limit = Infinity) {
 function scheduledChores() { return scheduledItems(S.snapshot, zone()) || orderChores((S.snapshot?.chores || []).filter(chore => chore.weekdays.includes(weekday(S.snapshot.date))), S.snapshot?.date || today(), zone()); }
 function done(chore) { return chore.status ? chore.status === 'completed' : chore.completion?.date === S.snapshot?.date && chore.completion.completed === true; }
 function choreRow(chore, showPerson = true) {
-  const key = `${chore.id}:${S.snapshot.date}`;
-  const pending = S.pending.has(key);
-  const conflict = S.conflicts.has(key);
-  const failure = S.failures.get(key);
+  const key = `${chore.id}:${S.snapshot.date}`, pending = S.pending.has(key), conflict = S.conflicts.has(key), failure = S.failures.get(key);
+  const historical = chore.status === 'skipped' || taskGroups([chore], S.snapshot?.schoolDay).history.length > 0;
   const urgency = choreUrgency(chore, S.snapshot.date, zone());
-  const deadline = chore.dueTime ? `${urgency === 'overdue' ? 'Overdue · ' : urgency === 'soon' ? 'Due soon · ' : ''}Due ${timeLabel(chore.dueTime)}` : '';
-  return `<div class="chore-row ${done(chore) ? 'is-done' : ''} ${pending ? 'is-pending' : ''} is-${urgency}" data-key="chore-${h(key)}">
-    <button type="button" class="chore-toggle" data-action="complete-chore" data-id="${h(chore.id)}" aria-pressed="${chore.status === 'submitted' || done(chore)}" aria-label="${chore.status === 'submitted' ? 'Withdraw submission for' : done(chore) ? 'Reopen' : chore.requiresApproval && !choreManager() ? 'Submit for approval:' : 'Complete'} ${h(chore.title)}${deadline ? `. ${h(deadline)}` : ''}" ${pending || chore.status === 'skipped' ? 'aria-disabled="true"' : ''} ${pending ? 'aria-busy="true"' : ''}><span class="check-box" aria-hidden="true">${done(chore) ? '✓' : chore.status === 'submitted' ? '…' : chore.status === 'skipped' ? '–' : ''}</span><span><strong>${h(chore.title)}</strong>${showPerson ? `<small>${h(profileLabel(chore.personId))}</small>` : ''}${deadline ? `<small class="chore-deadline">${h(deadline)}</small>` : ''}${pending ? '<small class="save-status">Saving…</small>' : ''}</span></button>
-    ${choreManager() ? button('Edit routine', 'edit-chore', 'text-button', `data-id="${h(chore.choreId || chore.id)}" aria-label="Edit ${h(chore.title)}"`) : ''}
-    ${occurrenceDetails(chore, choreManager(), pending, S.snapshot?.schoolDay)}
-    ${conflict ? `<div class="write-feedback" role="alert">Changed on another device. The latest state is shown. ${button('Retry my change', 'retry-completion', 'text-button', `data-id="${h(chore.id)}"`)}</div>` : failure ? `<div class="write-feedback" role="alert">${h(failure)} ${button('Retry', 'retry-completion', 'text-button', `data-id="${h(chore.id)}"`)}</div>` : ''}
-  </div>`;
+  const deadline = !historical && !done(chore) && chore.status !== 'submitted' && chore.dueTime ? `${urgency === 'overdue' ? 'Overdue · ' : urgency === 'soon' ? 'Due soon · ' : ''}Due ${timeLabel(chore.dueTime)}` : '';
+  const status = historical ? 'Earlier schedule / excused' : completionLabel(chore);
+  return `<div class="chore-row compact-task ${done(chore) ? 'is-done' : ''} ${pending ? 'is-pending' : ''} ${chore.status === 'submitted' ? 'is-submitted' : ''} ${historical ? 'is-historical' : ''} is-${urgency}" data-key="chore-${h(key)}"><button type="button" class="chore-toggle" data-action="complete-chore" data-id="${h(chore.id)}" aria-pressed="${chore.status === 'submitted' || done(chore)}" aria-label="${chore.status === 'submitted' ? 'Withdraw submission for' : done(chore) ? 'Reopen' : chore.requiresApproval && !choreManager() ? 'Submit for approval:' : 'Complete'} ${h(chore.title)}${deadline ? `. ${h(deadline)}` : ''}" ${pending || historical ? 'aria-disabled="true"' : ''} ${pending ? 'aria-busy="true"' : ''}><span class="check-box" aria-hidden="true">${done(chore) ? '✓' : chore.status === 'submitted' ? '…' : historical ? '–' : ''}</span></button><button type="button" class="chore-open" data-action="task-details" data-id="${h(chore.id)}" aria-label="Details for ${h(chore.title)}"><strong>${h(chore.title)}</strong><small>${showPerson ? `${h(profileLabel(chore.personId))} · ` : ''}<span class="task-state">${h(status)}</span>${deadline ? ` · <span class="chore-deadline">${h(deadline)}</span>` : ''}${chore.subtasks?.length ? ` · ${chore.subtasks.filter(step => step.completed).length}/${chore.subtasks.length} steps` : ''}</small>${pending ? '<small class="save-status">Saving…</small>' : ''}</button>${chore.status === 'submitted' && choreManager() ? button('Review', 'task-details', 'text-button', `data-id="${h(chore.id)}"`) : '<span class="row-chevron" aria-hidden="true">›</span>'}${conflict ? `<div class="write-feedback" role="alert">Changed on another device. The latest state is shown. ${button('Retry my change', 'retry-completion', 'text-button', `data-id="${h(chore.id)}"`)}</div>` : failure ? `<div class="write-feedback" role="alert">${h(failure)} ${button('Retry', 'retry-completion', 'text-button', `data-id="${h(chore.id)}"`)}</div>` : ''}</div>`;
 }
 
 function taskListMarkup(items, showPerson = true, profileId, limit = Infinity) {
@@ -191,17 +182,50 @@ function taskListMarkup(items, showPerson = true, profileId, limit = Infinity) {
   const perSectionLimit = Number.isFinite(limit) ? Math.max(1, Math.floor(limit / Math.max(1, populated))) : Infinity;
   return sections.map(section => {
     const displayed = section.items.slice(0, perSectionLimit), omitted = section.items.length - displayed.length;
+    const scheduled = scheduledChores().filter(item => !profileId || item.personId === profileId);
+    const hasScheduled = taskSections(scheduled, S.snapshot?.schoolDay).some(group=>group.id===section.id && group.items.length);
+    if (!section.items.length && hasScheduled && S.taskStatus === 'active') return '';
     const filter = section.id !== 'tasks' ? 'school_day' : S.snapshot?.schoolDay?.type === 'non_school_day' ? 'non_school_day' : 'any';
-    return `<section class="task-section" data-key="task-section-${section.id}"><h3 class="task-section-heading">${h(section.label)}</h3>${section.items.length ? `<div class="chore-list">${displayed.map(item => choreRow(item, showPerson)).join('')}</div>${omitted ? `<a href="#chores" class="more-link" aria-label="View ${omitted} more ${omitted === 1 ? 'task' : 'tasks'} in ${h(section.label)}">View ${omitted} more ${omitted === 1 ? 'task' : 'tasks'}</a>` : ''}` : `<div class="task-section-empty"><p>No tasks scheduled here yet.</p>${choreManager() ? button('Add task', 'add-chore', 'text-button', `data-person-id="${h(profileId || '')}" data-school-filter="${filter}" data-task-section="${section.id}" aria-label="Add a task${section.id !== 'tasks' ? ` ${section.label.toLowerCase()}` : ''}${profileId ? ` for ${h(profileLabel(profileId))}` : ''}"`) : ''}</div>`}</section>`;
+    return `<section class="task-section" data-key="task-section-${section.id}"><h3 class="task-section-heading">${h(section.label)}</h3>${section.items.length ? `<div class="chore-list">${displayed.map(item => choreRow(item, showPerson)).join('')}</div>${omitted ? `<a href="#chores" class="more-link" aria-label="View ${omitted} more ${omitted === 1 ? 'task' : 'tasks'} in ${h(section.label)}">View ${omitted} more ${omitted === 1 ? 'task' : 'tasks'}</a>` : ''}` : `<div class="task-section-empty"><p>${hasScheduled ? 'No unfinished tasks here.' : 'No tasks scheduled here yet.'}</p>${choreManager() && !hasScheduled ? button('Add task', 'add-chore', 'text-button', `data-person-id="${h(profileId || '')}" data-school-filter="${filter}" data-task-section="${section.id}" aria-label="Add a task${section.id !== 'tasks' ? ` ${section.label.toLowerCase()}` : ''}${profileId ? ` for ${h(profileLabel(profileId))}` : ''}"`) : ''}</div>`}</section>`;
   }).join('');
 }
 
+function profileFilter() {
+  if (S.session?.role === 'child' || people().length < 2) return '';
+  if (S.taskPerson !== 'all' && !people().some(p => p.id === S.taskPerson)) S.taskPerson = 'all';
+  return `<div class="profile-filter" role="group" aria-label="Filter by family profile">${[{ id: 'all', name: 'Everyone' }, ...people()].map(profile => { const progress = taskProgress(profile.id === 'all' ? scheduledChores() : scheduledChores().filter(item => item.personId === profile.id), S.snapshot?.schoolDay); return button(`${profile.name}${profile.id === 'all' ? '' : ` · ${progress.completed}/${progress.total}`}`, 'task-person', `filter-pill ${S.taskPerson === profile.id ? 'selected' : ''}`, `data-id="${h(profile.id)}" aria-pressed="${S.taskPerson === profile.id}"`); }).join('')}</div>`;
+}
+function approvalQueue(items, preview = false) {
+  if (!items.length) return '';
+  if (!choreManager()) return frame() ? `<section class="approval-queue approval-preview"><div class="section-heading"><h2>${items.length} waiting for parent approval</h2>${button('Unlock to review','unlock-frame','text-button')}</div></section>` : '';
+  return `<section class="approval-queue ${preview ? 'approval-preview' : 'panel'}" data-key="approval-queue"><div class="section-heading"><h2>${items.length} ${items.length === 1 ? 'task needs' : 'tasks need'} approval</h2>${button('Review tasks', 'review-tasks', 'text-button')}</div>${preview ? '<p class="soft-label">Review submitted work before it counts toward rewards.</p>' : items.map(item => `<article class="approval-item" data-key="approval-${h(item.id)}"><button type="button" class="chore-open" data-action="task-details" data-id="${h(item.id)}"><strong>${h(item.title)}</strong><small>${h(profileLabel(item.personId))} · Waiting for parent approval</small></button>${button('Review work', 'task-details', 'button button-small', `data-id="${h(item.id)}"`)}</article>`).join('')}</section>`;
+}
+function todayAgenda() {
+  const { allDay, upcoming, earlier } = agendaParts(eventDays().get(today()) || []);
+  return `${calendarStatus()}${allDay.length ? `<div class="all-day-events"><p class="eyebrow">All day</p>${allDay.map(event => eventCard(event, false, today())).join('')}</div>` : ''}<div class="event-list">${upcoming.length ? upcoming.slice(0,3).map(event => eventCard(event, false, today())).join('') : `<p class="quiet-empty">${calendarDayIsKnown(S.calendar, today()) ? 'The rest of today is clear.' : 'Upcoming events are not confirmed yet.'}</p>`}</div>${upcoming.length > 3 ? '<a href="#calendar" class="more-link">View all upcoming events →</a>' : ''}${earlier.length ? `<details class="earlier-events" data-key="earlier-events"><summary>Earlier today · ${earlier.length}</summary>${earlier.map(event => eventCard(event, false, today())).join('')}</details>` : ''}`;
+}
+function taskDetailContents(chore) {
+  const historical = taskGroups([chore], S.snapshot?.schoolDay).history.length > 0;
+  return `<p class="supporting">${h(profileLabel(chore.personId))} · ${h(completionLabel(chore))}</p>${occurrenceDetails(chore,choreManager(),S.pending.has(`${chore.id}:${S.snapshot.date}`),S.snapshot.schoolDay)}${!historical && !(chore.status === 'submitted' && choreManager()) ? button(chore.status === 'submitted' ? 'Withdraw submission' : done(chore) ? 'Reopen task' : chore.requiresApproval && !choreManager() ? 'Submit for approval' : 'Mark task done','complete-chore','button',`data-id="${h(chore.id)}"`) : ''}${choreManager() ? button('Edit routine','edit-chore','text-button',`data-id="${h(chore.choreId || chore.id)}"`) : ''}`;
+}
+function refreshTaskDetails() {
+  if (!dialog.open || !dialog.dataset.taskId) return;
+  const chore = scheduledChores().find(item=>item.id===dialog.dataset.taskId);
+  if (!chore) return;
+  const body=dialog.querySelector('.dialog-body');
+  const expanded=[...body.querySelectorAll('details[open]')].map(item=>item.dataset.key);
+  body.innerHTML=taskDetailContents(chore);
+  for (const details of body.querySelectorAll('details')) if(expanded.includes(details.dataset.key)) details.open=true;
+}
+function activeTasks(items, groups) {
+  return [...groups.todo, ...items.filter(item => !groups.todo.includes(item) && S.recentTasks.has(item.id))];
+}
 function todayView() {
-  const chores = scheduledChores();
-  const { total, completed, remaining } = taskProgress(chores, S.snapshot?.schoolDay);
-  return `<section class="welcome-strip" data-key="today-summary"><div><p class="eyebrow">${h(dateLabel(today(), { weekday: 'long', month: 'long', day: 'numeric' }))}</p><h2>Today, together.</h2><p class="welcome-summary">${chores.length ? `${remaining} ${remaining === 1 ? 'task' : 'tasks'} remaining · ${completed} complete` : 'Your family’s day, in one place.'}</p></div><div class="family-portraits">${people().slice(0, 6).map(profile => `<span title="${h(profile.name)}" data-key="portrait-${h(profile.id)}">${avatar(profile)}</span>`).join('')}</div></section>
-    ${schoolDayStatus(S.snapshot)}<div class="today-grid" data-key="today-grid"><section class="panel agenda-panel"><div class="section-heading"><div><p class="eyebrow">The day ahead</p><h2>On your calendar</h2></div><a href="#calendar" class="text-button">View calendar <span aria-hidden="true">↗</span></a></div>${calendarStatus()}${calendarLegend()}<div class="event-list">${eventList(today(), 4)}</div></section>
-    <section class="panel chores-panel"><div class="section-heading"><div><p class="eyebrow">A shared little effort</p><h2>Today's tasks</h2></div><span class="count-pill">${completed}<span> / ${total}</span></span></div>${S.snapshot ? (chores.length || S.snapshot?.schoolDay?.type === 'school_day' ? `${total ? `<div class="progress-track" role="progressbar" aria-label="Today's tasks complete" aria-valuenow="${completed}" aria-valuemin="0" aria-valuemax="${total}"><i style="width:${Math.round(completed / total * 100)}%"></i></div>` : ''}${taskListMarkup(chores, true, undefined, 6)}` : empty('A fresh start', 'No tasks are scheduled for today.', admin() ? button('Add a task', 'add-chore', 'button button-small') : '')) : '<p class="quiet-empty">Loading shared tasks…</p>'}</section></div>${internet.summary()}`;
+  const chores = scheduledChores(), overview = taskOverview(chores, S.snapshot?.schoolDay);
+  const visible = S.taskPerson === 'all' ? chores : chores.filter(item => item.personId === S.taskPerson);
+  const groups = taskGroups(visible, S.snapshot?.schoolDay), approvals = taskGroups(chores, S.snapshot?.schoolDay).submitted;
+  const active = activeTasks(visible, groups);
+  return `<section class="welcome-strip compact-welcome" data-key="today-summary"><div><h2>A little more together.</h2><p class="welcome-summary">${h(S.snapshot?.schoolDay?.label || 'Your family’s day')}${overview.submitted ? ` · ${overview.submitted} waiting for a parent` : ''}${overview.optional ? ` · ${overview.optionalDone}/${overview.optional} optional done` : ''}</p></div><div class="daily-progress"><strong>${overview.total ? `${overview.completed} of ${overview.total} required tasks done` : 'No required tasks today'}</strong>${overview.total ? `<div class="progress-track" role="progressbar" aria-label="Required tasks complete" aria-valuenow="${overview.completed}" aria-valuemin="0" aria-valuemax="${overview.total}"><i style="width:${Math.round(overview.completed/overview.total*100)}%"></i></div>` : ''}</div></section>${S.snapshot?.schoolDay?.type === 'unknown' ? schoolDayStatus(S.snapshot) : ''}${approvalQueue(approvals, true)}<div class="today-grid" data-key="today-grid"><section class="panel agenda-panel"><div class="section-heading"><h2>Up next</h2><a href="#calendar" class="text-button">View calendar ↗</a></div>${todayAgenda()}</section><section class="panel chores-panel"><div class="section-heading"><h2>${S.session?.role === 'child' ? 'My next tasks' : 'What needs doing'}</h2><a href="#chores" class="text-button">All tasks ↗</a></div>${profileFilter()}<div class="home-task-list">${active.length ? active.slice(0,4).map(item => choreRow(item)).join('') : `<p class="quiet-empty">${groups.submitted.length ? 'Your work is waiting for parent approval.' : 'No unfinished tasks. Nice work!'}</p>`}</div><div class="task-list-footer">${groups.completed.length ? `<span class="soft-label">${groups.completed.length} completed tasks tucked away</span>` : '<span></span>'}<a href="#chores" class="more-link">${active.length > 4 ? `View ${active.length - 4} more tasks →` : 'View all tasks →'}</a></div></section></div>${internet.summary(true)}`;
 }
 
 function calendarView() {
@@ -210,18 +234,17 @@ function calendarView() {
   const dates = Array.from({ length: dayCount }, (_, index) => addDays(range.from, index));
   const heading = S.calendarMode === 'month' ? dateLabel(`${S.selectedDate.slice(0, 7)}-01`, { weekday: undefined, month: 'long', day: undefined, year: 'numeric' }) : S.calendarMode === 'week' ? `${dateLabel(range.from, { weekday: undefined, month: 'short', day: 'numeric' })} – ${dateLabel(addDays(range.to, -1), { weekday: undefined, month: 'short', day: 'numeric' })}` : dateLabel(S.selectedDate);
   return `<section class="panel calendar-panel" data-key="calendar-panel"><div class="calendar-toolbar"><div class="date-navigation">${button('‹', 'previous-date', 'icon-button', 'aria-label="Previous period"')}<h2>${h(heading)}</h2>${button('›', 'next-date', 'icon-button', 'aria-label="Next period"')}${button('Today', 'calendar-today', 'text-button')}</div><div class="segmented" role="group" aria-label="Calendar view">${['day', 'week', 'month'].map(mode => button(mode[0].toUpperCase() + mode.slice(1), 'calendar-mode', `segment ${S.calendarMode === mode ? 'selected' : ''}`, `data-mode="${mode}" aria-pressed="${S.calendarMode === mode}"`)).join('')}</div>${button(S.calendarShowingBusy ? 'Refreshing…' : 'Refresh', 'refresh-calendar', 'text-button', S.calendarShowingBusy ? 'disabled' : '')}</div>${calendarStatus()}${calendarLegend()}
-    ${S.calendarMode === 'month' ? `<div class="month-grid" data-key="month-grid">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(day => `<div class="month-weekday" data-key="weekday-${day}">${day}</div>`).join('')}${dates.map(date => { const events = eventDays().get(date) || noEvents; return `<button type="button" class="month-day ${date === today() ? 'is-today' : ''} ${date.slice(0, 7) !== S.selectedDate.slice(0, 7) ? 'outside-month' : ''}" data-key="month-${date}" data-action="select-date" data-date="${date}" aria-label="${h(dateLabel(date))}${calendarDayIsKnown(S.calendar, date) ? `, ${events.length} events` : ', calendar not confirmed'}"><strong>${Number(date.slice(-2))}</strong><span>${events.slice(0, 2).map(event => `<span class="month-event" style="--event:${color(eventMetadata(event)?.color || '#00748c')}">${h(event.title || 'Untitled event')}</span>`).join('')}${events.length > 2 ? `<small>+${events.length - 2} more</small>` : ''}</span></button>`; }).join('')}</div>` : `<div class="agenda-days ${S.calendarMode === 'week' ? 'week-agenda' : ''}" data-key="${S.calendarMode}-agenda">${dates.map(date => `<section class="agenda-day ${date === today() ? 'is-today' : ''}" data-key="agenda-${date}"><header><span>${h(dateLabel(date, { weekday: 'short', month: undefined, day: undefined }))}</span><strong>${Number(date.slice(-2))}</strong></header><div class="event-list">${eventList(date)}</div></section>`).join('')}</div>`}
-    <p class="footnote">Apple Calendar is read-only here. Add or edit events in your Calendar app.</p></section>`;
+    ${S.calendarMode === 'month' ? `<div class="month-grid" data-key="month-grid">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(day => `<div class="month-weekday" data-key="weekday-${day}">${day}</div>`).join('')}${dates.map(date => { const events = eventDays().get(date) || noEvents; return `<button type="button" class="month-day ${date === today() ? 'is-today' : ''} ${date.slice(0, 7) !== S.selectedDate.slice(0, 7) ? 'outside-month' : ''} ${date === S.selectedDate ? 'selected-date' : ''}" data-key="month-${date}" data-action="select-date" data-date="${date}" aria-label="${h(dateLabel(date))}${calendarDayIsKnown(S.calendar, date) ? `, ${events.length} events` : ', calendar not confirmed'}"><strong>${Number(date.slice(-2))}</strong><span>${events.slice(0, 2).map(event => `<span class="month-event" style="--event:${color(eventMetadata(event)?.color || '#00748c')}">${h(event.title || 'Untitled event')}</span>`).join('')}${events.length > 2 ? `<small aria-label="${events.length} events">+${events.length - 2}</small>` : ''}</span></button>`; }).join('')}</div>` : `<div class="agenda-days ${S.calendarMode === 'week' ? 'week-agenda' : ''}" data-key="${S.calendarMode}-agenda">${dates.map(date => `<section class="agenda-day ${date === today() ? 'is-today' : ''}" data-key="agenda-${date}"><header><span>${h(dateLabel(date, { weekday: 'short', month: undefined, day: undefined }))}</span><strong>${Number(date.slice(-2))}</strong></header><div class="event-list">${eventList(date)}</div></section>`).join('')}</div>`}
+    ${S.calendarMode === 'month' ? `<section class="selected-day-agenda" data-key="selected-day-agenda"><h2>${h(dateLabel(S.selectedDate))}</h2><div class="event-list">${eventList(S.selectedDate)}</div></section>` : ''}<p class="footnote">Apple Calendar is read-only here. Add or edit events in your Calendar app.</p></section>`;
 }
 
 function choresView() {
   if (!S.snapshot) return '<section class="panel">Loading shared tasks…</section>';
-  const chores = scheduledChores();
-  const lanes = [...people(), ...(chores.some(chore => !chore.personId) ? [{ id: null, name: 'Anyone', color: '#8c7859' }] : [])];
-  return `<div class="section-heading chores-heading" data-key="chores-heading"><div><p class="eyebrow">${h(dateLabel(S.snapshot.date))}</p><h2>Everyone has a part.</h2></div>${choreManager() ? button('+ Add a task', 'add-chore') : '<span class="soft-label">Tap a task to complete it</span>'}</div>
-    ${schoolDayStatus(S.snapshot)}${lanes.length ? `<div class="person-lanes" data-key="person-lanes">${lanes.map(profile => { const list = chores.filter(chore => chore.personId === profile.id || (!chore.personId && profile.id === null)); const progress = taskProgress(list, S.snapshot?.schoolDay); return `<section class="panel person-lane" data-key="person-${h(profile.id || 'anyone')}"><header>${avatar(profile)}<div><h2>${h(profile.name)}</h2><p>${list.length ? `${progress.completed} of ${progress.total} complete` : 'No tasks today'}</p></div></header>${taskListMarkup(list, false, profile.id)}</section>`; }).join('')}</div>` : `<section class="panel">${empty('Nothing assigned today', admin() ? 'Add a recurring task and choose the days it should appear.' : 'Your family administrator can add recurring tasks.', admin() ? button('Add a task', 'add-chore') : '')}</section>`}
-    <div class="chore-tools">${button('Task history', 'chore-history', 'button button-secondary')}${choreManager() ? button('School calendar', 'school-calendar', 'button button-secondary') + button('Task breaks', 'chore-breaks', 'button button-secondary') : ''}</div>
-    ${internet.summary()}${choreManager() && routines().length ? `<section class="panel all-chores" data-key="all-chores"><div class="section-heading"><div><p class="eyebrow">Your routines</p><h2>All task routines</h2></div></div><div class="definition-list">${routines().map(chore => `<div data-key="definition-${h(chore.id)}"><span><strong>${h(chore.title)}</strong><small>${h(profileLabel(chore.personId))} · ${chore.scheduleType === 'one_off' ? `Once on ${h(chore.scheduledDate)}` : chore.weekdays.length === 7 ? 'Every day' : h(chore.weekdays.map(day => days[day]).join(', '))} · ${h(schoolDayFilterLabel(chore.schoolDayFilter))}${chore.taskSection && chore.taskSection !== 'tasks' ? ` · ${h(taskSectionLabel(chore.taskSection))}` : ''} · ${chore.required === false ? 'Optional' : 'Required'}</small></span>${button('Edit', 'edit-chore', 'text-button', `data-id="${h(chore.id)}"`)}</div>`).join('')}</div></section>` : ''}`;
+  const selectedPerson = people().length === 1 ? people()[0].id : S.taskPerson;
+  const all = scheduledChores(), selected = selectedPerson === 'all' ? all : all.filter(item => item.personId === selectedPerson);
+  const groups = taskGroups(selected, S.snapshot.schoolDay), list = S.taskStatus === 'waiting' ? groups.submitted : S.taskStatus === 'completed' ? groups.completed : S.taskStatus === 'all' ? selected : activeTasks(selected, groups);
+  const selectedRoutines = routines().filter(item => (S.taskPerson === 'all' || item.personId === S.taskPerson) && (!S.routineQuery || `${item.title} ${profileLabel(item.personId)}`.toLowerCase().includes(S.routineQuery.toLowerCase())) && (!S.routineSchedule || item.scheduleType === S.routineSchedule));
+  return `${choreManager() ? `<div class="task-toolbar"><div class="segmented task-view-switch" role="group" aria-label="Task view">${['today','routines'].map(mode => button(mode === 'today' ? 'Today' : 'Routines', 'task-mode', `segment ${S.taskMode === mode ? 'selected' : ''}`, `data-mode="${mode}" aria-pressed="${S.taskMode === mode}"`)).join('')}</div>${button('+ Add a task', 'add-chore')}</div>` : ''}${profileFilter()}${S.taskMode === 'routines' && choreManager() ? `<section class="panel all-chores"><div class="section-heading"><h2>Task routines</h2><span class="soft-label">Changes apply to future days</span></div><div class="routine-filters"><label class="field" data-key="routine-search"><span>Find a routine</span><input type="search" data-routine-search name="routineSearch" value="${h(S.routineQuery || '')}" placeholder="Task or family profile"></label><label class="field"><span>Schedule</span><select data-routine-schedule><option value="">All schedules</option><option value="weekly" ${S.routineSchedule === 'weekly' ? 'selected' : ''}>Weekly routines</option><option value="one_off" ${S.routineSchedule === 'one_off' ? 'selected' : ''}>One-time tasks</option></select></label></div><div class="definition-list">${selectedRoutines.map(chore => `<div data-key="definition-${h(chore.id)}"><span><strong>${h(chore.title)}</strong><small>${h(profileLabel(chore.personId))} · ${chore.scheduleType === 'one_off' ? `Once on ${h(chore.scheduledDate)}` : h(chore.weekdays.map(day => days[day]).join(', '))} · ${h(schoolDayFilterLabel(chore.schoolDayFilter))} · ${chore.required === false ? 'Optional' : 'Required'}</small></span>${button('Edit', 'edit-chore', 'text-button', `data-id="${h(chore.id)}" aria-label="Edit ${h(chore.title)}"`)}</div>`).join('') || '<p class="quiet-empty">No matching routines.</p>'}</div></section>` : `${schoolDayStatus(S.snapshot)}<div class="task-status-filter" role="group" aria-label="Task status">${[['active',`To do · ${groups.todo.length}`],['waiting',`Waiting for approval · ${groups.submitted.length}`],['completed',`Done · ${groups.completed.length}`],['all','All']].map(([id,label]) => button(id === 'waiting' ? `Waiting · ${groups.submitted.length}` : label, 'task-status', `filter-pill ${S.taskStatus === id ? 'selected' : ''}`, `data-id="${id}" aria-label="${h(label)}" aria-pressed="${S.taskStatus === id}"`)).join('')}</div>${S.taskStatus === 'waiting' && choreManager() ? (approvalQueue(groups.submitted) || '<section class="panel"><p class="quiet-empty">No tasks waiting for approval.</p></section>') : `<section class="panel person-lane focused-tasks"><header><div><h2>${selectedPerson === 'all' ? 'Family tasks' : h(profileLabel(selectedPerson))}</h2><p>${taskOverview(selected,S.snapshot.schoolDay).total ? `${taskProgress(selected,S.snapshot.schoolDay).completed} of ${taskProgress(selected,S.snapshot.schoolDay).total} required tasks done` : 'No required tasks today'}</p></div></header>${list.length || S.taskStatus === 'active' ? taskListMarkup(list, selectedPerson === 'all', selectedPerson === 'all' ? '' : selectedPerson) : '<p class="quiet-empty">Nothing in this view.</p>'}</section>`}${groups.history.length && S.taskStatus !== 'all' ? `<details class="panel earlier-schedule"><summary>Earlier schedule and excused work · ${groups.history.length}</summary><p class="supporting">Saved for history; these tasks do not count toward today’s required work.</p>${groups.history.map(item=>choreRow(item)).join('')}</details>` : ''}`}<details class="task-tools"><summary>History and schedule tools</summary><div class="chore-tools">${button('Task history','chore-history','button button-secondary')}${choreManager() ? button('School calendar','school-calendar','button button-secondary')+button('Task breaks','chore-breaks','button button-secondary') : ''}</div><p class="field-help">School dates choose routines. Task breaks excuse work for a trip or time away.</p></details>`;
 }
 
 function profileCards() {
@@ -231,7 +254,7 @@ function profileCards() {
 function appleSettings() {
   const connection = S.connection;
   return `<section class="panel setup-card"><div class="section-heading"><div><p class="eyebrow">Private by design</p><h2>Apple Calendar</h2></div><span class="badge">${connection === null ? 'Checking…' : connection.connected ? 'Connected' : 'Not connected'}</span></div><p class="supporting">Connect privately with your Apple Account email and an app-specific password. Your calendars are read-only on the frame.</p>
-    <form data-form="calendar-connection" class="form-stack">${field('Apple Account email', 'username', '', { type: 'email', autocomplete: 'username' })}${field('App-specific password', 'appPassword', '', { type: 'password', autocomplete: 'new-password', max: 100 })}<p class="field-help">Create an app-specific password in your Apple Account settings. Your regular Apple Account password is not used.</p>${formError()}<button class="button" type="submit">${connection?.connected ? 'Update connection' : 'Connect Apple Calendar'}</button></form>
+    ${connection?.connected ? '<details class="reconnect-calendar"><summary>Reconnect Apple Calendar</summary>' : ''}<form data-form="calendar-connection" class="form-stack">${field('Apple Account email', 'username', '', { type: 'email', autocomplete: 'username' })}${field('App-specific password', 'appPassword', '', { type: 'password', autocomplete: 'new-password', max: 100 })}<p class="field-help">Create an app-specific password in your Apple Account settings. Your regular Apple Account password is not used.</p>${formError()}<button class="button" type="submit">${connection?.connected ? 'Update connection' : 'Connect Apple Calendar'}</button></form>${connection?.connected ? '</details>' : ''}
     ${connection?.connected ? `<form data-form="calendar-selection" class="form-stack calendar-selection"><h3>Calendars to show</h3>${connection.calendars.length ? connection.calendars.map(calendar => `<label class="checkbox-label"><input name="calendarIds" value="${h(calendar.id)}" type="checkbox" ${calendar.selected ? 'checked' : ''}><span class="calendar-color" style="background:${color(calendar.color)}"></span><span>${h(calendar.name)}</span></label>`).join('') : '<p class="quiet-empty">No calendars were returned by this connection.</p>'}${formError()}<button class="button button-secondary" type="submit">Save calendar selection</button></form>${button('Disconnect Apple Calendar', 'disconnect-calendar', 'text-button danger-text')}` : ''}</section>`;
 }
 
@@ -244,10 +267,13 @@ function inviteSettings() {
 }
 
 function setupView() {
-  if (frame()) return `<section class="panel frame-settings"><p class="eyebrow">Connected to ${h(title())}</p><h2>Your frame is paired.</h2><p>This display can view your calendar and complete family tasks. Manage people, recurring tasks and your Apple connection from an administrator's phone.</p><p class="soft-label">Timezone: ${h(zone())}</p>${button('Remove this frame connection', 'unpair-local', 'button button-secondary danger-text')}</section>${workbench.unlockPanel()}`;
-  const account = `<section class="panel setup-card"><p class="eyebrow">Your account</p><h2>${h(S.session?.user?.name || 'Family member')}</h2><p class="supporting">${h(S.session?.user?.email || '')} · ${admin() ? 'Administrator' : S.session?.role === 'child' ? 'Child account' : 'Family member'}</p>${button('Sign out', 'sign-out', 'button button-secondary')}${accountUI.tools()}</section>`;
-  if (!admin()) return `<div class="setup-grid">${account}${workbench.unlockPanel()}<section class="panel setup-card"><h2>You're part of the family.</h2><p class="supporting">You can view the shared calendar and complete tasks. Your administrator manages assignments, profiles and connections.</p></section></div>`;
-  return `<div class="setup-grid"><section class="panel setup-card"><p class="eyebrow">The basics</p><h2>Your household</h2><form data-form="settings" class="form-stack">${field('Household name', 'title', title(), { max: 80 })}${field('Timezone', 'timezone', zone(), { max: 80, extra: 'list="timezones"' })}<datalist id="timezones">${['America/Denver', 'America/Los_Angeles', 'America/Chicago', 'America/New_York', 'America/Phoenix', 'Europe/London', 'UTC'].map(value => `<option value="${value}"></option>`).join('')}</datalist><p class="field-help">Calendar times and recurring task days use this timezone.</p>${formError()}<button class="button button-secondary" type="submit">Save household</button></form></section>${profileCards()}${workbench.schoolCalendarPanel()}${appleSettings()}${deviceSettings()}${inviteSettings()}${workbench.unlockPanel()}${account}</div>`;
+  if (frame()) return `<section class="panel frame-settings"><h2>Your frame is paired.</h2><p>Manage your family, schedules and connections from a signed-in phone.</p><p class="soft-label">Timezone: ${h(zone())}</p>${button('Remove this frame connection','unpair-local','button button-secondary danger-text')}</section>${workbench.unlockPanel()}`;
+  const account = `<section class="panel setup-card"><p class="eyebrow">Your account</p><h2>${h(S.session?.user?.name || 'Family member')}</h2><p class="supporting">${h(S.session?.user?.email || '')} · ${admin() ? 'Parent administrator' : S.session?.role === 'child' ? 'Child account' : 'Family member'}</p>${button('Sign out','sign-out','button button-secondary')}${accountUI.tools()}</section>`;
+  const sections = admin() ? [['family','Family','Profiles, invitations and household'],['tasks','Tasks & school','School calendar and task breaks'],['calendar','Calendar connection',S.connection?.connected ? 'Apple Calendar connected' : 'Connect Apple Calendar'],['frames','Frames',`${S.devices.filter(d=>!d.revokedAt).length} paired displays`],['notifications','Notifications & frame access','Preferences, quiet hours and unlock codes'],['account','Account','Your account and privacy']] : [['notifications','Notifications & frame access','Preferences, quiet hours and unlock codes'],['account','Account','Your account and privacy']];
+  const chosen = sections.find(item=>item[0]===S.settingsSection);
+  if (!chosen) return `<section class="settings-index">${admin() && (!people().length || !S.connection?.connected || !S.devices.some(d=>!d.revokedAt)) ? `<section class="panel setup-checklist"><h2>Make this space yours</h2><p class="supporting">Set up each connection once, then manage it here.</p><ol>${[[people().length>0,'family','Add family profiles'],[S.connection?.connected,'calendar','Connect your calendar'],[S.devices.some(d=>!d.revokedAt),'frames','Pair a frame']].map(([complete,id,label])=>`<li>${button(`${complete?'✓ ':''}${label}`,'settings-section','text-button',`data-id="${id}"`)}<span>${complete?'Ready':'Not set up'}</span></li>`).join('')}</ol></section>` : ''}<div class="settings-rows">${sections.map(([id,name,detail])=>`<button class="settings-row" data-action="settings-section" data-id="${id}"><span><strong>${h(name)}</strong><small>${h(detail)}</small></span><span aria-hidden="true">›</span></button>`).join('')}<a href="#devices" class="settings-row"><span><strong>Internet & devices</strong><small>Device access, rewards and limits</small></span><span aria-hidden="true">›</span></a></div></section>`;
+  const content = chosen[0] === 'account' ? account : chosen[0] === 'notifications' ? workbench.unlockPanel() : chosen[0] === 'family' ? `<section class="panel setup-card"><p class="eyebrow">The basics</p><h2>Your household</h2><form data-form="settings" class="form-stack">${field('Household name', 'title', title(), { max: 80 })}${field('Timezone', 'timezone', zone(), { max: 80, extra: 'list="timezones"' })}<datalist id="timezones">${['America/Denver', 'America/Los_Angeles', 'America/Chicago', 'America/New_York', 'America/Phoenix', 'Europe/London', 'UTC'].map(value => `<option value="${value}"></option>`).join('')}</datalist><p class="field-help">Calendar times and recurring task days use this timezone.</p>${formError()}<button class="button button-secondary" type="submit">Save household</button></form></section>${profileCards()}${inviteSettings()}` : chosen[0] === 'calendar' ? appleSettings() : chosen[0] === 'frames' ? deviceSettings() : `${workbench.schoolCalendarPanel()}<section class="panel"><h2>Time away</h2><p class="supporting">Change a school date to select different routines. Pause tasks for a trip to excuse work instead.</p>${button('Task breaks','chore-breaks','button button-secondary')}</section>`;
+  return `<div class="settings-section-heading">${button('← All settings','settings-section','text-button','data-id=""')}<h2>${h(chosen[1])}</h2></div><div class="settings-detail">${content}</div>`;
 }
 
 function entryView() {
@@ -263,7 +289,7 @@ function entryView() {
   } else {
     authForm = `<p class="eyebrow">Welcome home</p><h2>Your family, together.</h2><p class="supporting">A shared calendar. A little teamwork. More room for the good stuff.</p><form data-form="sign-in" class="form-stack">${field('Email', 'email', S.verificationEmail, { type: 'email', autocomplete: 'email' })}${field('Password', 'password', '', { type: 'password', autocomplete: 'current-password', max: 128 })}${formError()}<button class="button" type="submit">Sign in</button></form><p class="form-switch">${button('Forgot your password?', 'auth-mode', 'text-button', 'data-mode="recover"')}</p><p class="form-switch">New here? ${button('Create an account', 'auth-mode', 'text-button', 'data-mode="sign-up"')}</p><p class="form-switch">Waiting to confirm your email? ${button('Confirm email', 'auth-mode', 'text-button', 'data-mode="verify"')}</p>`;
   }
-  const pairForm = `<p class="supporting">On an administrator's phone, open Setup and create a pairing code. Enter that code here to connect this display.</p><form data-form="redeem-pair" class="form-stack">${field('Six-digit pairing code', 'code', '', { max: 6, extra: 'inputmode="numeric" pattern="[0-9]{6}"' })}${formError()}<button class="button" type="submit">Pair this frame</button></form>`;
+  const pairForm = `<p class="supporting">On an administrator's phone, open Settings → Frames and create a pairing code. Enter that code here to connect this display.</p><form data-form="redeem-pair" class="form-stack">${field('Six-digit pairing code', 'code', '', { max: 6, extra: 'inputmode="numeric" pattern="[0-9]{6}"' })}${formError()}<button class="button" type="submit">Pair this frame</button></form>`;
   const content = S.entryPair ? `<div class="auth-card"><p class="eyebrow">A place on your wall</p><h2>Bring your<br>family home.</h2>${pairForm}<p class="form-switch">Using your phone? ${button('Sign in to your account', 'show-account-entry', 'text-button')}</p></div>` : `<div class="auth-card">${authForm}</div><details class="pair-entry"><summary>Setting up your photo frame?</summary>${pairForm}</details>`;
   return `<main id="main-content" class="entry-layout"><section class="entry-story"><a class="entry-brand" href="/family.html">Family Frame<span>A little more together.</span></a><div class="entry-clock">${clockMarkup()}</div><div class="entry-art" aria-hidden="true"><span></span><span></span><span></span></div><p class="entry-tagline">The everyday,<br><em>shared.</em></p><p class="entry-footnote">Your calendar stays private.<br>Your family stays connected.</p><a class="entry-privacy" href="/privacy.html" target="_blank" rel="noopener">Privacy policy</a></section><section class="entry-content">${S.error ? `<div class="banner banner-error" role="alert">${h(S.error)}</div>` : ''}${S.message ? `<div class="banner" role="status">${h(S.message)}</div>` : ''}${content}</section></main>`;
 }
@@ -302,6 +328,7 @@ async function loadHousehold() {
   if (S.session) { S.session.household = data.household; S.session.role = data.role; }
   S.error = '';
   render();
+  refreshTaskDetails();
 }
 
 function invalidateCalendar() {
@@ -371,8 +398,8 @@ async function boot() {
   S.snapshot = null; S.calendar = null; S.connection = null; S.devices = []; S.members = [];
   workbench.reset();
   internet.reset();
-  S.generatedInvite = null; S.pairing = null;
-  S.pending.clear(); S.conflicts.clear(); S.failures.clear(); S.attempts.clear();
+  S.generatedInvite = null; S.pairing = null; S.taskPerson = 'all'; S.taskMode = 'today'; S.taskStatus = 'active';
+  S.recentTasks.clear(); S.pending.clear(); S.conflicts.clear(); S.failures.clear(); S.attempts.clear();
   S.booting = true;
   render(true);
   try {
@@ -386,7 +413,7 @@ async function boot() {
       if (epoch !== generation) return;
       S.booting = false;
       render(true);
-      await Promise.allSettled([loadCalendar(), S.view === 'setup' ? loadSetup() : S.view === 'activity' ? workbench.loadActivity() : Promise.resolve(), Array.isArray(S.snapshot?.occurrences) || S.view === 'devices' ? internet.load() : Promise.resolve()]);
+      await Promise.allSettled([loadCalendar(), !frame() ? workbench.loadActivity() : Promise.resolve(), S.view === 'setup' ? loadSetup() : Promise.resolve(), Array.isArray(S.snapshot?.occurrences) || S.view === 'devices' ? internet.load() : Promise.resolve()]);
     }
   } catch (error) {
     if (error.status === 401) {
@@ -444,6 +471,7 @@ async function saveCompletion(chore, desired) {
     else if (S.snapshot?.date === date) S.snapshot.chores = mergeCompletion(S.snapshot.chores, result, date);
     const current = S.snapshot?.chores.find(item => item.id === chore.id)?.completion;
     toast(current?.version > result.version ? 'Your change was saved earlier. A newer update from another device is shown.' : (result.occurrence || result).status === 'submitted' ? 'Submitted. Waiting for parent approval.' : desired ? 'Task completed. Saved for the family.' : 'Task reopened. Saved for the family.');
+    S.recentTasks.add(chore.id);
     S.attempts.delete(key);
     if (occurrence) await loadHousehold().catch(dataFailure);
     if (occurrence && epoch === generation) await internet.load({ celebrateFor: desired ? chore.personId : null });
@@ -458,15 +486,27 @@ async function saveCompletion(chore, desired) {
     } else {
       S.failures.set(key, `${errorMessage(error)} Your change has not been confirmed.`);
     }
-  } finally { if (epoch === generation) { S.pending.delete(key); render(); } }
+  } finally { if (epoch === generation) { S.pending.delete(key); render(); refreshTaskDetails(); } }
 }
 
 function openDialog(titleText, contents, onSubmit) {
-  dialog.innerHTML = `<form data-dialog-form><header class="dialog-heading"><h2 id="dialog-title">${h(titleText)}</h2><button class="icon-button" type="button" data-close-dialog aria-label="Close dialog">×</button></header>${contents}${formError()}</form>`;
-  dialog.querySelector('[data-close-dialog]').onclick = () => dialog.close();
-  dialog.querySelector('form').onsubmit = event => submitForm(event, onSubmit);
+  closeDraftGuard?.();
+  delete dialog.dataset.taskId;
+  dialog.innerHTML = `<form data-dialog-form><header class="dialog-heading"><h2 id="dialog-title">${h(titleText)}</h2><button class="icon-button" type="button" data-close-dialog aria-label="Close dialog">×</button></header><div class="dialog-body">${contents}${formError()}</div><footer class="dialog-footer" hidden></footer></form>`;
+  const form = dialog.querySelector('form'), footer = dialog.querySelector('.dialog-footer');
+  const submit = [...form.querySelectorAll('button[type="submit"]')].pop();
+  if (submit) {
+    const actions = submit.closest('.dialog-actions') || submit;
+    footer.hidden = false;
+    footer.append(actions);
+    const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'text-button'; cancel.dataset.closeDialog = ''; cancel.textContent = 'Cancel'; footer.prepend(cancel);
+    if (form.querySelector('[name="title"]')) { const scope = document.createElement('p'); scope.className = 'field-help save-scope'; scope.textContent = 'Routine changes apply to future days. Today’s saved work stays intact.'; footer.prepend(scope); }
+  }
+  form.querySelectorAll('[data-close-dialog]').forEach(button => { button.onclick = () => dialog.close(); });
+  form.onsubmit = event => submitForm(event, onSubmit);
   dialog.showModal();
-  const first = dialog.querySelector('input:not([type="hidden"]),select,button');
+  closeDraftGuard = protectDialogDraft(dialog);
+  const first = dialog.querySelector('.dialog-body input:not([type="hidden"]),.dialog-body select,.dialog-body textarea') || dialog.querySelector('[data-close-dialog]');
   first?.focus();
 }
 
@@ -591,6 +631,22 @@ async function action(name, element) {
   if (await workbench.action(name, element)) return;
   if (await internet.action(name, element)) return;
   if (await accountUI.action(name, element)) return;
+
+  if (name === 'task-person') { S.recentTasks.clear(); S.taskPerson = id; render(true); return; }
+  if (name === 'task-mode') { S.taskMode = element.dataset.mode; render(true); return; }
+  if (name === 'task-status') { S.recentTasks.clear(); S.taskStatus = id; render(true); return; }
+  if (name === 'unlock-frame') return workbench.unlock();
+  if (name === 'settings-section') { S.settingsSection = id; render(true); return; }
+  if (name === 'review-tasks') { S.taskMode = 'today'; S.taskStatus = 'waiting'; S.taskPerson = 'all'; if (S.view !== 'chores') location.hash = 'chores'; else render(true); return; }
+  if (name === 'task-details') {
+    const chore=scheduledChores().find(item=>item.id===id); if(!chore)return;
+    openDialog(chore.title,taskDetailContents(chore),async()=>{}); dialog.dataset.taskId=chore.id; return;
+  }
+  if (name === 'event-details') {
+    const event = S.calendar?.events.find(item=>item.id===id&&item.calendarId===element.dataset.calendar); if (!event) return;
+    openDialog(event.title || 'Calendar event',`<p class="supporting">${h(dateLabel(element.dataset.date || S.selectedDate))}</p>${eventCard(event,false,element.dataset.date)}<p class="supporting">Times follow ${h(zone())}. Edit this event in Apple Calendar.</p>`,async()=>{});
+    dialog.querySelector('.event-open')?.remove(); return;
+  }
   if (name === 'refresh') return refresh();
   if (name === 'show-account-entry') { S.entryPair = false; render(true); return; }
   if (name === 'auth-mode') { const email = app.querySelector('[name="email"]'); if (email) S.verificationEmail = email.value.trim(); S.authMode = element.dataset.mode; S.error = ''; S.message = ''; return render(true); }
@@ -614,7 +670,7 @@ async function action(name, element) {
   if (name === 'add-person') return editPerson();
   if (name === 'edit-person') return editPerson(person(id));
   if (name === 'add-chore') return workbench.editRoutine(undefined, person(element.dataset.personId)?.id || '', { schoolDayFilter: ['school_day', 'non_school_day'].includes(element.dataset.schoolFilter) ? element.dataset.schoolFilter : 'any', taskSection: ['before_school', 'after_school'].includes(element.dataset.taskSection) ? element.dataset.taskSection : 'before_school' });
-  if (name === 'edit-chore') return workbench.editRoutine(routines().find(chore => chore.id === id));
+  if (name === 'edit-chore') { if (dialog.open) dialog.close(); return workbench.editRoutine(routines().find(chore => chore.id === id)); }
   if (name === 'complete-chore' || name === 'retry-completion') {
     const chore = scheduledChores().find(item => item.id === id);
     if (!chore) return;
@@ -653,7 +709,7 @@ async function action(name, element) {
   if (name === 'refresh-calendar') return loadCalendar(true);
   if (name === 'calendar-mode') S.calendarMode = element.dataset.mode;
   if (name === 'calendar-today') S.selectedDate = today();
-  if (name === 'select-date') { S.selectedDate = element.dataset.date; S.calendarMode = 'day'; }
+  if (name === 'select-date') S.selectedDate = element.dataset.date;
   if (name === 'previous-date' || name === 'next-date') {
     const direction = name === 'next-date' ? 1 : -1;
     if (S.calendarMode === 'month') { const value = new Date(`${S.selectedDate.slice(0, 7)}-01T12:00:00Z`); value.setUTCMonth(value.getUTCMonth() + direction); S.selectedDate = value.toISOString().slice(0, 10); }
@@ -662,6 +718,8 @@ async function action(name, element) {
   render(true); await loadCalendar();
 }
 
+app.addEventListener('input', event => { if (event.target.matches('[data-routine-search]')) { S.routineQuery = event.target.value; render(true); } });
+app.addEventListener('change', event => { if (event.target.matches('[data-routine-schedule]')) { S.routineSchedule = event.target.value; render(true); } });
 app.addEventListener('submit', event => { const run = forms[event.target.dataset.form]; if (run) submitForm(event, run); });
 document.addEventListener('click', event => {
   const element = event.target.closest('[data-action]');
@@ -678,7 +736,11 @@ for (const name of ['pointerup', 'pointercancel']) document.addEventListener(nam
 window.addEventListener('hashchange', () => {
   const next = location.hash.slice(1);
   if (!views.includes(next)) return;
-  if (dialog.open) dialog.close();
+  if (dialog.open) {
+    if (!dialog.dispatchEvent(new Event('request-close', { cancelable: true }))) { history.replaceState(null,'',`${location.pathname}${location.search}#${S.view}`); return; }
+    dialog.close();
+  }
+  S.recentTasks.clear();
   S.view = next;
   render(true);
   if (S.session?.household) { if (next === 'setup') loadSetup(); else if (next === 'activity') workbench.loadActivity(); else if (next === 'devices') internet.load(); else loadCalendar(); }

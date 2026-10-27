@@ -120,7 +120,7 @@ BEGIN
     FOR constraint_name IN SELECT conname FROM pg_constraint WHERE conrelid='family_notification_events'::regclass AND contype='c' AND pg_get_constraintdef(oid) LIKE '%type%chore_completed%' LOOP
       EXECUTE format('ALTER TABLE family_notification_events DROP CONSTRAINT %I',constraint_name);
     END LOOP;
-    ALTER TABLE family_notification_events ADD CONSTRAINT family_notification_event_type CHECK(type IN ('chore_submitted','chore_completed','chore_reopened','chore_due_soon','chore_overdue','calendar_upcoming','calendar_unavailable','calendar_restored','frame_offline','frame_online','reward_earned','session_started','session_warning','session_expired','session_paused','session_ended','session_adjusted','enforcement_failed'));
+    ALTER TABLE family_notification_events ADD CONSTRAINT family_notification_event_type CHECK(type IN ('chore_submitted','chore_completed','chore_reopened','chore_due_soon','chore_overdue','calendar_upcoming','calendar_unavailable','calendar_restored','frame_offline','frame_online','reward_earned','session_started','session_warning','session_expired','session_paused','session_ended','session_adjusted','enforcement_failed','daily_tasks_reminder','daily_tasks_completed','access_requested','access_approved','access_declined','access_granted'));
   END IF;
 END
 $notification_schema$;

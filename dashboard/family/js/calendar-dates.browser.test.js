@@ -45,25 +45,25 @@ for (const { frame, width, height } of [
         else if (url.pathname === '/api/auth/token') data = { token: 'fixture.transient.token' };
         else if (url.pathname === '/api/household') data = { household, role, date, people: [], chores: [] };
         else if (url.pathname === '/api/calendar') data = { status: 'ready', events, calendars, coverage: { startDate: '2026-10-19', endDateExclusive: '2026-10-27', complete: true, truncated: false }, lastSuccessfulSyncAt: clock };
-        else throw new Error(`Unexpected synthetic route ${req.method()} ${url.pathname}`);
+        else if (url.pathname === '/api/notifications') data = { notifications: [] };
+    else throw new Error(`Unexpected synthetic route ${req.method()} ${url.pathname}`);
         await route.fulfill({ contentType: 'application/json', body: JSON.stringify(url.pathname.startsWith('/api/auth/') ? data : { data }) });
       });
       await page.goto(new URL(`/family.html${frame ? '?display=frame' : ''}#today`, origin).href);
-      await page.getByRole('heading', { name: 'On your calendar', exact: true }).waitFor();
-      await page.locator('.agenda-panel .event-date').first().waitFor();
+      await page.getByRole('heading', { name: 'Up next', exact: true }).waitFor();
+      await page.getByText('Earlier today · 2', { exact: true }).click();
       const browserDate = await page.evaluate(() => ({ local: new Date().getDate(), utc: new Date().getUTCDate() }));
       assert.deepEqual(browserDate, { local: 22, utc: 22 }, 'The test must cross the browser/UTC date boundary.');
       const cards = page.locator('.agenda-panel .event-card');
       assert.equal(await cards.count(), 3);
       assert.deepEqual(await cards.locator('h3').allTextContents(), ['Synthetic school break', 'Synthetic overnight event', 'Synthetic afternoon appointment']);
       for (const card of await cards.all()) {
-        const badge = card.locator('time.event-date');
-        assert.equal(await badge.getAttribute('datetime'), date);
-        assert.equal(await badge.getAttribute('aria-label'), 'Wednesday, October 21, 2026');
-        assert.equal(await badge.locator('span').innerText(), 'Wednesday');
-        assert.equal(await badge.locator('strong').innerText(), 'Oct 21');
+        assert.equal(await card.getAttribute('data-date'), date);
+        assert.match(await card.getAttribute('aria-label'), /Wednesday, October 21/);
+        assert.ok(await card.locator('time.event-time').getAttribute('datetime'));
       }
       assert.equal(await cards.nth(0).locator('.event-time').innerText(), 'All day');
+      await cards.nth(1).locator('.event-time').waitFor({ state: 'visible' });
       const overnightTime = await cards.nth(1).locator('.event-time').innerText();
       assert.match(overnightTime, /Tue, Oct 20.*11:00 PM/);
       assert.match(overnightTime, /Wed, Oct 21.*2:00 AM/);
@@ -71,18 +71,13 @@ for (const { frame, width, height } of [
       const layout = await page.evaluate(() => ({
         viewport: innerWidth,
         document: document.documentElement.scrollWidth,
-        badges: [...document.querySelectorAll('.event-date')].map(element => {
+        cards: [...document.querySelectorAll('.agenda-panel .event-card')].map(element => {
           const bounds = element.getBoundingClientRect();
-          return { width: element.clientWidth, content: element.scrollWidth, left: bounds.left, right: bounds.right,
-            childrenFit: [...element.children].every(child => {
-              const range = document.createRange(); range.selectNodeContents(child);
-              const text = range.getBoundingClientRect();
-              return text.left >= bounds.left && text.right <= bounds.right;
-            }) };
+          return { width: element.clientWidth, content: element.scrollWidth, left: bounds.left, right: bounds.right };
         }),
       }));
       assert.ok(layout.document <= layout.viewport, JSON.stringify(layout));
-      assert.ok(layout.badges.every(badge => badge.content <= badge.width && badge.left >= 0 && badge.right <= width && badge.childrenFit), JSON.stringify(layout));
+      assert.ok(layout.cards.every(card => card.content <= card.width && card.left >= 0 && card.right <= width), JSON.stringify(layout));
       if (process.env.FAMILY_UI_SCREENSHOT_DIR) {
         await mkdir(process.env.FAMILY_UI_SCREENSHOT_DIR, { recursive: true });
         await page.screenshot({ path: `${process.env.FAMILY_UI_SCREENSHOT_DIR}/calendar-dates-${frame ? 'frame' : 'phone'}-${width}.png`, fullPage: true });

@@ -1,17 +1,35 @@
 import SwiftUI
 
 enum Brand {
-    static let red = Color(hex: "de1f26")
-    static let cyan = Color(hex: "00cfff")
-    static let cyanInk = Color(hex: "00748c")
-    static let lime = Color(hex: "c8ff00")
-    static let magenta = Color(hex: "ff2ebc")
-    static let magentaInk = Color(hex: "a91675")
+    static let primary = Color(hex: "8a00c4")
+    static let primaryTint = Color(hex: "f3e8fb")
+    static let blue = Color(hex: "3bceff")
+    static let blueInk = Color(hex: "00536e")
+    static let mint = Color(hex: "00f5a0")
+    static let successInk = Color(hex: "006b49")
+    static let coral = Color(hex: "ff5c5c")
+    static let attentionInk = Color(hex: "a32929")
+    static let attentionTint = Color(hex: "fff0f0")
+    static let danger = Color(hex: "c62839")
+    static let red = danger
+    static let cyan = blue
+    static let cyanInk = blueInk
+    static let lime = mint
+    static let magenta = coral
+    static let magentaInk = attentionInk
     static let ink = Color(hex: "111111")
     static let muted = Color(hex: "63636b")
-    static let background = Color(hex: "f5f5f7")
-    static let line = Color(hex: "dcdce2")
+    static let background = Color(hex: "faf8fd")
+    static let line = Color(hex: "e4dfe9")
+    @MainActor static func webSettings(_ section: String) -> URL {
+        var parts = URLComponents(url: APIClient.configuredURL, resolvingAgainstBaseURL: false)!
+        parts.path = "/family.html"
+        parts.queryItems = [URLQueryItem(name: "settings", value: section)]
+        parts.fragment = "setup"
+        return parts.url ?? APIClient.configuredURL
+    }
 }
+
 extension Color {
     init(hex: String) {
         let string = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
@@ -23,7 +41,7 @@ extension Color {
 struct BrandMark: View {
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 11).fill(Brand.red)
+            RoundedRectangle(cornerRadius: 11).fill(Brand.primary)
             RoundedRectangle(cornerRadius: 3).stroke(.white, lineWidth: 3).frame(width: 22, height: 27).rotationEffect(.degrees(-9)).offset(x: -3, y: 1)
             RoundedRectangle(cornerRadius: 3).stroke(Brand.cyan, lineWidth: 3).frame(width: 22, height: 27).rotationEffect(.degrees(10)).offset(x: 4, y: -1)
         }.frame(width: 48, height: 48).accessibilityHidden(true)
@@ -44,7 +62,7 @@ struct PrimaryButton: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(.headline).foregroundStyle(.white).frame(maxWidth: .infinity).padding(.vertical, 15)
-            .background(Brand.red.opacity(configuration.isPressed ? 0.75 : 1), in: RoundedRectangle(cornerRadius: 13))
+            .background(Brand.primary.opacity(configuration.isPressed ? 0.75 : 1), in: RoundedRectangle(cornerRadius: 13))
             .opacity(isEnabled ? 1 : 0.45)
     }
 }
@@ -73,8 +91,29 @@ struct StaleBanner: View {
                     Button("Refresh current status") { Task { await model.refresh() } }.font(.subheadline.weight(.semibold)).disabled(model.isLoading)
                 }
                 Spacer(minLength: 0)
-            }.foregroundStyle(Color(hex: "92400e")).padding(14).frame(maxWidth: .infinity)
-                .background(Color(hex: "fffbeb"), in: RoundedRectangle(cornerRadius: 12)).accessibilityElement(children: .contain)
+            }.foregroundStyle(Brand.attentionInk).padding(14).frame(maxWidth: .infinity)
+                .background(Brand.attentionTint, in: RoundedRectangle(cornerRadius: 12)).accessibilityElement(children: .contain)
         }
     }
+}
+
+// A consistent escape route for editors; a dirty draft remains in memory only.
+struct DraftCancelButton: View {
+    var dirty: Bool
+    var saving = false
+    var label = "Cancel"
+    let discard: () -> Void
+    @State private var confirming = false
+    var body: some View {
+        Button(label) { if dirty { confirming = true } else { discard() } }
+            .disabled(saving)
+            .confirmationDialog("Discard unsaved changes?", isPresented: $confirming, titleVisibility: .visible) {
+                Button("Discard changes", role: .destructive, action: discard)
+                Button("Keep editing", role: .cancel) { }
+            }
+    }
+}
+func draftFingerprint<T: Encodable>(_ value: T) -> String {
+    let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+    return (try? encoder.encode(value)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
 }

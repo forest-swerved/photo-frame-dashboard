@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canRedeem, liveSession, remainingTime, remainingLabel } from './internet-ui.js';
+import { canRedeem, rewardDevices, liveSession, remainingTime, remainingLabel } from './internet-ui.js';
 const now = Date.parse('2026-11-01T06:30:00Z');
 test('session timer respects confirmed paused time and fixed all-day deadline', () => {
   const session = { state: 'active', endsAt: '2026-11-01T06:31:01Z', remainingSeconds: 600 };
@@ -29,4 +29,12 @@ test('reward spending requires the matching child identity and child-scoped fram
   assert.equal(canRedeem(child, credit, { personId: 'child-a', authType: 'frame' }, { scope: 'parent', personId: 'child-a' }), false);
   assert.equal(canRedeem(child, credit, { personId: 'child-a', authType: 'frame' }, { scope: 'child', personId: 'child-a' }), true);
   assert.equal(canRedeem(child, { ...credit, status: 'review' }, { personId: 'child-a', authType: 'user' }), false);
+});
+
+test('earned picker contains only currently blocked pool devices, including newly added ones', () => {
+  const device = { id: 'console', personIds: ['andre', 'stevie'], defaultAccess: 'blocked', rewardAvailable: true, controlState: 'ready', accessPending: false };
+  const data = { integration: { state: 'ready' }, sessions: [], devices: [device, { ...device, id: 'new-ipad' }, { ...device, id: 'free-tv', defaultAccess: 'allowed' }, { ...device, id: 'busy', rewardAvailable: false }, { ...device, id: 'checking', accessPending: true }, { ...device, id: 'unverified', controlState: 'unenrolled' }] };
+  for (const person of ['andre', 'stevie']) assert.deepEqual(rewardDevices(data, person).map(d => d.id), ['console', 'new-ipad']);
+  assert.deepEqual(rewardDevices({ ...data, sessions: [{ personId: 'andre', deviceId: 'other', state: 'starting' }] }, 'andre'), []);
+  assert.deepEqual(rewardDevices({ ...data, integration: { state: 'attention' } }, 'andre'), []);
 });
