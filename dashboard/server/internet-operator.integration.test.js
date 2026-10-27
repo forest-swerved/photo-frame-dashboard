@@ -13,16 +13,19 @@ test('operator readiness uses explicit recorded proofs without any provider muta
   const suffix = randomUUID().replaceAll('-', ''), schema = `family_operator_test_${suffix}`, owner = `family_operator_owner_${suffix}`;
   const env = { FAMILY_UNIFI_API_KEY: 'synthetic-provider-key-not-a-secret', FAMILY_UNIFI_CONSOLE_ID: `${'a'.repeat(64)}:12345` };
   const now = new Date('2026-10-18T02:00:00Z');
-  const id = Object.fromEntries(['household', 'person', 'device', 'site', 'source', 'external', 'foreign', 'management', 'deny', 'apple'].map(key => [key, randomUUID()]));
+  const id = Object.fromEntries(['household', 'person', 'device', 'site', 'source', 'external', 'foreign', 'foreignAfter', 'management', 'deny', 'apple'].map(key => [key, randomUUID()]));
   const input = { deviceId: id.device, siteId: id.site, sourceZoneId: id.source, externalZoneId: id.external, beforePolicyId: id.foreign };
-  let roleCreated = false, schemaCreated = false, order = [id.foreign];
-  const policies = new Map([[id.foreign, { id: id.foreign, enabled: true, name: 'Synthetic foreign policy', action: { type: 'BLOCK' } }]]);
+  const buckets = beforeSystemDefined => ({ beforeSystemDefined, afterSystemDefined: [id.foreignAfter] });
+  const custom = fields => ({ ...fields, metadata: { origin: 'USER_DEFINED' } });
+  let roleCreated = false, schemaCreated = false, order = buckets([id.foreign]);
+  const policies = new Map([id.foreign, id.foreignAfter].map(policyId => [policyId, custom({ id: policyId, enabled: true,
+    name: 'Synthetic foreign policy', action: { type: 'BLOCK' }, source: { zoneId: id.source }, destination: { zoneId: id.external } })]));
   let writes = 0, changeVersionDuringRead = false;
   const prohibited = () => { writes++; throw Error('Operator must not write to the provider.'); };
   const provider = { info: async () => ({ applicationVersion: '10.6.106' }), sites: async () => [{ id: id.site }], zones: async () => [{ id: id.source }, { id: id.external }],
     policies: async () => [...policies.values()].map(policy => structuredClone(policy)), ordering: async () => {
       if (changeVersionDuringRead) { changeVersionDuringRead = false; await client.query('UPDATE family_managed_devices SET version=version+1 WHERE id=$1', [id.device]); }
-      return { orderedFirewallPolicyIds: [...order] };
+      return { orderedFirewallPolicyIds: structuredClone(order) };
     },
     createPolicy: prohibited, replacePolicy: prohibited, reorder: prohibited, removePolicy: prohibited };
   const db = { query: client.query.bind(client), connect: async () => ({ query: client.query.bind(client), release() {} }) };
@@ -64,16 +67,16 @@ test('operator readiness uses explicit recorded proofs without any provider muta
       assert.equal((await row('family_managed_devices')).control_state, 'unenrolled');
     });
     await t.test('management and APNs preflight precede the bounded pilot and permanent deny', async () => {
-      policies.set(id.management, { ...plan.policies.management, id: id.management }); policies.set(id.apple, { ...plan.policies.applePush, id: id.apple });
-      input.managementPolicyId = id.management; input.applePolicyId = id.apple; order = [id.management, id.apple, id.foreign];
+      policies.set(id.management, custom({ ...plan.policies.management, id: id.management })); policies.set(id.apple, custom({ ...plan.policies.applePush, id: id.apple }));
+      input.managementPolicyId = id.management; input.applePolicyId = id.apple; order = buckets([id.management, id.apple, id.foreign]);
       await record('management_preflight');
       const pilot = await run('pilot-plan'); assert.equal(pilot.providerWrites, false); assert.equal(pilot.pilotDeny.schedule.timeFilter.stopTime, '20:05');
-      policies.set(id.deny, { ...pilot.pilotDeny, id: id.deny }); input.denyPolicyId = id.deny; order = [id.management, id.apple, id.deny, id.foreign];
+      policies.set(id.deny, custom({ ...pilot.pilotDeny, id: id.deny })); input.denyPolicyId = id.deny; order = buckets([id.management, id.apple, id.deny, id.foreign]);
       plan = await run('plan'); assert.equal(plan.observations.pilotDenyVerified, true);
       for (const check of plan.requiredChecks.filter(check => !['identity_stability', 'management_preflight'].includes(check))) await record(check);
       await assert.rejects(run('activate', { apply: true, confirmDevice: id.device }), error => error.code === 'permanent_policies_unverified');
       const permanent = await run('permanent-plan'); assert.equal(permanent.permanentDeny.schedule, null);
-      policies.set(id.deny, { ...permanent.permanentDeny, id: id.deny });
+      policies.set(id.deny, custom({ ...permanent.permanentDeny, id: id.deny }));
     });
     await t.test('activation writes only verified readiness after all current named checks', async () => {
       assert.equal((await run('activate')).dryRun, true); assert.equal((await row('family_managed_devices')).control_state, 'unenrolled');
@@ -94,6 +97,9 @@ test('operator readiness uses explicit recorded proofs without any provider muta
       policies.get(id.foreign).action = { type: 'ALLOW' };
       await assert.rejects(run('activate'), error => error.code === 'pilot_proofs_missing');
       policies.get(id.foreign).action = { type: 'BLOCK' };
+      policies.get(id.foreignAfter).action = { type: 'ALLOW' };
+      await assert.rejects(run('activate'), error => error.code === 'pilot_proofs_missing');
+      policies.get(id.foreignAfter).action = { type: 'BLOCK' };
       changeVersionDuringRead = true;
       await assert.rejects(run('begin-pilot', { apply: true, confirmDevice: id.device }), error => error.code === 'operator_plan_changed');
       await client.query(`INSERT INTO family_internet_sessions(id,household_id,person_id,device_id,source,state,desired_state,requested_at,remaining_seconds,allocated_seconds,policy_snapshot,created_by)
