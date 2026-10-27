@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createPool } from './database.js';
 import { runOperator } from './internet-operator.js';
+import { managedPolicyPlan, networkChecksPassed, applePushReady } from './unifi.js';
 
 const enabled = process.env.FAMILY_RUN_DB_TESTS === '1' && Boolean(process.env.DATABASE_URL);
 test('operator readiness uses explicit recorded proofs without any provider mutation', { skip: !enabled, timeout: 30_000 }, async t => {
@@ -95,6 +96,45 @@ test('operator readiness uses explicit recorded proofs without any provider muta
       await record('expiry', { result: 'fail' });
       await assert.rejects(run('permanent-plan'), error => error.code === 'pilot_proofs_missing' && error.message.includes('expiry'));
       await record('expiry'); assert.equal((await run('permanent-plan')).dryRun, true);
+    });
+    await t.test('parent acceptance enrolls the entire reviewed inventory atomically without recording physical test passes', async () => {
+      const parentId = randomUUID(), secondId = randomUUID(), secondManagement = randomUUID(), secondDeny = randomUUID();
+      await client.query("INSERT INTO family_members(household_id,user_id,name,email,role) VALUES($1,$2,'Synthetic parent','parent@example.test','admin')", [id.household, parentId]);
+      await client.query("INSERT INTO family_managed_devices(id,household_id,name,kind,person_ids,mac_addresses,default_access,allow_apple_push) VALUES($1,$2,'Synthetic free device','console',$3,$4,'allowed',false)", [secondId, id.household, [id.person], ['02:12:34:56:78:aa']]);
+      const secondPlan = managedPolicyPlan({ deviceId: secondId, macAddresses: ['02:12:34:56:78:aa'], sourceZoneId: id.source, destinationZoneId: id.external });
+      policies.set(secondManagement, custom({ ...secondPlan.management, id: secondManagement }));
+      policies.set(secondDeny, custom({ ...secondPlan.deny, enabled: false, id: secondDeny }));
+      order = buckets([id.management, id.apple, id.deny, secondManagement, secondDeny, id.foreign]);
+      await client.query("UPDATE family_network_integrations SET pilot_checks='{\"expiry\":false,\"midnight\":false,\"dst\":false}'::jsonb");
+      const beforeProofs = (await client.query("SELECT details FROM family_internet_events WHERE type='operator_proof' ORDER BY id")).rows;
+      const manifest = { version: 1, householdId: id.household, parentUserId: parentId, summary: 'Synthetic parent accepts rollout without additional physical tests.', devices: [
+        { ...input, beforePolicyId: secondManagement },
+        { deviceId: secondId, beforePolicyId: id.foreign, managementPolicyId: secondManagement, denyPolicyId: secondDeny },
+      ] };
+      const accept = extra => run('accept-setup', { manifest, evidenceSha256: '2'.repeat(64), ...extra });
+      assert.equal((await accept()).dryRun, true);
+      await assert.rejects(accept({ apply: true, confirmHousehold: randomUUID() }), e => e.code === 'operator_confirmation_required');
+      await assert.rejects(accept({ manifest: { ...manifest, devices: [manifest.devices[0]] } }), e => e.code === 'device_inventory_changed');
+      await client.query("UPDATE family_members SET role='child',person_id=$3 WHERE household_id=$1 AND user_id=$2", [id.household, parentId, id.person]);
+      await assert.rejects(accept(), e => e.code === 'parent_acceptance_required');
+      await client.query("UPDATE family_members SET role='admin',person_id=NULL WHERE household_id=$1 AND user_id=$2", [id.household, parentId]);
+      policies.get(secondDeny).enabled = true;
+      await assert.rejects(accept(), e => e.code === 'permanent_policies_unverified'); policies.get(secondDeny).enabled = false;
+      changeVersionDuringRead = true;
+      await assert.rejects(accept({ apply: true, confirmHousehold: id.household }), e => e.code === 'operator_plan_changed');
+      const result = await accept({ apply: true, confirmHousehold: id.household }); assert.equal(result.deviceCount, 2);
+      const enrolled = (await client.query('SELECT * FROM family_managed_devices ORDER BY id')).rows, integration = await row('family_network_integrations');
+      assert.ok(enrolled.every(d => d.control_state === 'ready' && d.reviewed_policy_fingerprint === result.reviewedFingerprint));
+      assert.equal(enrolled.find(d => d.id === secondId).observed_access, 'allowed');
+      assert.equal(integration.pilot_checks.expiry, false); assert.equal(integration.pilot_checks.midnight, false); assert.equal(integration.pilot_checks.dst, false);
+      assert.equal(networkChecksPassed(integration, secondId), true); assert.equal(applePushReady(integration, id.device), true);
+      assert.equal(networkChecksPassed(integration, randomUUID()), false);
+      assert.deepEqual((await client.query("SELECT details FROM family_internet_events WHERE type='operator_proof' ORDER BY id")).rows, beforeProofs);
+      assert.equal((await client.query("SELECT count(*)::int AS n FROM family_internet_events WHERE type='operator_parent_accepted_setup'")).rows[0].n, 1);
+      assert.equal(writes, 0);
+      // Restore this fixture's one-device inventory for its existing drift tests.
+      await client.query('DELETE FROM family_managed_devices WHERE id=$1', [secondId]); policies.delete(secondManagement); policies.delete(secondDeny);
+      order = buckets([id.management, id.apple, id.deny, id.foreign]);
     });
     await t.test('foreign drift invalidates evidence and active sessions prevent enrollment changes', async () => {
       policies.get(id.foreign).action = { type: 'ALLOW' };

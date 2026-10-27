@@ -431,6 +431,34 @@ test('reward reservation, frame authorization and durable provider reconciliatio
       assert.equal((await db.query('SELECT state FROM family_internet_sessions WHERE id=$1', [grant.id])).rows[0].state, 'ended');
       await db.query(`UPDATE family_network_integrations SET pilot_checks=pilot_checks||'{"ipv6":true,"ipv6Scope":null}'::jsonb`);
     });
+    await t.test('parent-accepted setup supports real API and worker grant, pause, resume, end and parent cutoffs', async () => {
+      const original = (await db.query('SELECT pilot_checks FROM family_network_integrations')).rows[0].pilot_checks;
+      const previousZones = provider.zones, previousNetwork = provider.network;
+      const zone = { id: sourceZone, networkIds: [randomUUID()] }, network = { id: zone.networkIds[0], zoneId: sourceZone, management: 'GATEWAY', enabled: true, ipv4Configuration: { hostIpAddress: '10.64.0.1', prefixLength: 24 } };
+      provider.zones = async () => [zone]; provider.network = async () => network;
+      const scope = ipv4OnlyScope(zone, [network]), enrolled = (await db.query('SELECT id FROM family_managed_devices WHERE removed_at IS NULL')).rows.map(r => r.id);
+      const basis = { version: 1, mode: 'parent_accepted', capabilityScope: 'same_day', parentUserId: parent.user.id, householdId: household.id,
+        siteId: site, sourceZoneId: sourceZone, externalZoneId: externalZone, managementHost: 'forest-family-frame.vercel.app', acceptedAt: now.toISOString(), evidenceSha256: 'a'.repeat(64),
+        reviewedPolicyFingerprint: (await deviceRow(freeDevice.id)).reviewed_policy_fingerprint, deviceIds: enrolled, networkConfigurationHash: scope.configurationHash, applePushConfigured: true };
+      try {
+        await db.query('UPDATE family_network_integrations SET pilot_checks=$1::jsonb', [JSON.stringify({ enrollmentBasis: basis, ipv6Scope: scope })]);
+        assert.equal((await snapshot(parent)).integration.enrollmentBasis, 'parent_accepted');
+        await control(freeDevice.id, 'allowed'); assert.equal((await worker()).state, 'allowed');
+        await control(freeDevice.id, 'blocked'); assert.equal((await worker()).state, 'blocked');
+        const grant = await startInternetSession(db, parent, { personId: child.personId, deviceId: freeDevice.id, minutes: 2, mutationId: randomUUID() }, { env, now });
+        assert.equal((await worker()).state, 'active');
+        for (const [action, expected] of [['pause', 'paused'], ['resume', 'active'], ['end', 'ended']]) {
+          const current = (await db.query('SELECT version FROM family_internet_sessions WHERE id=$1', [grant.id])).rows[0];
+          await changeInternetSession(db, parent, grant.id, { action, expectedVersion: current.version, mutationId: randomUUID() }, { now });
+          assert.equal((await worker()).state, expected);
+        }
+        await db.query('UPDATE family_network_integrations SET pilot_checks=jsonb_set(pilot_checks,\'{enrollmentBasis,deviceIds}\',$1::jsonb)', [JSON.stringify(enrolled.filter(id => id !== freeDevice.id))]);
+        await assert.rejects(startInternetSession(db, parent, { personId: child.personId, deviceId: freeDevice.id, minutes: 2, mutationId: randomUUID() }, { env, now }), e => e.code === 'network_not_ready');
+      } finally {
+        await db.query('UPDATE family_network_integrations SET pilot_checks=$1::jsonb', [JSON.stringify(original)]);
+        provider.zones = previousZones; provider.network = previousNetwork;
+      }
+    });
     await t.test('foreign policy drift is never accepted as part of a device toggle', async () => {
       const extra = { ...policies.get((await deviceRow(freeDevice.id)).deny_policy_id), id: randomUUID(), description: 'foreign security rule' };
       policies.set(extra.id, extra); ordered.push(extra.id);

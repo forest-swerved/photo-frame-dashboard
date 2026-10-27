@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { Temporal } from '@js-temporal/polyfill';
 import { one, transaction } from './database.js';
 import { requireValue } from './errors.js';
-import { createUniFiClient, managedPolicyPlan, managementHost, networkChecksPassed, policyContentFingerprint, policyFieldValue, policyOrdering, reviewedPolicyFingerprint, verifyNetworkScope } from './unifi.js';
+import { createUniFiClient, managedPolicyPlan, managementHost, networkChecksPassed, applePushReady, policyContentFingerprint, policyFieldValue, policyOrdering, reviewedPolicyFingerprint, verifyNetworkScope } from './unifi.js';
 import { internetEvent, internetNotification, queueInternetCommand, sessionDeadline, validateTimedWindow } from './internet.js';
 
 const terminal = row => ['ended', 'failed'].includes(row.state);
@@ -125,7 +125,7 @@ async function loadCommand(db, command, env) {
     one(db, 'SELECT * FROM family_network_integrations WHERE household_id=$1', [session.household_id]),
   ]);
   requireValue(device && integration && (command.action === 'block' || integration.state === 'ready' && integration.management_host === managementHost(env)
-    && integration.management_verified_at && networkChecksPassed(integration)
+    && integration.management_verified_at && networkChecksPassed(integration, device.id)
     && device.control_state === 'ready' && device.management_verified_at),
   503, 'network_not_ready', 'Network control requires verified Family Frame access and blocking.');
   return { session, device, integration };
@@ -194,7 +194,7 @@ async function applyCommand(db, command, env, provider, now, clock) {
   if (device.allow_apple_push) {
     const applePlan = managedPolicyPlan({ deviceId: device.id, macAddresses: device.mac_addresses, sourceZoneId: integration.source_zone_id,
       destinationZoneId: integration.external_zone_id, allowApplePush: true }, env).applePush;
-    requireValue(integration.pilot_checks?.apple_push === true && sameManagedPolicy(policies.find(p => p.id === device.apple_push_policy_id), applePlan),
+    requireValue(applePushReady(integration, device.id) && sameManagedPolicy(policies.find(p => p.id === device.apple_push_policy_id), applePlan),
       503, 'apple_push_policy_changed', 'The permanent Apple notification path requires review.');
   }
   const description = `family-frame:${device.id}:session:${session.id}`;
@@ -336,7 +336,7 @@ async function applyDeviceCommand(db, command, env, provider, now, clock) {
   if (!device || device.version !== command.session_version && !command.before_fingerprint) return { superseded: true };
   const integration = await one(db, 'SELECT * FROM family_network_integrations WHERE household_id=$1', [command.household_id]);
   requireValue(integration?.state === 'ready' && integration.management_host === managementHost(env) && integration.management_verified_at
-    && networkChecksPassed(integration) && device.control_state === 'ready' && device.management_verified_at,
+    && networkChecksPassed(integration, device.id) && device.control_state === 'ready' && device.management_verified_at,
   503, 'network_not_ready', 'Device control requires verified Family Frame access and Internet blocking.');
   if (command.action === 'allow') await verifyNetworkScope(provider, integration);
   if (await one(db, `SELECT id FROM family_internet_sessions WHERE household_id=$1 AND device_id=$2
@@ -372,7 +372,7 @@ async function applyDeviceCommand(db, command, env, provider, now, clock) {
   const deny = policies.find(p => p.id === device.deny_policy_id);
   requireValue(deny && typeof deny.enabled === 'boolean' && sameManagedPolicy(deny, { ...plan.deny, enabled: deny.enabled })
     && sameManagedPolicy(policies.find(p => p.id === device.management_policy_id), plan.management)
-    && (!device.allow_apple_push || integration.pilot_checks?.apple_push === true && sameManagedPolicy(policies.find(p => p.id === device.apple_push_policy_id), plan.applePush)),
+    && (!device.allow_apple_push || applePushReady(integration, device.id) && sameManagedPolicy(policies.find(p => p.id === device.apple_push_policy_id), plan.applePush)),
   503, 'management_policy_changed', 'The enrolled management, notification or blocking policy changed.');
   const enabled = command.action === 'block';
   if (command.before_fingerprint) {

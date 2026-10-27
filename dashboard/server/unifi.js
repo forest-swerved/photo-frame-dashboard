@@ -10,7 +10,27 @@ export const requiredPilotChecks = ['management_access', 'unrelated_internet_blo
 export const extendedPilotChecks = ['midnight', 'dst'];
 export const validIPv4Scope = scope => scope?.version === 1 && scope.mode === 'ipv4_only'
   && /^[a-f0-9]{64}$/.test(scope.configurationHash || '') && Array.isArray(scope.networkIds) && scope.networkIds.length > 0;
-export const networkChecksPassed = integration => requiredPilotChecks.every(key => integration?.pilot_checks?.[key] === true
+// An owner may accept rollout after a shared-network pilot without claiming
+// every device was physically tested. This server-owned basis never waives
+// exact policy readback, inventory drift checks or live network-scope checks.
+export function parentAcceptedSetup(integration, deviceId = null) {
+  const basis = integration?.pilot_checks?.enrollmentBasis, scope = integration?.pilot_checks?.ipv6Scope;
+  const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
+  return Boolean(basis?.version === 1 && basis.mode === 'parent_accepted' && basis.capabilityScope === 'same_day'
+    && uuid(basis.parentUserId) && uuid(basis.householdId) && basis.householdId === integration.household_id
+    && basis.siteId === integration.site_id && basis.sourceZoneId === integration.source_zone_id
+    && basis.externalZoneId === integration.external_zone_id && basis.managementHost === integration.management_host
+    && Number.isFinite(Date.parse(basis.acceptedAt)) && /^[a-f0-9]{64}$/.test(basis.evidenceSha256 || '')
+    && /^[a-f0-9]{64}$/.test(basis.reviewedPolicyFingerprint || '')
+    && Array.isArray(basis.deviceIds) && basis.deviceIds.length > 0 && basis.deviceIds.length <= 100
+    && basis.deviceIds.every(uuid) && new Set(basis.deviceIds).size === basis.deviceIds.length
+    && (deviceId === null || basis.deviceIds.includes(deviceId))
+    && validIPv4Scope(scope) && scope.sourceZoneId === integration.source_zone_id
+    && basis.networkConfigurationHash === scope.configurationHash);
+}
+export const applePushReady = (integration, deviceId = null) => integration?.pilot_checks?.apple_push === true
+  || parentAcceptedSetup(integration, deviceId) && integration.pilot_checks.enrollmentBasis.applePushConfigured === true;
+export const networkChecksPassed = (integration, deviceId = null) => parentAcceptedSetup(integration, deviceId) || requiredPilotChecks.every(key => integration?.pilot_checks?.[key] === true
   || key === 'ipv6' && validIPv4Scope(integration?.pilot_checks?.ipv6Scope));
 
 export function ipv4OnlyScope(zone, networks) {
@@ -37,7 +57,7 @@ export async function readIPv4Scope(provider, siteId, sourceZoneId, zones) {
   return ipv4OnlyScope(source, networks);
 }
 export async function verifyNetworkScope(provider, integration) {
-  if (integration.pilot_checks?.ipv6 === true) return;
+  if (integration.pilot_checks?.ipv6 === true && !parentAcceptedSetup(integration)) return;
   const expected = integration.pilot_checks?.ipv6Scope;
   requireValue(validIPv4Scope(expected) && expected.sourceZoneId === integration.source_zone_id,
     503, 'network_scope_unverified', 'Review the network IPv6 configuration before granting access.');
