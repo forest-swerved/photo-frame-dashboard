@@ -218,7 +218,7 @@ test('isolated PostgreSQL mobile notification authorization, outbox, and deadlin
         const run = now => processNotifications(db, { env, now: new Date(now), send: async message => { sent.push(message); return { accepted: true, status: 200 }; } });
         assert.equal((await run('2026-10-20T18:00Z')).eventsCreated, 0);
         const reminder = await run('2026-10-20T18:01Z');
-        assert.equal(reminder.eventsCreated, 1); assert.equal(reminder.accepted, 1, 'Fresh-cache recovery after the initial reminder threshold still reminds before start.');
+        assert.equal(reminder.eventsCreated, 0); assert.equal(reminder.accepted, 0, 'Timed events never enqueue phone alerts.');
         assert.equal((await run('2026-10-20T18:02Z')).eventsCreated, 0, 'Five-minute heartbeat write cadence and the same calendar occurrence cannot duplicate alerts.');
         await db.query("UPDATE family_devices SET last_seen_at='2026-10-20T17:44Z' WHERE id=$1", [deviceId]);
         assert.equal((await run('2026-10-20T18:03Z')).eventsCreated, 1);
@@ -229,16 +229,29 @@ test('isolated PostgreSQL mobile notification authorization, outbox, and deadlin
         await db.query("UPDATE family_calendar_cache SET successful_at='2026-10-20T18:06Z' WHERE household_id=$1", [householdId]);
         assert.equal((await run('2026-10-20T18:06Z')).eventsCreated, 1);
         const kinds = (await notificationInbox(db, principals.parent)).notifications.map(item => item.kind).sort();
-        assert.deepEqual(kinds, ['calendar_restored', 'calendar_unavailable', 'calendar_upcoming', 'frame_offline', 'frame_online']);
+        assert.deepEqual(kinds, ['calendar_restored', 'calendar_unavailable', 'frame_offline', 'frame_online']);
         assert.equal((await notificationInbox(db, principals.childA)).notifications.length, 0);
         assert.equal((await notificationInbox(db, principals.childB)).notifications.length, 0);
-        assert.equal(sent.length, 5);
+        assert.equal(sent.length, 4);
         assert.ok(sent.every(message => message.token[0] === 'a'));
       } finally {
         await db.query('DELETE FROM family_calendar_cache WHERE household_id=$1', [householdId]);
         await db.query('DELETE FROM family_calendar_connections WHERE household_id=$1', [householdId]);
         await db.query('DELETE FROM family_devices WHERE id=$1', [deviceId]);
       }
+    });
+
+    await t.test('queued calendar-start alerts are suppressed even with calendar notifications enabled', async () => {
+      await resetEvents();
+      const at = current();
+      await db.query(`INSERT INTO family_notification_events(household_id,event_key,type,payload,occurred_at,expires_at)
+        VALUES($1,'legacy-calendar-start','calendar_upcoming','{"title":"Legacy event"}',$2,$3)`, [householdId, at, new Date(at.getTime()+3600_000)]);
+      await processNotifications(db, { env, now: at }); // Populate the old durable outbox without APNs configured.
+      let sends = 0;
+      const result = await processNotifications(db, { env, now: new Date(at.getTime()+1000), send: async () => { sends++; return {accepted:true,status:200}; } });
+      assert.equal(sends,0); assert.equal(result.suppressed,1);
+      const delivery=(await db.query("SELECT state,last_error FROM family_notification_deliveries")).rows[0];
+      assert.deepEqual(delivery,{state:'suppressed',last_error:'frame_only'});
     });
 
     await t.test('parent provider revocation prevents inbox access and queued delivery', async () => {

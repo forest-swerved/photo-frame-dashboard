@@ -121,9 +121,16 @@ hours, retries transient APNs failures and disables rejected tokens. Push accept
 and inbox read status are different states. Private alert mode uses generic lock-screen text. Detailed alert mode shows family
 actions; detail/deep-link IDs are still resolved through the authenticated inbox.
 
-Supported categories are completed/reopened chores, due-soon/overdue chores, upcoming
-timed calendar events, calendar sync-health transitions and frame connection status.
-Calendar reminders use fresh, complete cached coverage and a ten-minute lead time;
+Supported categories are completed/reopened chores, due-soon/overdue chores,
+calendar sync-health transitions and frame connection status. Timed event alerts never
+enter the phone push queue; previously queued `calendar_upcoming` deliveries are
+suppressed as `frame_only`, regardless of notification preferences. Paired frames
+show a silent, dismissible 20-second animated card ten minutes before a timed event
+and again at its start, using fresh complete household-zone calendar coverage.
+Event identifiers are deduplicated locally, including across page reloads. Reduced
+motion disables animation. Stale/cancelled/removed events cannot announce; phones
+never show the card, including a phone opened with `?display=frame`.
+Calendar connection-health alerts remain account preferences;
 provider calendar refresh also runs through the leased five-minute calendar worker. Frame offline alerts
 use a fifteen-minute grace above the five-minute heartbeat write interval. Initial
 scans establish a baseline rather than flooding users with historical overdue alerts.

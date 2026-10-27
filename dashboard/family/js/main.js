@@ -2,6 +2,7 @@ import { request, setFrameMode } from './api.js';
 import { authClient, clearAuthCache } from './auth.js';
 import { escapeHtml as h, color, dateInZone, dateFormatter, addDays, dateLabel, weekday, calendarRange, calendarEventsByDay, calendarDayIsKnown, timeLabel, choreUrgency, orderChores, completionBody, mergeCompletion, reconcileHousehold, mutationId } from './model.js';
 import { createRenderer } from './render.js';
+import { createFrameEventNotices } from './frame-events.js';
 import { scheduledItems, mergeOccurrence, occurrenceDetails, schoolDayFilterLabel, schoolDayStatus, taskSectionLabel, taskSections, taskProgress } from './occurrences.js';
 import { createWorkbench } from './workbench.js';
 import { createInternetUI } from './internet-ui.js';
@@ -24,7 +25,7 @@ const icons = {
   devices: '<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/>',
 };
 const S = {
-  booting: true, session: null, snapshot: null, calendar: null, connection: null, devices: [], members: [],
+  booting: true, session: null, snapshot: null, calendar: null, frameCalendar: null, connection: null, devices: [], members: [],
   view: views.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'today',
   calendarMode: 'day', taskPerson: 'all', taskMode: 'today', taskStatus: 'active', settingsSection: new URLSearchParams(location.search).get('settings') || '', selectedDate: dateInZone(), authMode: 'sign-in',
   verificationEmail: '', verificationMethod: 'code',
@@ -41,6 +42,11 @@ let queuedCalendar = null;
 let calendarGeneration = 0;
 let paintedView = null;
 let pointerActive = false;
+const frameEvents = createFrameEventNotices(document.querySelector('#frame-event-notice'));
+function tickFrameEvents() {
+  frameEvents.update({ session: S.booting ? null : S.session, calendar: S.frameCalendar, timezone: zone(),
+    visible: !document.hidden && !dialog.open });
+}
 const workbench = createWorkbench({ snapshot: () => S.snapshot, session: () => S.session, epoch: () => generation,
   members: () => S.members, zone, today, frame, field, button, openDialog, dialog, toast, render, refreshTaskDetails,
   reload: async () => { await loadHousehold(); if (internet.loaded() || S.view === 'devices') await internet.load(); }, reloadSetup: loadSetup, reboot: boot });
@@ -58,7 +64,7 @@ const accountUI = createAccountUI({ session: () => S.session, epoch: () => gener
   deleted: async () => {
     generation++; workbench.reset(); internet.reset(); clearAuthCache(); setFrameMode(false);
     // The confirmed deletion response clears same-origin Auth cookies on the server.
-    S.session = null; S.snapshot = null; S.calendar = null; S.connection = null; S.devices = []; S.members = [];
+    S.session = null; S.snapshot = null; S.calendar = null; S.frameCalendar = null; S.connection = null; S.devices = []; S.members = [];
     S.generatedInvite = null; S.pairing = null; S.pending.clear(); S.conflicts.clear(); S.failures.clear(); S.attempts.clear();
     S.verificationEmail = ''; S.authMode = 'sign-in'; S.error = ''; S.message = 'Your account has been deleted.'; S.booting = false; render(true);
   } });
@@ -299,6 +305,7 @@ function joinView() {
 }
 
 function render(force = false) {
+  tickFrameEvents();
   if (!force && edited()) { pendingRender = true; return; }
   pendingRender = false;
   const busy = S.booting ? 'true' : 'false';
@@ -336,7 +343,7 @@ function invalidateCalendar() {
   S.calendarBusy = false;
   S.calendarShowingBusy = false;
   queuedCalendar = null;
-  S.calendar = null;
+  S.calendar = null; S.frameCalendar = null; frameEvents.reset();
 }
 
 async function loadCalendar(explicit = false) {
@@ -355,14 +362,32 @@ async function loadCalendar(explicit = false) {
       if (S.calendar && JSON.stringify(data.events) === JSON.stringify(S.calendar.events)) data.events = S.calendar.events;
       S.calendar = data;
     }
+    if (current() && frame()) {
+      const day = today();
+      if (data.coverage?.startDate <= day && data.coverage?.endDateExclusive > day) S.frameCalendar = data;
+      else {
+        // Browsing another month must not turn off today's frame reminders.
+        try {
+          const currentDay = await request(`/api/calendar?from=${day}&to=${addDays(day, 7)}`);
+          if (current()) S.frameCalendar = currentDay;
+        } catch (error) {
+          if (current()) {
+            S.frameCalendar = null;
+            if (error.status === 401 || error.status === 403) dataFailure(error);
+          }
+        }
+      }
+    }
   } catch (error) {
     if (!current()) return;
     if (error.status === 401 || error.status === 403) { dataFailure(error); return; }
+    S.frameCalendar = null;
     S.calendar = { ...S.calendar, status: S.calendar?.events?.length ? 'stale' : 'error', events: S.calendar?.events || [], error: { message: errorMessage(error) } };
   } finally {
     if (current()) {
       S.calendarBusy = false;
       S.calendarShowingBusy = false;
+      tickFrameEvents();
       render();
       if (queuedCalendar) { const next = queuedCalendar; queuedCalendar = null; loadCalendar(next.explicit); }
     }
@@ -389,13 +414,14 @@ async function loadSetup() {
 
 async function boot() {
   const epoch = ++generation;
+  frameEvents.reset();
   if (dialog.open) dialog.close();
   clearAuthCache();
   S.calendarBusy = false;
   S.calendarShowingBusy = false;
   S.setupBusy = false;
   queuedCalendar = null;
-  S.snapshot = null; S.calendar = null; S.connection = null; S.devices = []; S.members = [];
+  S.snapshot = null; S.calendar = null; S.frameCalendar = null; S.connection = null; S.devices = []; S.members = [];
   workbench.reset();
   internet.reset();
   S.generatedInvite = null; S.pairing = null; S.taskPerson = 'all'; S.taskMode = 'today'; S.taskStatus = 'active';
@@ -434,10 +460,11 @@ function dataFailure(error) {
   if (error.code === 'invalid_unlock' && frame()) { workbench.reset(); boot(); return; }
   if (error.status === 401 || error.status === 403) {
     generation++;
+    frameEvents.reset();
     clearAuthCache();
     workbench.reset();
     internet.reset();
-    S.session = null; S.snapshot = null; S.calendar = null; S.connection = null; S.devices = []; S.members = [];
+    S.session = null; S.snapshot = null; S.calendar = null; S.frameCalendar = null; S.connection = null; S.devices = []; S.members = [];
     S.generatedInvite = null; S.pairing = null;
     S.pending.clear(); S.conflicts.clear(); S.failures.clear(); S.attempts.clear();
     S.message = 'Your family connection is no longer active. Sign in again or pair this frame with a new code.';
@@ -695,7 +722,7 @@ async function action(name, element) {
   if (name === 'revoke-device') return confirmAction('Disconnect this frame?', `${element.dataset.label} will lose access immediately. You can pair it again with a new code.`, 'Revoke frame access', async () => { await request(`/api/devices/${idPath(id)}`, { method: 'DELETE' }); await loadSetup(); });
   if (name === 'remove-member') return confirmAction('Remove this family member?', `${element.dataset.label} will lose access to this household. Their profile and task assignments are kept.`, 'Remove access', async () => { await request(`/api/members/${idPath(id)}`, { method: 'DELETE' }); await loadSetup(); });
   if (name === 'disconnect-calendar') return confirmAction('Disconnect Apple Calendar?', 'Your saved Apple connection and cached calendar events will be removed from this dashboard. Events in Apple Calendar are not changed.', 'Disconnect calendar', async () => { await request('/api/calendar/connection', { method: 'DELETE' }); invalidateCalendar(); S.connection = null; await loadSetup(); await loadCalendar(); });
-  if (name === 'unpair-local') return confirmAction('Remove this frame connection?', 'This display will stop showing your family data. An administrator can pair it again with a new code.', 'Remove connection', async () => { await request('/api/frame-session', { method: 'DELETE', authenticated: false }); setFrameMode(false); S.session = null; S.snapshot = null; S.calendar = null; await boot(); });
+  if (name === 'unpair-local') return confirmAction('Remove this frame connection?', 'This display will stop showing your family data. An administrator can pair it again with a new code.', 'Remove connection', async () => { await request('/api/frame-session', { method: 'DELETE', authenticated: false }); setFrameMode(false); S.session = null; S.snapshot = null; S.calendar = null; S.frameCalendar = null; await boot(); });
   if (name === 'sign-out') {
     generation++;
     workbench.reset();
@@ -703,7 +730,7 @@ async function action(name, element) {
     const auth = await authClient();
     const result = await auth.signOut();
     if (result.error) throw new Error(result.error.message || 'Could not sign out. Try again.');
-    S.session = null; S.snapshot = null; S.calendar = null; S.connection = null; S.devices = []; S.members = []; S.generatedInvite = null; S.pairing = null; S.verificationEmail = ''; S.authMode = 'sign-in'; S.error = ''; S.message = ''; S.pending.clear(); S.conflicts.clear(); S.failures.clear(); S.attempts.clear();
+    S.session = null; S.snapshot = null; S.calendar = null; S.frameCalendar = null; S.connection = null; S.devices = []; S.members = []; S.generatedInvite = null; S.pairing = null; S.verificationEmail = ''; S.authMode = 'sign-in'; S.error = ''; S.message = ''; S.pending.clear(); S.conflicts.clear(); S.failures.clear(); S.attempts.clear();
     render(true); return;
   }
   if (name === 'refresh-calendar') return loadCalendar(true);
@@ -746,10 +773,11 @@ window.addEventListener('hashchange', () => {
   if (S.session?.household) { if (next === 'setup') loadSetup(); else if (next === 'activity') workbench.loadActivity(); else if (next === 'devices') internet.load(); else loadCalendar(); }
 });
 window.addEventListener('online', () => refresh());
-document.addEventListener('visibilitychange', () => { if (!document.hidden && S.session?.household) refresh(); });
+document.addEventListener('visibilitychange', () => { tickFrameEvents(); if (!document.hidden && S.session?.household) refresh(); });
 setInterval(() => {
   paintClock();
   internet.tick();
+  tickFrameEvents();
   if (frame() && workbench.accessExpired()) { workbench.reset(); boot(); return; }
   if (S.session?.household && S.snapshot && S.snapshot.date !== today() && !pollBusy) { pollBusy = true; refresh().finally(() => { pollBusy = false; }); }
 }, 1000);

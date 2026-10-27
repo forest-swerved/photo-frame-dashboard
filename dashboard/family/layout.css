@@ -245,3 +245,25 @@ dialog > form { display:flex; flex-direction:column; max-height:calc(100vh - 32p
  .task-status-filter .filter-pill { font-size:11px; padding:8px 10px; }
  .task-toolbar > .button { padding:10px 12px; }
 }
+
+/* Paired-frame event reminders stay out of phone notifications and layouts. */
+.frame-event-notice[hidden] { display: none; }
+.frame-event-notice {
+  position: fixed; z-index: 90; top: 20px; right: 20px; width: min(460px, calc(100vw - 40px));
+  display: flex; align-items: flex-start; gap: 16px; padding: 22px;
+  color: var(--ink); background: #fff; border: 2px solid var(--primary); border-radius: 22px;
+  box-shadow: 0 12px 44px rgba(70, 16, 105, .2); animation: frame-event-enter .45s ease-out both;
+}
+.frame-event-copy { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.frame-event-heading { margin: 0 0 8px; color: var(--primary); font-size: 15px; font-weight: 800; }
+.frame-event-copy h2 { margin: 0; font-size: 25px; line-height: 1.2; }
+.frame-event-location { margin: 10px 0 0; font-size: 16px; color: var(--muted); }
+.frame-event-orbit { display: grid; place-items: center; flex-shrink: 0; width: 48px; height: 48px; color: var(--primary); background: #f5e8fc; border-radius: 50%; animation: frame-event-pulse 1.8s ease-in-out 3; }
+.frame-event-orbit svg { width: 30px; height: 30px; }
+.frame-event-notice button { flex-shrink: 0; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: #f5e8fc; color: var(--primary); font-size: 28px; cursor: pointer; }
+.frame-event-notice button:focus-visible { outline: 3px solid var(--primary); outline-offset: 3px; }
+@keyframes frame-event-enter { from { transform: translateY(-16px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes frame-event-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.08); } }
+@media (prefers-reduced-motion: reduce) {
+  .frame-event-notice, .frame-event-orbit { animation: none; }
+}
