@@ -45,6 +45,7 @@ final class InternetModel: ObservableObject {
         return (0...60).contains(monotonic() - readUptime)
     }
     var integrationReady: Bool { snapshot?.integration.isReady == true }
+    var supportsAllDay: Bool { snapshot?.integration.supportsAllDay == true }
     var sessions: [InternetSession] {
         (snapshot?.sessions ?? []).filter { !isChild || $0.personId == personID }
     }
@@ -128,7 +129,7 @@ final class InternetModel: ObservableObject {
         }
     }
     func grant(personID: String, device: ManagedInternetDevice, minutes: Int, allDay: Bool, reason: String) async -> Bool {
-        guard canChange, canManage, integrationReady, deviceAvailable(device, for: personID) else { return false }
+        guard canChange, canManage, integrationReady, !allDay || supportsAllDay, deviceAvailable(device, for: personID) else { return false }
         return await change({ try await self.api.grantInternet(personID: personID, deviceID: device.id, minutes: allDay ? nil : minutes, allDay: allDay, reason: reason.isEmpty ? nil : reason, mutationID: UUID().uuidString.lowercased()) }) { result in
             guard result.personId == personID, result.deviceId == device.id, result.source == "parent" else { return false }; self.mergeSession(result); return true
         }
@@ -163,6 +164,7 @@ final class InternetModel: ObservableObject {
             mutationNeedsReview = true; message = "This session changed elsewhere. Review its current state before making another change."; return false
         }
         guard canChange, canManage, !item.isTerminal, sessions.contains(where: { $0.id == item.id }), item.isStable || action == "end" else { return false }
+        guard action != "all_day" || supportsAllDay else { return false }
         let request = InternetSessionAction(action: action, expectedVersion: item.version, mutationId: UUID().uuidString.lowercased(), deltaMinutes: deltaMinutes, reason: reason)
         return await change({ try await self.api.changeInternetSession(item.id, action: request) }) { result in
             guard result.id == item.id, result.deviceId == item.deviceId, result.personId == item.personId, result.version >= item.version else { return false }; self.mergeSession(result); return true

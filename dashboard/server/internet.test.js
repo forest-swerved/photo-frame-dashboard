@@ -1,10 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultRewardPolicy, deviceFields, sessionDeadline, validateRewardPolicy } from './internet.js';
+import { defaultRewardPolicy, deviceFields, requireScheduleSupport, scheduleSupport, sessionDeadline, validateRewardPolicy } from './internet.js';
 import { sameManagedPolicy, scheduledSessionPolicy, sessionOrdering } from './internet-worker.js';
 import { managedPolicyPlan } from './unifi.js';
 const buckets = (beforeSystemDefined = [], afterSystemDefined = []) => ({ beforeSystemDefined, afterSystemDefined });
 const ids = Array.from({ length: 6 }, (_, n) => `00000000-0000-4000-8000-${String(n + 1).padStart(12, '0')}`);
+test('ordinary windows do not require overnight proofs, while unverified extended windows are rejected', () => {
+  const day = new Date('2026-10-27T18:00:00Z'), late = new Date('2026-10-28T05:30:00Z');
+  const basic = { pilot_checks: {} }, midnight = { pilot_checks: { midnight: true } };
+  assert.deepEqual(scheduleSupport(basic, 'America/Denver', day), { overnight: false, allDay: false });
+  assert.doesNotThrow(() => requireScheduleSupport(basic, 'America/Denver', day, new Date(+day + 3600000)));
+  assert.throws(() => requireScheduleSupport(basic, 'America/Denver', late, new Date(+late + 3600000)), e => e.code === 'schedule_unverified');
+  assert.throws(() => requireScheduleSupport(basic, 'America/Denver', day, sessionDeadline(day, 'America/Denver', 0, { allDay: true }), { allDay: true }), e => e.code === 'schedule_unverified');
+  assert.equal(scheduleSupport(midnight, 'America/Denver', day).allDay, true);
+  const dst = new Date('2026-11-01T18:00:00Z');
+  assert.equal(scheduleSupport(midnight, 'America/Denver', dst).allDay, false);
+  assert.equal(scheduleSupport({ pilot_checks: { midnight: true, dst: true } }, 'America/Denver', dst).allDay, true);
+});
 test('parent reward policy validates limits and preserves defaults', () => {
   assert.equal(defaultRewardPolicy(ids[0]).rewardMinutes, 60);
   assert.equal(validateRewardPolicy({ rewardMinutes: 90, bedtime: '20:30' }, defaultRewardPolicy(ids[0])).rewardMinutes, 90);

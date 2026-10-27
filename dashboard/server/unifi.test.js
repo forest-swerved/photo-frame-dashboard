@@ -1,11 +1,30 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createUniFiClient, managedOrdering, managedPolicyPlan, managementHost, normalizedMac, policyOrdering, unifiConfiguration } from './unifi.js';
+import { createUniFiClient, ipv4OnlyScope, managedOrdering, managedPolicyPlan, managementHost, networkChecksPassed, normalizedMac, policyOrdering, requiredPilotChecks, unifiConfiguration, verifyNetworkScope } from './unifi.js';
 
 const ids = Array.from({ length: 7 }, (_, i) => `00000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`);
 const env = { FAMILY_UNIFI_API_KEY: 'synthetic-provider-key-not-a-secret', FAMILY_UNIFI_CONSOLE_ID: `${'a'.repeat(64)}:1234567890` };
 const buckets = (beforeSystemDefined = [], afterSystemDefined = []) => ({ beforeSystemDefined, afterSystemDefined });
 const plan = () => managedPolicyPlan({ deviceId: ids[0], sourceZoneId: ids[1], destinationZoneId: ids[2], macAddresses: ['02:11:22:33:44:55'] });
+test('IPv4-only enrollment records observed configuration without claiming an IPv6 packet test', async () => {
+  const zone = { id: ids[1], networkIds: [ids[3]] }, network = { id: ids[3], zoneId: ids[1], management: 'GATEWAY', enabled: true,
+    ipv4Configuration: { hostIpAddress: '10.64.0.1', prefixLength: 24 }, ipv6Configuration: null };
+  const scope = ipv4OnlyScope(zone, [network]);
+  const integration = { site_id: ids[0], source_zone_id: ids[1], pilot_checks: { ...Object.fromEntries(requiredPilotChecks.map(key => [key, key !== 'ipv6'])), ipv6Scope: scope } };
+  assert.equal(networkChecksPassed(integration), true); assert.equal(integration.pilot_checks.ipv6, false);
+  const provider = { zones: async () => [zone], network: async () => structuredClone(network) };
+  await verifyNetworkScope(provider, integration);
+  for (const changed of [
+    { ...network, ipv6Configuration: { interfaceType: 'PREFIX_DELEGATION' } },
+    { ...network, enabled: false }, { ...network, management: 'UNMANAGED' }, { ...network, ipv4Configuration: null },
+    { ...network, ipv4Configuration: { hostIpAddress: '10.65.0.1', prefixLength: 24 } },
+  ]) await assert.rejects(verifyNetworkScope({ ...provider, network: async () => changed }, integration), e => e.code === 'network_scope_changed');
+  await assert.rejects(verifyNetworkScope({ ...provider, zones: async () => [{ ...zone, networkIds: [ids[3], ids[4]] }] }, integration), e => e.code === 'network_scope_unverified');
+  assert.equal(ipv4OnlyScope(zone, [{ ...network, ipv6Configuration: {} }]), null);
+  assert.equal(networkChecksPassed({ pilot_checks: { ...integration.pilot_checks, controller_outage: false } }), false);
+  assert.equal(networkChecksPassed({ pilot_checks: { ...integration.pilot_checks, ipv6Scope: null } }), false);
+  assert.throws(() => ipv4OnlyScope(zone, [{ ...network, zoneId: ids[2] }]), e => e.code === 'network_scope_unverified');
+});
 
 test('UniFi management exception is permanent, exact-host, HTTPS-only and covers IPv4/IPv6', () => {
   const { management, deny, requiredChecks } = plan();

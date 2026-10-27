@@ -6,7 +6,7 @@ import { createPool, transaction } from './database.js';
 import { ensureDailyOccurrences, setOccurrenceCompletion, changeChoreOccurrence, getRequiredProgress } from './chore-occurrences.js';
 import { changeInternetSession, internetSnapshot, saveManagedDevice, changeDeviceAccess, saveRewardPolicy, startInternetSession, syncChoreReward, resolveRewardReview } from './internet.js';
 import { createFrameAccessCode, frameAuthorization, redeemFrameAccess, parentCapabilities, changeMemberCapabilities, transferOwnership, revokeFrameAccessAfterRecovery } from './capabilities.js';
-import { managedPolicyPlan, requiredPilotChecks, reviewedPolicyFingerprint } from './unifi.js';
+import { ipv4OnlyScope, managedPolicyPlan, requiredPilotChecks, reviewedPolicyFingerprint } from './unifi.js';
 import { processInternetJobs } from './internet-worker.js';
 import { verifySchema } from './verify-schema.js';
 
@@ -277,7 +277,26 @@ test('reward reservation, frame authorization and durable provider reconciliatio
         const allowance = [...policies.values()].find(p => p.description?.endsWith(`session:${grant.id}`)); assert.equal(allowance.enabled, false);
       } finally { finish?.(); provider.replacePolicy = replace; }
     });
+    await t.test('ordinary sessions work before extended checks, and unsupported windows reserve nothing', async () => {
+      const before = (await db.query('SELECT count(*)::int AS n FROM family_internet_sessions')).rows[0].n;
+      await assert.rejects(startInternetSession(db, parent, { personId: child.personId, deviceId: device.id, allDay: true, mutationId: randomUUID() }, { env, now }), e => e.code === 'schedule_unverified');
+      assert.equal((await db.query('SELECT count(*)::int AS n FROM family_internet_sessions')).rows[0].n, before);
+      const grant = await startInternetSession(db, parent, { personId: child.personId, deviceId: device.id, minutes: 2, mutationId: randomUUID() }, { env, now });
+      assert.equal((await worker(now)).state, 'active');
+      let current = (await db.query('SELECT * FROM family_internet_sessions WHERE id=$1', [grant.id])).rows[0];
+      await changeInternetSession(db, parent, grant.id, { action: 'pause', expectedVersion: current.version, mutationId: randomUUID() }, { now });
+      assert.equal((await worker(now)).state, 'paused');
+      current = (await db.query('SELECT * FROM family_internet_sessions WHERE id=$1', [grant.id])).rows[0];
+      await assert.rejects(changeInternetSession(db, parent, grant.id, { action: 'all_day', expectedVersion: current.version, mutationId: randomUUID() }, { now }), e => e.code === 'schedule_unverified');
+      await changeInternetSession(db, parent, grant.id, { action: 'adjust', deltaMinutes: 60, expectedVersion: current.version, mutationId: randomUUID() }, { now });
+      current = (await db.query('SELECT * FROM family_internet_sessions WHERE id=$1', [grant.id])).rows[0];
+      await assert.rejects(changeInternetSession(db, parent, grant.id, { action: 'resume', expectedVersion: current.version, mutationId: randomUUID() }, { now: new Date('2026-10-18T05:30:00Z') }), e => e.code === 'schedule_unverified');
+      assert.equal((await db.query('SELECT version FROM family_internet_sessions WHERE id=$1', [grant.id])).rows[0].version, current.version);
+      await changeInternetSession(db, parent, grant.id, { action: 'end', expectedVersion: current.version, mutationId: randomUUID() }, { now });
+      assert.equal((await worker(now)).state, 'ended');
+    });
     await t.test('all-day preserves an explicit home-midnight cutoff through DST and pause', async () => {
+      await db.query(`UPDATE family_network_integrations SET pilot_checks=pilot_checks||'{"midnight":true,"dst":true}'::jsonb`);
       const at = new Date('2026-11-01T06:01:00Z');
       const grant = await startInternetSession(db, parent, { personId: child.personId, deviceId: device.id, allDay: true, mutationId: randomUUID() }, { env, now: at });
       assert.equal(grant.endsAt, '2026-11-02T07:00:00.000Z'); assert.ok(grant.remainingSeconds > 86400);
@@ -385,6 +404,32 @@ test('reward reservation, frame authorization and durable provider reconciliatio
       const failed = (await db.query('SELECT * FROM family_internet_sessions WHERE id=$1', [id])).rows[0];
       assert.equal(failed.state, 'failed'); assert.equal(failed.observed_state, 'blocked'); assert.ok(failed.verified_at);
       assert.equal((await snapshot(child)).devices.find(d => d.id === sharedDevice.id).rewardAvailable, true);
+    });
+    await t.test('IPv4-only scope drift rejects new access while parent Off still revokes an allowance', async () => {
+      const zone = { id: sourceZone, networkIds: [randomUUID()] };
+      const network = { id: zone.networkIds[0], zoneId: sourceZone, management: 'GATEWAY', enabled: true, ipv4Configuration: { hostIpAddress: '10.64.0.1', prefixLength: 24 } };
+      provider.zones = async () => [zone]; provider.network = async () => structuredClone(network);
+      await db.query('UPDATE family_network_integrations SET pilot_checks=pilot_checks||$1::jsonb', [JSON.stringify({ ipv6: false, ipv6Scope: ipv4OnlyScope(zone, [network]) })]);
+      const list = provider.policies; let drift = true;
+      provider.policies = async (...args) => { const result = await list(...args); if (drift) { drift = false; network.ipv6Configuration = { interfaceType: 'PREFIX_DELEGATION' }; } return result; };
+      await control(freeDevice.id, 'allowed'); assert.equal((await worker()).state, 'checking');
+      assert.equal(policies.get((await deviceRow(freeDevice.id)).deny_policy_id).enabled, true, 'Scope must be rechecked after intervening provider reads, before opening access.');
+      provider.policies = list; delete network.ipv6Configuration;
+      assert.equal((await worker(new Date(now.getTime() + 31_000))).state, 'allowed');
+      network.ipv6Configuration = { interfaceType: 'PREFIX_DELEGATION' };
+      await control(freeDevice.id, 'allowed'); assert.equal((await worker()).state, 'checking');
+      assert.equal((await deviceRow(freeDevice.id)).access_error, 'network_scope_changed');
+      await control(freeDevice.id, 'blocked');
+      for (let attempt = 0; attempt < 4 && (await deviceRow(freeDevice.id)).observed_access !== 'blocked'; attempt++) await worker();
+      assert.equal((await deviceRow(freeDevice.id)).observed_access, 'blocked');
+      assert.equal(policies.get((await deviceRow(freeDevice.id)).deny_policy_id).enabled, true);
+      const grant = await startInternetSession(db, parent, { personId: child.personId, deviceId: freeDevice.id, minutes: 2, mutationId: randomUUID() }, { env, now });
+      const before = policies.size; assert.equal((await worker()).state, 'checking'); assert.equal(policies.size, before);
+      const current = (await db.query('SELECT * FROM family_internet_sessions WHERE id=$1', [grant.id])).rows[0];
+      await changeInternetSession(db, parent, grant.id, { action: 'end', expectedVersion: current.version, mutationId: randomUUID() }, { now });
+      for (let attempt = 0; attempt < 4; attempt++) await worker();
+      assert.equal((await db.query('SELECT state FROM family_internet_sessions WHERE id=$1', [grant.id])).rows[0].state, 'ended');
+      await db.query(`UPDATE family_network_integrations SET pilot_checks=pilot_checks||'{"ipv6":true,"ipv6Scope":null}'::jsonb`);
     });
     await t.test('foreign policy drift is never accepted as part of a device toggle', async () => {
       const extra = { ...policies.get((await deviceRow(freeDevice.id)).deny_policy_id), id: randomUUID(), description: 'foreign security rule' };

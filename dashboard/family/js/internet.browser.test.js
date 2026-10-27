@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 const base = process.env.FAMILY_UI_TEST_URL;
-async function fixture({ role = 'admin', frame = false, ready = true, width = 390, unclaimed = false } = {}) {
+async function fixture({ role = 'admin', frame = false, ready = true, allDayReady = true, width = 390, unclaimed = false } = {}) {
   const origin = new URL(base); assert.ok(['localhost', '127.0.0.1'].includes(origin.hostname));
   const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
   const browser = await chromium.launch({ headless: true }), page = await browser.newPage({ viewport: { width, height: width === 390 ? 844 : 800 } });
@@ -29,7 +29,7 @@ async function fixture({ role = 'admin', frame = false, ready = true, width = 39
     else if (url.pathname === '/api/calendar/connection') data = { connected: false, calendars: [] };
     else if (url.pathname === '/api/devices') data = { devices: [] };
     else if (url.pathname === '/api/members') data = { members: [{ id: 'fixture-adult', role: 'member', name: 'Synthetic adult' }] };
-    else if (url.pathname === '/api/internet') data = { serverTime: '2026-10-17T18:00:00Z', timezone: home.timezone, role: activeRole, capabilities: { manageInternet: activeRole === 'admin' }, integration: { state: ready ? 'ready' : 'pilot_required' }, devices: state.devices.map(item => ({ ...item, ...(activeRole === 'admin' ? {} : { macAddresses: undefined }) })), sessions: state.sessions, policies: [{ personId: person.id, version: 1, enabled: true, rewardMinutes: 60, carryoverDays: 7, dailyLimitMinutes: 180, warningMinutes: 5, bedtime: '21:00' }], credits: state.credits, progress: [{ personId: person.id, requiredCount: 1, completedCount: state.complete ? 1 : 0, pendingApprovalCount: 0 }] };
+    else if (url.pathname === '/api/internet') data = { serverTime: '2026-10-17T18:00:00Z', timezone: home.timezone, role: activeRole, capabilities: { manageInternet: activeRole === 'admin' }, integration: { state: ready ? 'ready' : 'pilot_required', scheduleSupport: { overnight: allDayReady, allDay: allDayReady } }, devices: state.devices.map(item => ({ ...item, ...(activeRole === 'admin' ? {} : { macAddresses: undefined }) })), sessions: state.sessions, policies: [{ personId: person.id, version: 1, enabled: true, rewardMinutes: 60, carryoverDays: 7, dailyLimitMinutes: 180, warningMinutes: 5, bedtime: '21:00' }], credits: state.credits, progress: [{ personId: person.id, requiredCount: 1, completedCount: state.complete ? 1 : 0, pendingApprovalCount: 0 }] };
     else if (url.pathname.endsWith('/completion')) { state.complete = true; data = { ...occurrence, status: 'completed', version: 2 }; }
     else if (url.pathname === '/api/internet/redeem' || url.pathname === '/api/internet/grants') {
       if (state.failRedeem) { await route.abort('failed'); return; }
@@ -58,6 +58,21 @@ async function fixture({ role = 'admin', frame = false, ready = true, width = 39
     await page.getByRole('heading', { name: unclaimed ? 'A place for your family.' : view === 'setup' ? 'Settings' : view === 'chores' ? (role === 'child' ? 'My tasks' : 'Tasks') : view[0].toUpperCase() + view.slice(1), exact: true, level: 1 }).waitFor();
   } };
 }
+
+test('ordinary access is usable while unverified all-day controls stay hidden', { skip: !base }, async () => {
+  const f = await fixture({ ready: true, allDayReady: false });
+  try {
+    await f.open();
+    await f.page.getByRole('button', { name: 'Grant Internet time', exact: true }).click();
+    await f.page.getByText('Choose minutes. All-day access is not available yet.', { exact: true }).waitFor();
+    assert.equal(await f.page.getByRole('checkbox', { name: 'All day', exact: true }).count(), 0);
+    await f.page.getByRole('button', { name: 'Request access window', exact: true }).click();
+    await f.page.getByText('Starting · awaiting network confirmation', { exact: true }).waitFor();
+    const sent = f.state.calls.find(call => call.path === '/api/internet/grants' && call.method === 'POST');
+    assert.equal(sent.body.minutes, 60); assert.equal(sent.body.allDay, undefined);
+    assert.deepEqual(f.state.errors, []);
+  } finally { await f.browser.close(); }
+});
 
 test('inactive controls remain honest, inventory is editable, and Apple push exception is explicit', { skip: !base }, async () => {
   const f = await fixture({ ready: false });

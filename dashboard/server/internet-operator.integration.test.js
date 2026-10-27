@@ -13,7 +13,7 @@ test('operator readiness uses explicit recorded proofs without any provider muta
   const suffix = randomUUID().replaceAll('-', ''), schema = `family_operator_test_${suffix}`, owner = `family_operator_owner_${suffix}`;
   const env = { FAMILY_UNIFI_API_KEY: 'synthetic-provider-key-not-a-secret', FAMILY_UNIFI_CONSOLE_ID: `${'a'.repeat(64)}:12345` };
   const now = new Date('2026-10-18T02:00:00Z');
-  const id = Object.fromEntries(['household', 'person', 'device', 'site', 'source', 'external', 'foreign', 'foreignAfter', 'management', 'deny', 'apple'].map(key => [key, randomUUID()]));
+  const id = Object.fromEntries(['household', 'person', 'device', 'site', 'source', 'external', 'network', 'foreign', 'foreignAfter', 'management', 'deny', 'apple'].map(key => [key, randomUUID()]));
   const input = { deviceId: id.device, siteId: id.site, sourceZoneId: id.source, externalZoneId: id.external, beforePolicyId: id.foreign };
   const buckets = beforeSystemDefined => ({ beforeSystemDefined, afterSystemDefined: [id.foreignAfter] });
   const custom = fields => ({ ...fields, metadata: { origin: 'USER_DEFINED' } });
@@ -22,7 +22,8 @@ test('operator readiness uses explicit recorded proofs without any provider muta
     name: 'Synthetic foreign policy', action: { type: 'BLOCK' }, source: { zoneId: id.source }, destination: { zoneId: id.external } })]));
   let writes = 0, changeVersionDuringRead = false;
   const prohibited = () => { writes++; throw Error('Operator must not write to the provider.'); };
-  const provider = { info: async () => ({ applicationVersion: '10.6.106' }), sites: async () => [{ id: id.site }], zones: async () => [{ id: id.source }, { id: id.external }],
+  const provider = { info: async () => ({ applicationVersion: '10.6.106' }), sites: async () => [{ id: id.site }], zones: async () => [{ id: id.source, networkIds: [id.network] }, { id: id.external, networkIds: [] }],
+    network: async () => ({ id: id.network, zoneId: id.source, management: 'GATEWAY', enabled: true, ipv4Configuration: { hostIpAddress: '10.64.0.1', prefixLength: 24 }, ipv6Configuration: null }),
     policies: async () => [...policies.values()].map(policy => structuredClone(policy)), ordering: async () => {
       if (changeVersionDuringRead) { changeVersionDuringRead = false; await client.query('UPDATE family_managed_devices SET version=version+1 WHERE id=$1', [id.device]); }
       return { orderedFirewallPolicyIds: structuredClone(order) };
@@ -73,7 +74,7 @@ test('operator readiness uses explicit recorded proofs without any provider muta
       const pilot = await run('pilot-plan'); assert.equal(pilot.providerWrites, false); assert.equal(pilot.pilotDeny.schedule.timeFilter.stopTime, '20:05');
       policies.set(id.deny, custom({ ...pilot.pilotDeny, id: id.deny })); input.denyPolicyId = id.deny; order = buckets([id.management, id.apple, id.deny, id.foreign]);
       plan = await run('plan'); assert.equal(plan.observations.pilotDenyVerified, true);
-      for (const check of plan.requiredChecks.filter(check => !['identity_stability', 'management_preflight'].includes(check))) await record(check);
+      for (const check of plan.activationChecks.filter(check => !['identity_stability', 'management_preflight'].includes(check))) await record(check);
       await assert.rejects(run('activate', { apply: true, confirmDevice: id.device }), error => error.code === 'permanent_policies_unverified');
       const permanent = await run('permanent-plan'); assert.equal(permanent.permanentDeny.schedule, null);
       policies.set(id.deny, custom({ ...permanent.permanentDeny, id: id.deny }));
@@ -85,6 +86,8 @@ test('operator readiness uses explicit recorded proofs without any provider muta
       assert.equal(device.management_policy_id, id.management); assert.equal(device.apple_push_policy_id, id.apple); assert.equal(device.control_state, 'ready');
       assert.equal(device.reviewed_policy_fingerprint, (await run('inspect')).reviewedFingerprint);
       assert.equal(integration.state, 'ready'); assert.equal(integration.pilot_checks.apple_push, true); assert.equal(writes, 0);
+      assert.equal(integration.pilot_checks.midnight, false); assert.equal(integration.pilot_checks.dst, false);
+      assert.equal(integration.pilot_checks.ipv6, false); assert.equal(integration.pilot_checks.ipv6Scope.mode, 'ipv4_only');
     });
     await t.test('beginning another pilot gates existing devices, and a latest failure cannot reuse an older pass', async () => {
       await run('begin-pilot', { apply: true, confirmDevice: id.device });
