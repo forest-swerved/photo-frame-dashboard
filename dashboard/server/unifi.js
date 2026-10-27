@@ -1,11 +1,51 @@
 import { ApiError, requireValue, uuidField } from './errors.js';
 import { createHash } from 'node:crypto';
+import { isIP } from 'node:net';
 
 // Public Network 10.6.106 API only. No legacy cookie sessions, arbitrary hosts,
 // controller port forwarding, or client-supplied provider URLs.
 const CLOUD = 'https://api.ui.com';
 const MAX_BYTES = 1024 * 1024;
-export const requiredPilotChecks = ['management_access', 'unrelated_internet_blocked', 'shared_cdn_isolation', 'expiry', 'existing_connections', 'ipv6', 'controller_outage', 'gateway_restart', 'midnight', 'dst'];
+export const requiredPilotChecks = ['management_access', 'unrelated_internet_blocked', 'shared_cdn_isolation', 'expiry', 'existing_connections', 'ipv6', 'controller_outage', 'gateway_restart'];
+export const extendedPilotChecks = ['midnight', 'dst'];
+export const validIPv4Scope = scope => scope?.version === 1 && scope.mode === 'ipv4_only'
+  && /^[a-f0-9]{64}$/.test(scope.configurationHash || '') && Array.isArray(scope.networkIds) && scope.networkIds.length > 0;
+export const networkChecksPassed = integration => requiredPilotChecks.every(key => integration?.pilot_checks?.[key] === true
+  || key === 'ipv6' && validIPv4Scope(integration?.pilot_checks?.ipv6Scope));
+
+export function ipv4OnlyScope(zone, networks) {
+  requireValue(zone && Array.isArray(zone.networkIds) && zone.networkIds.length > 0 && zone.networkIds.length <= 30
+    && new Set(zone.networkIds).size === zone.networkIds.length && Array.isArray(networks) && networks.length === zone.networkIds.length,
+  503, 'network_scope_unverified', 'Read every source network before reviewing IPv6 availability.');
+  uuidField(zone.id); zone.networkIds.forEach(id => uuidField(id));
+  requireValue(new Set(networks.map(network => network?.id)).size === networks.length
+    && networks.every(network => zone.networkIds.includes(network?.id) && network.zoneId === zone.id),
+  503, 'network_scope_unverified', 'The source network inventory changed.');
+  if (networks.some(network => network.management !== 'GATEWAY' || network.enabled !== true
+    || network.ipv6Configuration != null || isIP(network.ipv4Configuration?.hostIpAddress || '') !== 4
+    || !Number.isInteger(network.ipv4Configuration?.prefixLength) || network.ipv4Configuration.prefixLength < 1 || network.ipv4Configuration.prefixLength > 32)) return null;
+  const configuration = networks.map(network => Object.fromEntries(['id', 'zoneId', 'vlanId', 'enabled', 'management', 'internetAccessEnabled', 'isolationEnabled', 'ipv4Configuration', 'ipv6Configuration']
+    .map(key => [key, network[key] ?? null]))).sort((a, b) => a.id.localeCompare(b.id));
+  return { version: 1, mode: 'ipv4_only', sourceZoneId: zone.id, networkIds: [...zone.networkIds].sort(),
+    configurationHash: createHash('sha256').update(JSON.stringify(canonicalPolicyValue(configuration))).digest('hex') };
+}
+export async function readIPv4Scope(provider, siteId, sourceZoneId, zones) {
+  const source = (zones || await provider.zones(siteId)).find(zone => zone.id === sourceZoneId);
+  requireValue(source && Array.isArray(source.networkIds) && source.networkIds.length > 0 && source.networkIds.length <= 30,
+    503, 'network_scope_unverified', 'The source networks must be reviewed before access can start.');
+  const networks = await Promise.all(source.networkIds.map(id => provider.network(siteId, id)));
+  return ipv4OnlyScope(source, networks);
+}
+export async function verifyNetworkScope(provider, integration) {
+  if (integration.pilot_checks?.ipv6 === true) return;
+  const expected = integration.pilot_checks?.ipv6Scope;
+  requireValue(validIPv4Scope(expected) && expected.sourceZoneId === integration.source_zone_id,
+    503, 'network_scope_unverified', 'Review the network IPv6 configuration before granting access.');
+  const actual = await readIPv4Scope(provider, integration.site_id, integration.source_zone_id);
+  requireValue(actual && actual.configurationHash === expected.configurationHash
+    && JSON.stringify(actual.networkIds) === JSON.stringify(expected.networkIds),
+  503, 'network_scope_changed', 'The network configuration changed. Review IPv6 and network access before granting time.');
+}
 const ownFields = ['action', 'connectionStateFilter', 'description', 'destination', 'enabled', 'ipProtocolScope', 'ipsecFilter', 'loggingEnabled', 'name', 'schedule', 'source'];
 const isManaged = policy => /^family-frame:[0-9a-f-]{36}:(?:management|apple-push|deny|session:[0-9a-f-]{36})$/.test(policy?.description || '')
   && (!policy.metadata || policy.metadata.origin === 'USER_DEFINED');
@@ -137,6 +177,7 @@ export function createUniFiClient({ env = process.env, fetchImpl = fetch, budget
     sites: () => list('/v1/sites'),
     clients: siteId => list(`${sitePath(siteId)}/clients`),
     zones: siteId => list(`${sitePath(siteId)}/firewall/zones`),
+    network: (siteId, networkId) => request(`${sitePath(siteId)}/networks/${uuidField(networkId, 'UniFi network')}`),
     policies: siteId => list(policies(siteId)),
     policy: (siteId, policyId) => request(`${policies(siteId)}/${uuidField(policyId, 'UniFi policy')}`),
     createPolicy: (siteId, policy) => {
@@ -193,7 +234,7 @@ export function managedPolicyPlan({ deviceId, macAddresses, sourceZoneId, destin
       ipAddressFilter: { type: 'IP_ADDRESSES', matchOpposite: false, items: ['17.249.0.0/16', '17.252.0.0/16', '17.57.144.0/22', '17.188.128.0/18', '17.188.20.0/23',
         '2620:149:a44::/48', '2403:300:a42::/48', '2403:300:a51::/48', '2a01:b740:a42::/48'].map(value => ({ type: 'SUBNET', value })) },
       portFilter: { type: 'PORTS', matchOpposite: false, items: [5223, 443].map(value => ({ type: 'PORT_NUMBER', value })) } } } } : null;
-  return { management, deny, applePush, managementHost: host, requiredChecks: [...requiredPilotChecks, ...(allowApplePush ? ['apple_push'] : [])] };
+  return { management, deny, applePush, managementHost: host, requiredChecks: [...requiredPilotChecks, ...extendedPilotChecks, ...(allowApplePush ? ['apple_push'] : [])] };
 }
 
 export function managedOrdering(existingIds, { managementIds, sessionIds = [], denyIds, insertBeforeId }) {

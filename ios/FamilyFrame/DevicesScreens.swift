@@ -290,7 +290,10 @@ struct InternetSessionDetail: View {
                 Section("Parent controls") {
                     if item.state == "active" { Button("Pause Internet access") { Task { _ = await network.act(item, action: "pause") } }.disabled(!network.canChange) }
                     if item.state == "paused" { Button("Resume remaining time") { Task { _ = await network.act(item, action: "resume") } }.disabled(!network.canChange || item.remaining(at: network.serverNow) <= 0) }
-                    if item.isStable { Button("Add or remove time") { adjustment = true }.disabled(!network.canChange); Button("Allow all day until midnight") { allDayConfirmation = true }.disabled(!network.canChange) }
+                    if item.isStable {
+                        Button("Add or remove time") { adjustment = true }.disabled(!network.canChange)
+                        if network.supportsAllDay { Button("Allow all day until midnight") { allDayConfirmation = true }.disabled(!network.canChange) }
+                    }
                     Button("End session and block Internet", role: .destructive) { endConfirmation = true }.disabled(!network.canChange)
                 }
             }

@@ -35,6 +35,7 @@ const check = (label, name, enabled) => `<label class="checkbox-label"><input ty
 export function createInternetUI(ctx) {
   const freshState = () => ({ data: null, busy: false, error: '', serverMs: null, monoMs: 0, receivedAt: null, pendingCreditId: null, prompted: new Set(), writing: new Set(), revision: 0, reloadRequested: false, celebrateFor: null });
   let state = freshState();
+  const allDayAvailable = () => state.data?.integration.scheduleSupport?.allDay !== false;
   const epoch = () => ctx.epoch();
   const people = () => ctx.snapshot()?.people || [];
   const personName = id => people().find(item => item.id === id)?.name || 'Family profile';
@@ -104,7 +105,7 @@ export function createInternetUI(ctx) {
   function controls(session) {
     if (!manager() || !liveSession(session) || state.error) return '';
     const actionButton = (text, action) => ctx.button(text,'session-control','text-button',`data-id="${h(session.id)}" data-operation="${action}" ${state.writing.has(session.id) ? 'disabled' : ''}`);
-    return `<div class="occurrence-controls session-controls">${session.state === 'active' ? actionButton('Pause','pause') : session.state === 'paused' ? actionButton('Resume','resume') : ''}${['active','paused'].includes(session.state) ? actionButton('+15 min','add') : ''}<details class="session-more" data-key="session-more-${h(session.id)}"><summary>More controls</summary><div class="occurrence-controls">${['active','paused'].includes(session.state) ? actionButton('−15 min','remove')+actionButton('Custom time','adjust')+actionButton('All day','all_day') : ''}${actionButton('End now','end')}</div></details></div>`;
+    return `<div class="occurrence-controls session-controls">${session.state === 'active' ? actionButton('Pause','pause') : session.state === 'paused' ? actionButton('Resume','resume') : ''}${['active','paused'].includes(session.state) ? actionButton('+15 min','add') : ''}<details class="session-more" data-key="session-more-${h(session.id)}"><summary>More controls</summary><div class="occurrence-controls">${['active','paused'].includes(session.state) ? actionButton('−15 min','remove')+actionButton('Custom time','adjust')+(allDayAvailable() ? actionButton('All day','all_day') : '') : ''}${actionButton('End now','end')}</div></details></div>`;
   }
 
   function sessionCard(session, compact = false) {
@@ -181,7 +182,7 @@ export function createInternetUI(ctx) {
   }
   function grant(device) {
     const operationId = mutationId(), choices = people().filter(person => device.personIds.includes(person.id));
-    ctx.openDialog(`Grant time · ${device.name}`, `<div class="form-stack"><label class="field"><span>Child</span><select name="personId" aria-label="Child">${choices.map(person => `<option value="${h(person.id)}">${h(person.name)}</option>`).join('')}</select></label>${ctx.field('Minutes', 'minutes', '60', { type: 'number', extra: 'min="1" max="1439" step="1"' })}${check('All day', 'allDay', false)}<p class="field-help">All day ends at ${h(midnight())}. This is separate from earned rewards.</p>${ctx.field('Reason (optional)', 'reason', '', { required: false, max: 500 })}<button class="button" type="submit">Request access window</button></div>`, async (form, element) => {
+    ctx.openDialog(`Grant time · ${device.name}`, `<div class="form-stack"><label class="field"><span>Child</span><select name="personId" aria-label="Child">${choices.map(person => `<option value="${h(person.id)}">${h(person.name)}</option>`).join('')}</select></label>${ctx.field('Minutes', 'minutes', '60', { type: 'number', extra: 'min="1" max="1439" step="1"' })}${allDayAvailable() ? check('All day', 'allDay', false)+`<p class="field-help">All day ends at ${h(midnight())}. This is separate from earned rewards.</p>` : '<p class="field-help">Choose minutes. All-day access is not available yet.</p>'}${ctx.field('Reason (optional)', 'reason', '', { required: false, max: 500 })}<button class="button" type="submit">Request access window</button></div>`, async (form, element) => {
       const allDay = form.has('allDay');
       const result = await write('/api/internet/grants', { method: 'POST', body: { personId: form.get('personId'), deviceId: device.id, ...(allDay ? { allDay: true } : { minutes: Number(form.get('minutes')) }), reason: form.get('reason').trim() || undefined, mutationId: operationId } }, element);
       if (!result) return; ctx.dialog.close(); ctx.toast('Access requested. Network confirmation is pending.'); await load();

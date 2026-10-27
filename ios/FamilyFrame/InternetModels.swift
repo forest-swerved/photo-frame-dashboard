@@ -1,11 +1,17 @@
 import Foundation
 
+struct InternetScheduleSupport: Decodable, Equatable {
+    let overnight: Bool
+    let allDay: Bool
+}
 struct InternetIntegration: Decodable, Equatable {
     let state: String
     let managementHost: String
     let managementAccessVerifiedAt: String?
     let lastCheckedAt: String?
     let error: String?
+    var scheduleSupport: InternetScheduleSupport? = nil
+    var supportsAllDay: Bool { scheduleSupport?.allDay ?? true }
     var isReady: Bool { state == "ready" && managementAccessVerifiedAt.flatMap(Dates.instant) != nil }
     var title: String {
         switch state { case "unconfigured": return "Connect your home network"; case "pilot_required": return "Network checks required"; case "ready": return isReady ? "Home network connected" : "Connection needs verification"; default: return "Network needs attention" }

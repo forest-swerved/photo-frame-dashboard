@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { Temporal } from '@js-temporal/polyfill';
 import { one, transaction } from './database.js';
 import { requireValue } from './errors.js';
-import { createUniFiClient, managedPolicyPlan, managementHost, policyContentFingerprint, policyFieldValue, policyOrdering, requiredPilotChecks, reviewedPolicyFingerprint } from './unifi.js';
+import { createUniFiClient, managedPolicyPlan, managementHost, networkChecksPassed, policyContentFingerprint, policyFieldValue, policyOrdering, reviewedPolicyFingerprint, verifyNetworkScope } from './unifi.js';
 import { internetEvent, internetNotification, queueInternetCommand, sessionDeadline, validateTimedWindow } from './internet.js';
 
 const terminal = row => ['ended', 'failed'].includes(row.state);
@@ -125,7 +125,7 @@ async function loadCommand(db, command, env) {
     one(db, 'SELECT * FROM family_network_integrations WHERE household_id=$1', [session.household_id]),
   ]);
   requireValue(device && integration && (command.action === 'block' || integration.state === 'ready' && integration.management_host === managementHost(env)
-    && integration.management_verified_at && requiredPilotChecks.every(key => integration.pilot_checks?.[key] === true)
+    && integration.management_verified_at && networkChecksPassed(integration)
     && device.control_state === 'ready' && device.management_verified_at),
   503, 'network_not_ready', 'Network control requires verified Family Frame access and blocking.');
   return { session, device, integration };
@@ -186,6 +186,7 @@ async function applyCommand(db, command, env, provider, now, clock) {
   const loaded = await loadCommand(db, command, env);
   if (!loaded) return { superseded: true };
   const { device, integration } = loaded, site = integration.site_id;
+  if (command.action === 'allow') await verifyNetworkScope(provider, integration);
   const session = command.action === 'allow' ? await prepareActivation(db, command, clock) : loaded.session;
   const plan = managedPolicyPlan({ deviceId: device.id, macAddresses: device.mac_addresses, sourceZoneId: integration.source_zone_id, destinationZoneId: integration.external_zone_id }, env);
   const policies = await provider.policies(site);
@@ -254,6 +255,7 @@ async function applyCommand(db, command, env, provider, now, clock) {
   // end request queues its own block; the gateway deadline remains bounded.
   await assertWriteOwnership(db, command, clock);
   if (!sameManagedPolicy(policy, expected)) {
+    await verifyNetworkScope(provider, integration);
     // Durable evidence is written before attempting ALLOW. A timeout may mean
     // the gateway accepted it, so an unconfirmed start cannot be auto-refunded.
     // A later parent END can also recognize and disable this exact allowance.
@@ -268,6 +270,7 @@ async function applyCommand(db, command, env, provider, now, clock) {
   requireValue(sameManagedPolicy(verifiedPolicy, expected), 503, 'allow_unconfirmed', 'UniFi did not consistently confirm the scheduled allowance.');
   const verifiedOrder = await assertReviewedState(db, provider, session, device, integration, verifiedPolicies, expected);
   requireValue(isDeepStrictEqual(verifiedOrder.orderedFirewallPolicyIds, order), 503, 'order_unconfirmed', 'UniFi has not confirmed the session policy order.');
+  await verifyNetworkScope(provider, integration);
   return { observed: 'allowed', policyId: policy.id, policyFingerprint: policyContentFingerprint(verifiedPolicy) };
 }
 
@@ -333,8 +336,9 @@ async function applyDeviceCommand(db, command, env, provider, now, clock) {
   if (!device || device.version !== command.session_version && !command.before_fingerprint) return { superseded: true };
   const integration = await one(db, 'SELECT * FROM family_network_integrations WHERE household_id=$1', [command.household_id]);
   requireValue(integration?.state === 'ready' && integration.management_host === managementHost(env) && integration.management_verified_at
-    && requiredPilotChecks.every(key => integration.pilot_checks?.[key] === true) && device.control_state === 'ready' && device.management_verified_at,
+    && networkChecksPassed(integration) && device.control_state === 'ready' && device.management_verified_at,
   503, 'network_not_ready', 'Device control requires verified Family Frame access and Internet blocking.');
+  if (command.action === 'allow') await verifyNetworkScope(provider, integration);
   if (await one(db, `SELECT id FROM family_internet_sessions WHERE household_id=$1 AND device_id=$2
     AND state NOT IN ('ended','failed') LIMIT 1`, [command.household_id, device.id])) return { waiting: true };
   const site = integration.site_id;
@@ -390,6 +394,7 @@ async function applyDeviceCommand(db, command, env, provider, now, clock) {
   requireValue(enrolled.every(row => row.reviewed_policy_fingerprint === command.before_fingerprint), 503, 'policy_review_required', 'The reviewed device inventory changed during reconciliation.');
   if (deny.enabled !== enabled) {
     requireValue(before === command.before_fingerprint, 503, 'policy_review_required', 'The expected policy change was not found.');
+    if (command.action === 'allow') await verifyNetworkScope(provider, integration);
     await assertWriteOwnership(db, command, clock);
     await provider.replacePolicy(site, deny.id, deny, { enabled });
   }

@@ -6,7 +6,7 @@ import { requireHousehold } from './auth.js';
 import { parentCapabilities, requireCapability } from './capabilities.js';
 import { ApiError, dateField, householdDate, requireValue, textField, uuidField, versionField } from './errors.js';
 import { ensureDailyOccurrences, getRequiredProgress, lockChoreDay } from './chore-occurrences.js';
-import { normalizedMac, unifiConfiguration, managementHost as configuredManagementHost, requiredPilotChecks } from './unifi.js';
+import { normalizedMac, unifiConfiguration, managementHost as configuredManagementHost, networkChecksPassed } from './unifi.js';
 
 const iso = value => value ? new Date(value).toISOString() : null;
 const day = value => value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10);
@@ -62,6 +62,18 @@ export function sessionDeadline(now, timezone, seconds, { allDay = false, bedtim
     422, 'invalid_duration', 'Choose a window shorter than 24 hours, or All day until household midnight.');
   validateTimedWindow(now, end, timezone, { allDay });
   return end;
+}
+
+export function scheduleSupport(integration, timezone, now = new Date()) {
+  const today = householdDate(timezone, now), start = nextDayStart(today, timezone, 0), end = nextDayStart(today, timezone);
+  const overnight = integration?.pilot_checks?.midnight === true;
+  return { overnight, allDay: overnight && (end - start === 86400_000 || integration?.pilot_checks?.dst === true) };
+}
+export function requireScheduleSupport(integration, timezone, start, end, { allDay = false } = {}) {
+  const support = scheduleSupport(integration, timezone, start);
+  if (allDay) requireValue(support.allDay, 409, 'schedule_unverified', 'All-day access is not enabled yet. Choose a timed window ending today.');
+  else requireValue(householdDate(timezone, start) === householdDate(timezone, end) || support.overnight,
+    409, 'schedule_unverified', 'Overnight access is not enabled yet. Choose a window ending before household midnight.');
 }
 
 export function validateRewardPolicy(body, current) {
@@ -192,6 +204,7 @@ export async function internetSnapshot(db, principal, { env = process.env, now =
     for (const person of people) progress.push(await getRequiredProgress(client, householdId, person.id, date));
     return { serverTime: now.toISOString(), timezone: principal.household.timezone, role: principal.role, capabilities,
       integration: { state: !configured ? 'unconfigured' : integration?.state || 'pilot_required', managementHost,
+        scheduleSupport: scheduleSupport(integration, principal.household.timezone, now),
         managementAccessVerifiedAt: iso(integration?.management_verified_at), lastCheckedAt: iso(integration?.last_checked_at), error: integration?.last_error || null },
       policies: people.map(person => policyDto(policies.rows.find(p => p.person_id === person.id)) || defaultRewardPolicy(person.id)),
       credits: credits.rows.map(creditDto), devices: devices.rows.map(row => deviceDto(row, parent)), sessions: sessions.rows.map(sessionDto), requests: requests.rows.map(accessRequestDto), progress };
@@ -275,7 +288,7 @@ async function requireReady(client, householdId, device, env) {
   unifiConfiguration(env);
   const integration = await one(client, 'SELECT * FROM family_network_integrations WHERE household_id=$1', [householdId]);
   requireValue(integration?.state === 'ready' && integration.management_host === configuredManagementHost(env) && integration.management_verified_at
-    && requiredPilotChecks.every(key => integration.pilot_checks?.[key] === true)
+    && networkChecksPassed(integration)
     && (!device.allow_apple_push || integration.pilot_checks?.apple_push === true && device.apple_push_policy_id)
     && device.control_state === 'ready' && device.management_verified_at && device.management_policy_id && device.deny_policy_id && device.reviewed_policy_fingerprint,
   503, 'network_not_ready', 'A parent must finish the UniFi access and blocking checks before starting Internet time. Family Frame access must stay available.');
@@ -343,7 +356,7 @@ async function createInternetSession(client, principal, body, { reward = false, 
   const device = await one(client, 'SELECT * FROM family_managed_devices WHERE household_id=$1 AND id=$2 AND removed_at IS NULL FOR UPDATE', [householdId, body.deviceId]);
   requireValue(device && device.person_ids.includes(personId), 404, 'not_found', 'That device is not assigned to this child.');
   requireValue(!reward || (device.default_access || 'blocked') === 'blocked', 409, 'device_not_reward', 'This device is controlled by parents and is not in the earned-time pool.');
-  await requireReady(client, householdId, device, env);
+  const integration = await requireReady(client, householdId, device, env);
   requireValue(device.desired_access === 'blocked' && device.observed_access === 'blocked' && device.access_verified_at
     && !await one(client, "SELECT id FROM family_internet_commands WHERE device_id=$1 AND state IN ('pending','leased','attention')", [device.id]),
   409, 'device_not_blocked', 'Choose a device whose Internet blocking is confirmed.');
@@ -358,6 +371,7 @@ async function createInternetSession(client, principal, body, { reward = false, 
   const minutes = reward ? credit.minutes : body.minutes ?? 60;
   requireValue(Number.isInteger(minutes) && minutes >= 1 && minutes <= 1439, 422, 'invalid_duration', 'Choose 1–1439 minutes, or All day.');
   const candidateEnd = sessionDeadline(now, principal.household.timezone, minutes * 60, { allDay, bedtime: reward ? policy.bedtime : null });
+  requireScheduleSupport(integration, principal.household.timezone, now, candidateEnd, { allDay });
   // Validate now, but plan a normal window only when the worker first owns
   // activation. Waiting in the durable queue cannot consume reserved time.
   const endsAt = allDay ? candidateEnd : null;
@@ -416,6 +430,11 @@ export async function changeInternetSession(db, principal, id, body, { now = new
       requireValue(device?.desired_access === 'blocked' && device.observed_access === 'blocked' && device.access_verified_at
         && !await one(client, "SELECT id FROM family_internet_commands WHERE device_id=$1 AND state IN ('pending','leased','attention')", [row.device_id]),
       409, 'device_access_pending', 'A parent device control is being confirmed. Refresh before changing this session.');
+    }
+    if (desired === 'allowed' || body.action === 'all_day') {
+      const integration = await one(client, 'SELECT * FROM family_network_integrations WHERE household_id=$1', [householdId]);
+      requireScheduleSupport(integration, principal.household.timezone, now,
+        endsAt || sessionDeadline(now, principal.household.timezone, remaining, { allDay }), { allDay });
     }
     const changed = await one(client, `UPDATE family_internet_sessions SET state=$3,desired_state=$4,ends_at=$5,remaining_seconds=$6,all_day=$7,version=version+1,last_error=NULL,pending_action=$9,
       activation_planned_at=CASE WHEN $9='resume' THEN NULL ELSE activation_planned_at END,

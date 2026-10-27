@@ -11,8 +11,8 @@ enum InternetFixtures {
     static func session(state: String = "active", version: Int = 1, observed: String = "allowed", end: String? = "2026-10-17T19:00:00Z", allDay: Bool = false, person: String = child, credit: String? = "synthetic-credit", remaining: Int = 1800) -> InternetSession {
         InternetSession(id: "synthetic-session", personId: person, deviceId: device.id, creditId: credit, source: credit == nil ? "parent" : "reward", state: state, version: version, desiredState: ["paused", "pausing", "ending", "ended"].contains(state) ? "blocked" : "allowed", observedState: observed, requestedAt: time, startedAt: state == "starting" ? nil : time, endsAt: end, remainingSeconds: remaining, verifiedAt: observed == "unknown" ? nil : time, endedAt: state == "ended" ? time : nil, reason: nil, lastError: nil, allDay: allDay)
     }
-    static func snapshot(role: String = "child", credits: [RewardCredit] = [], sessions: [InternetSession] = [], integration: String = "ready", manage: Bool? = nil) -> InternetSnapshot {
-        InternetSnapshot(serverTime: time, timezone: "America/Denver", role: role, capabilities: ParentCapabilities(manageChores: manage ?? (role == "admin"), manageInternet: manage ?? (role == "admin")), integration: InternetIntegration(state: integration, managementHost: "frame.test", managementAccessVerifiedAt: integration == "ready" ? time : nil, lastCheckedAt: time, error: nil), policies: [RewardPolicy(personId: child, version: 1, rewardMinutes: 60, carryoverDays: 7, dailyLimitMinutes: 180, bedtime: "21:00", warningMinutes: 5, enabled: true)], credits: credits, devices: [device], sessions: sessions, progress: [])
+    static func snapshot(role: String = "child", credits: [RewardCredit] = [], sessions: [InternetSession] = [], integration: String = "ready", manage: Bool? = nil, scheduleSupport: InternetScheduleSupport? = nil) -> InternetSnapshot {
+        InternetSnapshot(serverTime: time, timezone: "America/Denver", role: role, capabilities: ParentCapabilities(manageChores: manage ?? (role == "admin"), manageInternet: manage ?? (role == "admin")), integration: InternetIntegration(state: integration, managementHost: "frame.test", managementAccessVerifiedAt: integration == "ready" ? time : nil, lastCheckedAt: time, error: nil, scheduleSupport: scheduleSupport), policies: [RewardPolicy(personId: child, version: 1, rewardMinutes: 60, carryoverDays: 7, dailyLimitMinutes: 180, bedtime: "21:00", warningMinutes: 5, enabled: true)], credits: credits, devices: [device], sessions: sessions, progress: [])
     }
 }
 
@@ -123,6 +123,18 @@ final class InternetModelTests: XCTestCase {
         let sibling = await model.redeem(InternetFixtures.credit(person: "sibling"), device: InternetFixtures.device)
         XCTAssertFalse(grant); XCTAssertFalse(changed); XCTAssertFalse(resolved); XCTAssertFalse(sibling)
         XCTAssertEqual(api.grantCalls + api.internetActionCalls + api.internetManagementCalls + api.redeemCalls, 0)
+    }
+    func testUnavailableAllDayDoesNotSubmitOrMutateAParentSession() async {
+        let (model, api) = fixture(role: "admin")
+        let session = InternetFixtures.session()
+        api.internetData = InternetFixtures.snapshot(role: "admin", sessions: [session], scheduleSupport: InternetScheduleSupport(overnight: false, allDay: false))
+        await model.refresh()
+        XCTAssertTrue(model.integrationReady); XCTAssertFalse(model.supportsAllDay)
+        let grant = await model.grant(personID: InternetFixtures.child, device: InternetFixtures.device, minutes: 60, allDay: true, reason: "")
+        let changed = await model.act(session, action: "all_day")
+        XCTAssertFalse(grant); XCTAssertFalse(changed)
+        XCTAssertEqual(api.grantCalls + api.internetActionCalls, 0)
+        XCTAssertEqual(model.sessions.first, session)
     }
     func testCaregiverRequiresServerInternetPermission() async {
         let (model, api) = fixture(role: "member"); await model.refresh(); XCTAssertFalse(model.canManage)

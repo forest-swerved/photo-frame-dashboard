@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { Temporal } from '@js-temporal/polyfill';
 import { createPool, one, transaction } from './database.js';
 import { ApiError, requireValue, textField, uuidField } from './errors.js';
-import { checkedPolicyOrdering, createUniFiClient, managedPolicyPlan, normalizedMac, policyContentFingerprint, policyInventoryFingerprint, reviewedPolicyFingerprint, unifiConfiguration } from './unifi.js';
+import { checkedPolicyOrdering, createUniFiClient, managedPolicyPlan, normalizedMac, policyContentFingerprint, policyInventoryFingerprint, readIPv4Scope, requiredPilotChecks, reviewedPolicyFingerprint, unifiConfiguration, validIPv4Scope } from './unifi.js';
 import { validateTimedWindow } from './internet.js';
 
 const PROOF_AGE = 24 * 3600_000;
@@ -47,10 +47,12 @@ async function loadDevice(db, input) {
   return { device, integration, config, macs };
 }
 
-export function inspectPolicyInventory({ device, config, macs, policies, orderedIds, knownSessions = [], input, consoleId, applicationVersion, env = process.env, now = new Date() }) {
+export function inspectPolicyInventory({ device, config, macs, policies, orderedIds, knownSessions = [], networkScope = null, input, consoleId, applicationVersion, env = process.env, now = new Date() }) {
   requireValue(typeof applicationVersion === 'string' && /^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(applicationVersion),
     503, 'application_version_unverified', 'Read the Network application version before reviewing its policy behavior.');
   const ordering = checkedPolicyOrdering(policies, orderedIds, { sourceZoneId: config.sourceZoneId, destinationZoneId: config.externalZoneId });
+  requireValue(!networkScope || validIPv4Scope(networkScope) && networkScope.sourceZoneId === config.sourceZoneId,
+    503, 'network_scope_unverified', 'Review the actual source networks before accepting an IPv4-only scope.');
   const beforeIds = ordering.beforeSystemDefined;
   const byId = new Map(policies.map(policy => [uuidField(policy.id), policy]));
   const plan = managedPolicyPlan({ deviceId: device.id, macAddresses: macs, sourceZoneId: config.sourceZoneId,
@@ -101,7 +103,7 @@ export function inspectPolicyInventory({ device, config, macs, policies, ordered
   }
   const identity = { deviceId: device.id, householdId: device.household_id, name: device.name, kind: device.kind,
     personIds: [...device.person_ids].sort(), defaultAccess: device.default_access || 'blocked', macAddresses: macs, allowApplePush: device.allow_apple_push === true,
-    timezone: device.timezone, consoleId, applicationVersion, ...config, managementHost: plan.managementHost, beforePolicyId: before };
+    timezone: device.timezone, consoleId, applicationVersion, ...config, managementHost: plan.managementHost, beforePolicyId: before, ...(networkScope ? { networkScope } : {}) };
   const foreignDigest = policyInventoryFingerprint(policies, ordering, { ignoredPolicyIds: [...selectedIds, ...ignoredSessions],
     sourceZoneId: config.sourceZoneId, destinationZoneId: config.externalZoneId });
   const identityBinding = hash({ version: 2, identity });
@@ -112,6 +114,7 @@ export function inspectPolicyInventory({ device, config, macs, policies, ordered
     ? reviewedPolicyFingerprint(policies, ordering, { managementId: ids.management, denyId: ids.deny, ignoredSessionIds: ignoredSessions }) : null;
   return { version: 2, deviceId: device.id, deviceName: device.name, ...config, beforePolicyId: before, macAddresses: macs,
     managementHost: plan.managementHost, applicationVersion, timezone: device.timezone, policyIds: ids, requiredChecks: ['identity_stability', 'management_preflight', ...plan.requiredChecks],
+    activationChecks: ['identity_stability', 'management_preflight', ...requiredPilotChecks.filter(check => check !== 'ipv6' || !networkScope), ...(device.allow_apple_push ? ['apple_push'] : [])], networkScope,
     policies: { management: plan.management, ...(plan.applePush ? { applePush: plan.applePush } : {}), deny: plan.deny },
     orderedPolicyIds: ordering, foreignPolicyDigest: foreignDigest, identityBinding, managementBinding, binding, reviewedFingerprint,
     observations: { managementVerified, appleVerified, permanentDenyVerified, pilotDenyVerified, placementVerified,
@@ -128,7 +131,8 @@ async function inspection(db, input, { env = process.env, provider = createUniFi
   ]);
   requireValue(sites.some(site => site.id === config.siteId) && zones.some(zone => zone.id === config.sourceZoneId) && zones.some(zone => zone.id === config.externalZoneId),
     422, 'network_selection_invalid', 'The selected site and firewall zones must exist on this console.');
-  const plan = inspectPolicyInventory({ ...context, policies, orderedIds: ordering?.orderedFirewallPolicyIds, knownSessions: known.rows, input, consoleId, applicationVersion: info?.applicationVersion, env, now });
+  const networkScope = provider.network ? await readIPv4Scope(provider, config.siteId, config.sourceZoneId, zones) : null;
+  const plan = inspectPolicyInventory({ ...context, policies, orderedIds: ordering?.orderedFirewallPolicyIds, knownSessions: known.rows, networkScope, input, consoleId, applicationVersion: info?.applicationVersion, env, now });
   return { ...context, plan };
 }
 
@@ -183,8 +187,9 @@ export async function runOperator(db, command, input, options = {}) {
   const context = await inspection(db, input, { ...options, now });
   const { plan, device, config } = context;
   const checks = await proofs(db, context, now);
+  const required = checks.filter(item => plan.activationChecks.includes(item.check));
   if (['plan', 'inspect'].includes(command)) return { ...plan, checks: checks.map(({ check, passed }) => ({ check, passed })),
-    activationAllowed: checks.every(item => item.passed) && Boolean(plan.reviewedFingerprint), storedControlState: device.control_state };
+    activationAllowed: required.every(item => item.passed) && Boolean(plan.reviewedFingerprint), storedControlState: device.control_state };
   if (command === 'begin-pilot') {
     if (!input.apply) return { dryRun: true, effect: 'Gate household Internet starts and require every previously enrolled device to be reviewed again.', deviceId: device.id };
     confirmation(input, device.id);
@@ -247,7 +252,7 @@ export async function runOperator(db, command, input, options = {}) {
       endsAt: new Date(end.epochMilliseconds).toISOString(), instruction: 'Manually install this bounded pilot only on the named device; retain local gateway access and both permanent exceptions.' };
   }
   requireValue(['permanent-plan', 'activate'].includes(command), 422, 'invalid_command', 'Choose inventory, inspect, plan, begin-pilot, record-proof, pilot-plan, permanent-plan, or activate.');
-  requireValue(checks.every(item => item.passed), 409, 'pilot_proofs_missing', `Enrollment is inactive. Missing or failed checks: ${checks.filter(item => !item.passed).map(item => item.check).join(', ')}.`);
+  requireValue(required.every(item => item.passed), 409, 'pilot_proofs_missing', `Enrollment is inactive. Missing or failed checks: ${required.filter(item => !item.passed).map(item => item.check).join(', ')}.`);
   if (command === 'permanent-plan') return { dryRun: true, providerWrites: false, deviceId: device.id, binding: plan.binding, permanentDeny: { ...plan.policies.deny, enabled: device.default_access !== 'allowed' },
     instruction: 'Manually replace only the tested device deny with this permanent policy. Read back the full inventory before activate.' };
   requireValue(plan.reviewedFingerprint, 409, 'permanent_policies_unverified', 'The permanent exceptions, deny policy and full reviewed order must match before activation.');
@@ -256,12 +261,12 @@ export async function runOperator(db, command, input, options = {}) {
   return transaction(db, async client => {
     await exclusiveContext(client, context);
     const latestProofs = await proofs(client, context, now);
-    requireValue(latestProofs.every(item => item.passed), 409, 'pilot_proofs_missing', 'A required proof changed. Review the pilot before activation.');
+    requireValue(latestProofs.filter(item => plan.activationChecks.includes(item.check)).every(item => item.passed), 409, 'pilot_proofs_missing', 'A required proof changed. Review the pilot before activation.');
     await client.query(`UPDATE family_managed_devices SET control_state='ready',management_policy_id=$2,deny_policy_id=$3,apple_push_policy_id=$4,
       reviewed_policy_fingerprint=$5,management_verified_at=$6,desired_access=default_access,observed_access=default_access,access_verified_at=$6,access_error=NULL,version=version+1 WHERE id=$1`,
     [device.id, plan.policyIds.management, plan.policyIds.deny, plan.policyIds.applePush, plan.reviewedFingerprint, now]);
     await client.query(`UPDATE family_network_integrations SET state='ready',pilot_checks=pilot_checks||$2::jsonb,management_verified_at=$3,last_checked_at=$3,last_error=NULL,version=version+1 WHERE household_id=$1`,
-      [device.household_id, JSON.stringify(Object.fromEntries(plan.requiredChecks.filter(check => !['identity_stability', 'management_preflight'].includes(check)).map(check => [check, true]))), now]);
+      [device.household_id, JSON.stringify({ ...Object.fromEntries(latestProofs.filter(item => !['identity_stability', 'management_preflight'].includes(item.check)).map(item => [item.check, item.passed])), ipv6Scope: plan.networkScope }), now]);
     await client.query("INSERT INTO family_internet_events(id,household_id,device_id,type,actor,details,created_at) VALUES($1,$2,$3,'operator_device_activated','operator:local',$4::jsonb,$5)",
       [randomUUID(), device.household_id, device.id, JSON.stringify({ binding: plan.binding, reviewedFingerprint: plan.reviewedFingerprint }), now]);
     return { ready: true, deviceId: device.id, providerWrites: false };

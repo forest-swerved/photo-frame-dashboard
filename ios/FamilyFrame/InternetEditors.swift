@@ -58,7 +58,8 @@ struct InternetGrantEditor: View {
             Form {
                 Section(device.name) {
                     Picker("For", selection: $personID) { Text("Choose a child").tag(""); ForEach((model.snapshot?.people ?? []).filter { device.personIds.contains($0.id) }) { Text($0.name).tag($0.id) } }
-                    Toggle("All day until midnight", isOn: $allDay)
+                    if network.supportsAllDay { Toggle("All day until midnight", isOn: $allDay) }
+                    else { Text("Choose minutes. All-day access is not available yet.").font(.caption).foregroundStyle(Brand.muted) }
                     if !allDay {
                         Stepper("\(minutes) minutes", value: $minutes, in: 1...1439, step: 5)
                         HStack { ForEach([15, 30, 60, 120], id: \.self) { value in Button("\(value) min") { minutes = value }.buttonStyle(.bordered).font(.caption) } }
@@ -71,12 +72,13 @@ struct InternetGrantEditor: View {
             }.navigationTitle("Allow Internet time").navigationBarTitleDisplayMode(.inline)
 
                 .onAppear { if device.personIds.count == 1 { personID = device.personIds[0] }; if originalDraft == nil { originalDraft = draftSignature } }
+                .onChange(of: network.supportsAllDay) { _, supported in if !supported { allDay = false } }
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { DraftCancelButton(dirty: hasUnsavedChanges, saving: saving) { dismiss() } }
                     ToolbarItem(placement: .confirmationAction) { Button { Task {
                         saving = true; let success = await network.grant(personID: personID, device: device, minutes: minutes, allDay: allDay, reason: reason.trimmingCharacters(in: .whitespacesAndNewlines)); saving = false
                         if success { dismiss() } else { review = network.mutationNeedsReview }
-                    } } label: { if saving { ProgressView() } else { Text("Allow").bold() } }.disabled(saving || review || reason.count > 500 || !network.canChange || !network.canManage || !network.integrationReady || personID.isEmpty || !network.deviceAvailable(device, for: personID)) }
+                    } } label: { if saving { ProgressView() } else { Text("Allow").bold() } }.disabled(saving || review || reason.count > 500 || !network.canChange || !network.canManage || !network.integrationReady || allDay && !network.supportsAllDay || personID.isEmpty || !network.deviceAvailable(device, for: personID)) }
                 }
         }.interactiveDismissDisabled(saving || hasUnsavedChanges)
     }
