@@ -59,7 +59,7 @@ private struct DevicesContent: View {
                         FrameCard(accent: device.isReady ? Brand.cyan : Brand.magenta) {
                             NavigationLink { ManagedDeviceDetail(network: network, original: device) } label: {
                                 HStack(alignment: .top, spacing: 14) {
-                                    Image(systemName: device.symbol).font(.title2).frame(width: 32).foregroundStyle(Brand.cyanInk)
+                                    DeviceArtwork(device: device)
                                     VStack(alignment: .leading, spacing: 6) {
                                         Text(device.name).font(.headline).foregroundStyle(Brand.ink)
 

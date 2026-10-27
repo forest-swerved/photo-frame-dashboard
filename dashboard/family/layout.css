@@ -111,6 +111,13 @@ dialog > form { display:flex; flex-direction:column; max-height:calc(100vh - 32p
 .device-grid { margin-bottom:22px; }
 .managed-device .section-heading { margin-bottom:12px; }
 .managed-device .supporting { margin-top:8px; }
+.device-card-heading { display:flex; align-items:center; gap:14px; margin-bottom:18px; }
+.device-card-labels { min-width:0; }
+.device-card-labels .eyebrow { margin-bottom:5px; }
+.device-card-labels h3 { font-size:22px; line-height:1.18; }
+.device-card-labels .soft-label { display:block; margin-top:7px; white-space:normal; line-height:1.4; }
+.device-art { display:block; width:80px; height:80px; flex:0 0 auto; border-radius:16px; overflow:hidden; border:1px solid var(--primary-tint); }
+.device-option .device-art { width:58px; height:58px; border-radius:12px; }
 .device-explanation { margin-top:12px; color:var(--muted); font-size:12px; }
 .device-explanation summary { min-height:44px; padding:12px 0; cursor:pointer; }
 .reward-availability { display:block; font-size:12px; color:var(--muted); margin-top:6px; }
