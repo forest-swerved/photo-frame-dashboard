@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { inspectPolicyInventory, runOperator } from './internet-operator.js';
 import { managedPolicyPlan } from './unifi.js';
 
+const buckets = (beforeSystemDefined = [], afterSystemDefined = []) => ({ beforeSystemDefined, afterSystemDefined });
 const now = new Date('2026-10-18T02:00:00Z');
 function fixture(apple = false) {
   const device = { id: randomUUID(), household_id: randomUUID(), name: 'Synthetic console', kind: apple ? 'tablet' : 'console', person_ids: [randomUUID()], mac_addresses: ['02:12:34:56:78:9a', '02:12:34:56:78:9b'], allow_apple_push: apple, timezone: 'America/Denver' };
@@ -12,8 +13,9 @@ function fixture(apple = false) {
   const management = { ...plan.management, id: randomUUID() }, deny = { ...plan.deny, id: randomUUID() }, applePush = apple ? { ...plan.applePush, id: randomUUID() } : null;
   const foreign = { id: randomUUID(), enabled: true, name: 'Synthetic existing rule', source: { zoneId: config.sourceZoneId }, destination: { zoneId: config.externalZoneId }, action: { type: 'BLOCK' } };
   const policies = [management, ...(applePush ? [applePush] : []), deny, foreign];
+  for (const policy of policies) policy.metadata = { origin: 'USER_DEFINED' };
   const input = { beforePolicyId: foreign.id, managementPolicyId: management.id, denyPolicyId: deny.id, ...(applePush ? { applePolicyId: applePush.id } : {}) };
-  return { device, config, macs: device.mac_addresses, policies, orderedIds: policies.map(policy => policy.id), input, consoleId: `${'a'.repeat(64)}:12345`, applicationVersion: '10.6.106', now };
+  return { device, config, macs: device.mac_addresses, policies, orderedIds: buckets(policies.map(policy => policy.id)), input, consoleId: `${'a'.repeat(64)}:12345`, applicationVersion: '10.6.106', now };
 }
 test('operator plan binds grouped fixed identities, exact exceptions, foreign content and placement', () => {
   const f = fixture(), plan = inspectPolicyInventory(f);
@@ -21,7 +23,7 @@ test('operator plan binds grouped fixed identities, exact exceptions, foreign co
   assert.equal(plan.reviewedFingerprint.length, 64); assert.equal(plan.providerWrites, false);
   assert.deepEqual(plan.policies.management.source.trafficFilter.macAddressFilter.macAddresses, f.device.mac_addresses);
   assert.throws(() => inspectPolicyInventory({ ...f, input: { ...f.input, beforePolicyId: 'none' } }), error => error.code === 'policy_anchor_required');
-  const moved = inspectPolicyInventory({ ...f, orderedIds: [f.orderedIds[2], ...f.orderedIds.slice(0, 2)] });
+  const moved = inspectPolicyInventory({ ...f, orderedIds: buckets([f.orderedIds.beforeSystemDefined[2], ...f.orderedIds.beforeSystemDefined.slice(0, 2)]) });
   assert.equal(moved.observations.placementVerified, false); assert.equal(moved.reviewedFingerprint, null);
   const changed = inspectPolicyInventory({ ...f, policies: f.policies.map((policy, i) => i === 2 ? { ...policy, action: { type: 'ALLOW' } } : policy) });
   assert.notEqual(changed.binding, plan.binding);
@@ -35,6 +37,16 @@ test('free-to-use enrollment retains the same blocking pilot but verifies its di
   assert.equal(ready.policies.deny.enabled, true, 'Timed sessions and pilots keep an enabled deny template.');
   assert.ok(ready.requiredChecks.includes('management_access')); assert.ok(ready.requiredChecks.includes('unrelated_internet_blocked'));
 });
+
+test('the implicit system boundary is an explicit insertion anchor with full built-in inventory review', () => {
+  const f = fixture(), system = { id: randomUUID(), name: 'Block invalid traffic', index: 30000,
+    metadata: { origin: 'SYSTEM_DEFINED' }, source: { zoneId: f.config.sourceZoneId }, destination: { zoneId: f.config.externalZoneId }, action: { type: 'BLOCK' }, connectionStateFilter: ['INVALID'] };
+  const initial = { ...f, policies: [system], orderedIds: buckets(), input: { beforePolicyId: 'system' } };
+  const plan = inspectPolicyInventory(initial);
+  assert.equal(plan.beforePolicyId, 'system'); assert.equal(plan.observations.placementVerified, true);
+  assert.equal(plan.reviewedFingerprint, null); assert.equal(plan.observations.managementVerified, false);
+  assert.notEqual(inspectPolicyInventory({ ...initial, policies: [{ ...system, action: { type: 'ALLOW' } }] }).managementBinding, plan.managementBinding);
+});
 test('Apple readiness requires a permanent exact notification transport and its own proof', () => {
   const f = fixture(true), plan = inspectPolicyInventory(f);
   assert.ok(plan.requiredChecks.includes('apple_push')); assert.equal(plan.observations.appleVerified, true);
@@ -43,7 +55,7 @@ test('Apple readiness requires a permanent exact notification transport and its 
 });
 test('preflight bindings survive adding only the planned bounded pilot and changing it to permanent deny', () => {
   const f = fixture(), denyId = f.input.denyPolicyId;
-  const withoutDeny = inspectPolicyInventory({ ...f, input: { ...f.input, denyPolicyId: null }, policies: f.policies.filter(policy => policy.id !== denyId), orderedIds: f.orderedIds.filter(id => id !== denyId) });
+  const withoutDeny = inspectPolicyInventory({ ...f, input: { ...f.input, denyPolicyId: null }, policies: f.policies.filter(policy => policy.id !== denyId), orderedIds: buckets(f.orderedIds.beforeSystemDefined.filter(id => id !== denyId)) });
   const pilot = inspectPolicyInventory({ ...f, policies: f.policies.map(policy => policy.id === denyId ? { ...policy, schedule: { mode: 'ONE_TIME_ONLY', date: '2026-10-17', timeFilter: { startTime: '20:00', stopTime: '20:05' } } } : policy) });
   const permanent = inspectPolicyInventory(f);
   assert.equal(pilot.observations.pilotDenyVerified, true); assert.equal(pilot.observations.permanentDenyVerified, false); assert.equal(pilot.reviewedFingerprint, null);
@@ -56,7 +68,7 @@ test('preflight bindings survive adding only the planned bounded pilot and chang
 test('a session-looking description cannot hide an untracked or altered allowance from operator review', () => {
   const f = fixture(), baseline = inspectPolicyInventory(f);
   const session = { ...f.policies[0], id: randomUUID(), description: `family-frame:${f.device.id}:session:${randomUUID()}` };
-  const changed = { ...f, policies: [...f.policies, session], orderedIds: [...f.orderedIds.slice(0, 1), session.id, ...f.orderedIds.slice(1)] };
+  const changed = { ...f, policies: [...f.policies, session], orderedIds: buckets([...f.orderedIds.beforeSystemDefined.slice(0, 1), session.id, ...f.orderedIds.beforeSystemDefined.slice(1)]) };
   assert.notEqual(inspectPolicyInventory(changed).binding, baseline.binding);
   assert.throws(() => inspectPolicyInventory({ ...changed, knownSessions: [{ policy_id: session.id, state: 'checking', observed_state: 'unknown' }] }), error => error.code === 'session_policy_unverified');
 });

@@ -5,15 +5,14 @@ import { pathToFileURL } from 'node:url';
 import { Temporal } from '@js-temporal/polyfill';
 import { createPool, one, transaction } from './database.js';
 import { ApiError, requireValue, textField, uuidField } from './errors.js';
-import { createUniFiClient, managedPolicyPlan, normalizedMac, policyContentFingerprint, reviewedPolicyFingerprint, unifiConfiguration } from './unifi.js';
+import { checkedPolicyOrdering, createUniFiClient, managedPolicyPlan, normalizedMac, policyContentFingerprint, policyInventoryFingerprint, reviewedPolicyFingerprint, unifiConfiguration } from './unifi.js';
 import { validateTimedWindow } from './internet.js';
 
 const PROOF_AGE = 24 * 3600_000;
-const volatile = new Set(['index', 'position', 'order', 'ordering', 'createdAt', 'updatedAt', 'version', 'statistics', 'counters']);
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
 const hash = value => createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
-const matches = (actual, expected) => Boolean(actual && expected && policyContentFingerprint(actual) === policyContentFingerprint(expected));
+const matches = (actual, expected) => Boolean(actual?.metadata?.origin === 'USER_DEFINED' && expected && policyContentFingerprint(actual) === policyContentFingerprint(expected));
 const live = "state NOT IN ('ended','failed')";
 const confirmation = (input, deviceId) => requireValue(input.apply === true && input.confirmDevice === deviceId,
   422, 'operator_confirmation_required', 'This command writes owner records. Pass --apply and --confirm-device with the exact device UUID.');
@@ -51,11 +50,9 @@ async function loadDevice(db, input) {
 export function inspectPolicyInventory({ device, config, macs, policies, orderedIds, knownSessions = [], input, consoleId, applicationVersion, env = process.env, now = new Date() }) {
   requireValue(typeof applicationVersion === 'string' && /^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(applicationVersion),
     503, 'application_version_unverified', 'Read the Network application version before reviewing its policy behavior.');
-  requireValue(Array.isArray(policies) && policies.length <= 1000 && Array.isArray(orderedIds) && orderedIds.length <= 1000
-    && new Set(policies.map(policy => policy.id)).size === policies.length && new Set(orderedIds).size === orderedIds.length,
-  503, 'inventory_invalid', 'The policy inventory or ordering is incomplete.');
+  const ordering = checkedPolicyOrdering(policies, orderedIds, { sourceZoneId: config.sourceZoneId, destinationZoneId: config.externalZoneId });
+  const beforeIds = ordering.beforeSystemDefined;
   const byId = new Map(policies.map(policy => [uuidField(policy.id), policy]));
-  orderedIds.forEach(id => requireValue(byId.has(uuidField(id)), 503, 'inventory_invalid', 'The ordered policy inventory is incomplete.'));
   const plan = managedPolicyPlan({ deviceId: device.id, macAddresses: macs, sourceZoneId: config.sourceZoneId,
     destinationZoneId: config.externalZoneId, allowApplePush: device.allow_apple_push === true }, env);
   const ids = { management: input.managementPolicyId || device.management_policy_id || null,
@@ -77,18 +74,19 @@ export function inspectPolicyInventory({ device, config, macs, policies, ordered
     ignoredSessions.push(policy.id);
   }
   requireValue(!selectedIds.some(id => ignoredSessions.includes(id)), 409, 'policy_identity_changed', 'A session policy cannot become a permanent device policy.');
-  const foreign = orderedIds.filter(id => !selectedIds.includes(id) && !ignoredSessions.includes(id));
+  const foreign = beforeIds.filter(id => !selectedIds.includes(id) && !ignoredSessions.includes(id));
   const before = input.beforePolicyId;
-  requireValue(before === 'none' && foreign.length === 0 || foreign.includes(before), 422, 'policy_anchor_required', 'Review an explicit --before policy UUID, or --before none only when the foreign order is empty.');
-  const at = before === 'none' ? 0 : foreign.indexOf(before);
+  requireValue(before === 'system' || foreign.includes(before), 422, 'policy_anchor_required', 'Review a custom --before policy UUID, or --before system to insert immediately before the built-in rules.');
+  const at = before === 'system' ? foreign.length : foreign.indexOf(before);
   const installed = [ids.management, ids.applePush, ids.deny].filter(id => id && byId.has(id));
   const expectedOrder = [...foreign.slice(0, at), ...installed, ...foreign.slice(at)];
-  const actualOrder = orderedIds.filter(id => !ignoredSessions.includes(id));
-  const placementVerified = JSON.stringify(expectedOrder) === JSON.stringify(actualOrder);
+  const actualOrder = beforeIds.filter(id => !ignoredSessions.includes(id));
+  const placementVerified = JSON.stringify(expectedOrder) === JSON.stringify(actualOrder)
+    && !ordering.afterSystemDefined.some(id => selectedIds.includes(id));
   const management = byId.get(ids.management), deny = byId.get(ids.deny), apple = byId.get(ids.applePush);
-  const managementVerified = matches(management, plan.management) && orderedIds.includes(ids.management);
-  const appleVerified = !device.allow_apple_push || matches(apple, plan.applePush) && orderedIds.includes(ids.applePush);
-  const permanentDenyVerified = matches(deny, { ...plan.deny, enabled: device.default_access !== 'allowed' }) && orderedIds.includes(ids.deny);
+  const managementVerified = matches(management, plan.management) && beforeIds.includes(ids.management);
+  const appleVerified = !device.allow_apple_push || matches(apple, plan.applePush) && beforeIds.includes(ids.applePush);
+  const permanentDenyVerified = matches(deny, { ...plan.deny, enabled: device.default_access !== 'allowed' }) && beforeIds.includes(ids.deny);
   let pilotDenyVerified = false;
   if (deny?.schedule?.mode === 'ONE_TIME_ONLY' && deny.schedule.timeFilter && matches(deny, { ...plan.deny, schedule: deny.schedule })) {
     try {
@@ -104,17 +102,18 @@ export function inspectPolicyInventory({ device, config, macs, policies, ordered
   const identity = { deviceId: device.id, householdId: device.household_id, name: device.name, kind: device.kind,
     personIds: [...device.person_ids].sort(), defaultAccess: device.default_access || 'blocked', macAddresses: macs, allowApplePush: device.allow_apple_push === true,
     timezone: device.timezone, consoleId, applicationVersion, ...config, managementHost: plan.managementHost, beforePolicyId: before };
-  const foreignDigest = hash({ order: foreign, policies: foreign.map(id => Object.fromEntries(Object.entries(byId.get(id)).filter(([key]) => !volatile.has(key)))) });
-  const identityBinding = hash({ version: 1, identity });
+  const foreignDigest = policyInventoryFingerprint(policies, ordering, { ignoredPolicyIds: [...selectedIds, ...ignoredSessions],
+    sourceZoneId: config.sourceZoneId, destinationZoneId: config.externalZoneId });
+  const identityBinding = hash({ version: 2, identity });
   const managementBinding = hash({ identityBinding, foreignDigest, managementId: ids.management, applePushId: ids.applePush,
     management: policyContentFingerprint(plan.management), applePush: plan.applePush ? policyContentFingerprint(plan.applePush) : null });
   const binding = hash({ managementBinding, denyId: ids.deny, deny: policyContentFingerprint(plan.deny) });
   const reviewedFingerprint = ids.management && ids.deny && permanentDenyVerified && managementVerified && appleVerified && placementVerified
-    ? reviewedPolicyFingerprint(policies, orderedIds, { managementId: ids.management, denyId: ids.deny, ignoredSessionIds: ignoredSessions }) : null;
-  return { version: 1, deviceId: device.id, deviceName: device.name, ...config, beforePolicyId: before, macAddresses: macs,
+    ? reviewedPolicyFingerprint(policies, ordering, { managementId: ids.management, denyId: ids.deny, ignoredSessionIds: ignoredSessions }) : null;
+  return { version: 2, deviceId: device.id, deviceName: device.name, ...config, beforePolicyId: before, macAddresses: macs,
     managementHost: plan.managementHost, applicationVersion, timezone: device.timezone, policyIds: ids, requiredChecks: ['identity_stability', 'management_preflight', ...plan.requiredChecks],
     policies: { management: plan.management, ...(plan.applePush ? { applePush: plan.applePush } : {}), deny: plan.deny },
-    orderedPolicyIds: orderedIds, foreignPolicyDigest: foreignDigest, identityBinding, managementBinding, binding, reviewedFingerprint,
+    orderedPolicyIds: ordering, foreignPolicyDigest: foreignDigest, identityBinding, managementBinding, binding, reviewedFingerprint,
     observations: { managementVerified, appleVerified, permanentDenyVerified, pilotDenyVerified, placementVerified,
       denyAbsentOrDisabled: !deny || deny.enabled === false }, providerWrites: false };
 }

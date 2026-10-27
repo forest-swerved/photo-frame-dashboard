@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { defaultRewardPolicy, deviceFields, sessionDeadline, validateRewardPolicy } from './internet.js';
 import { sameManagedPolicy, scheduledSessionPolicy, sessionOrdering } from './internet-worker.js';
 import { managedPolicyPlan } from './unifi.js';
+const buckets = (beforeSystemDefined = [], afterSystemDefined = []) => ({ beforeSystemDefined, afterSystemDefined });
 const ids = Array.from({ length: 6 }, (_, n) => `00000000-0000-4000-8000-${String(n + 1).padStart(12, '0')}`);
 test('parent reward policy validates limits and preserves defaults', () => {
   assert.equal(defaultRewardPolicy(ids[0]).rewardMinutes, 60);
@@ -21,8 +22,8 @@ test('device identities normalize and reject empty or invalid profile assignment
   assert.throws(() => deviceFields({ name: 'Device', personIds: [], macAddresses: ['02:aa:bb:cc:dd:ee'] }));
 });
 test('session insertion preserves foreign firewall rules and requires permanent management ordering', () => {
-  assert.deepEqual(sessionOrdering([ids[4], ids[0], ids[3], ids[1], ids[5]], ids[0], ids[1], ids[2]), [ids[4], ids[0], ids[3], ids[2], ids[1], ids[5]]);
-  assert.throws(() => sessionOrdering([ids[1], ids[0]], ids[0], ids[1], ids[2]));
+  assert.deepEqual(sessionOrdering(buckets([ids[4], ids[0], ids[3], ids[1], ids[5]]), ids[0], ids[1], ids[2]), buckets([ids[4], ids[0], ids[3], ids[2], ids[1], ids[5]]));
+  assert.throws(() => sessionOrdering(buckets([ids[1], ids[0]]), ids[0], ids[1], ids[2]));
 });
 test('scheduled allowance retains exact identities, deadline and both IP versions', () => {
   const device = { id: ids[0], mac_addresses: ['02:11:22:33:44:55'] };
@@ -31,7 +32,7 @@ test('scheduled allowance retains exact identities, deadline and both IP version
   assert.deepEqual(p.schedule, { mode: 'ONE_TIME_ONLY', date: '2026-10-17', timeFilter: { startTime: '19:00', stopTime: '20:00' } });
   assert.equal(p.ipProtocolScope.ipVersion, 'IPV4_AND_IPV6'); assert.equal(p.schedule.mode, 'ONE_TIME_ONLY');
   const baseline = managedPolicyPlan({ deviceId: ids[0], macAddresses: device.mac_addresses, sourceZoneId: ids[1], destinationZoneId: ids[2] });
-  assert.ok(sameManagedPolicy({ id: ids[4], ...baseline.management }, baseline.management));
+  assert.ok(sameManagedPolicy({ id: ids[4], ...baseline.management, metadata: { origin: 'USER_DEFINED' } }, baseline.management));
   assert.equal(sameManagedPolicy({ ...baseline.management, schedule: p.schedule }, baseline.management), false);
   assert.throws(() => scheduledSessionPolicy({ id: ids[3], ends_at: '2026-10-19T06:00:00Z' }, device, { ...integration, pilot_checks: {} }, 'America/Denver', new Date('2026-10-19T05:30:00Z')), e => e.code === 'schedule_unverified');
 });

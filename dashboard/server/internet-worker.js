@@ -3,20 +3,22 @@ import { isDeepStrictEqual } from 'node:util';
 import { Temporal } from '@js-temporal/polyfill';
 import { one, transaction } from './database.js';
 import { requireValue } from './errors.js';
-import { createUniFiClient, managedPolicyPlan, managementHost, policyContentFingerprint, requiredPilotChecks, reviewedPolicyFingerprint } from './unifi.js';
+import { createUniFiClient, managedPolicyPlan, managementHost, policyContentFingerprint, policyFieldValue, policyOrdering, requiredPilotChecks, reviewedPolicyFingerprint } from './unifi.js';
 import { internetEvent, internetNotification, queueInternetCommand, sessionDeadline, validateTimedWindow } from './internet.js';
 
 const terminal = row => ['ended', 'failed'].includes(row.state);
 const writableFields = ['enabled', 'source', 'destination', 'action', 'ipProtocolScope', 'schedule', 'connectionStateFilter', 'ipsecFilter', 'description'];
 export function sameManagedPolicy(actual, expected) {
-  return writableFields.every(key => isDeepStrictEqual(actual?.[key] ?? null, expected?.[key] ?? null));
+  return actual?.metadata?.origin === 'USER_DEFINED' && writableFields.every(key =>
+    isDeepStrictEqual(policyFieldValue(actual, key), policyFieldValue(expected, key)));
 }
 export function sessionOrdering(existing, managementId, denyId, sessionId) {
-  requireValue(Array.isArray(existing) && new Set(existing).size === existing.length
-    && existing.includes(managementId) && existing.includes(denyId) && existing.indexOf(managementId) < existing.indexOf(denyId),
+  const ordering = policyOrdering(existing), before = ordering.beforeSystemDefined;
+  requireValue(before.includes(managementId) && before.includes(denyId) && before.indexOf(managementId) < before.indexOf(denyId),
   503, 'management_policy_changed', 'The permanent Family Frame access policy must precede Internet blocking.');
-  const order = existing.filter(id => id !== sessionId), at = order.indexOf(denyId);
-  return [...order.slice(0, at), sessionId, ...order.slice(at)];
+  const order = before.filter(id => id !== sessionId), at = order.indexOf(denyId);
+  return { beforeSystemDefined: [...order.slice(0, at), sessionId, ...order.slice(at)],
+    afterSystemDefined: ordering.afterSystemDefined.filter(id => id !== sessionId) };
 }
 export function scheduledSessionPolicy(session, device, integration, timezone, now, { startAt = now, env = process.env } = {}) {
   const plan = managedPolicyPlan({ deviceId: device.id, macAddresses: device.mac_addresses, sourceZoneId: integration.source_zone_id, destinationZoneId: integration.external_zone_id }, env);
@@ -34,14 +36,14 @@ export function scheduledSessionPolicy(session, device, integration, timezone, n
     requireValue(integration.pilot_checks?.midnight === true && (nextMidnight.epochMilliseconds - dayStart.epochMilliseconds === 86400_000 || integration.pilot_checks?.dst === true),
       503, 'schedule_unverified', 'All-day enforcement has not passed its midnight or daylight-saving gateway test.');
     return { ...plan.deny, name: `Family Frame session ${session.id}`, description: `family-frame:${device.id}:session:${session.id}`,
-      action: { type: 'ALLOW', allowReturnTraffic: false }, schedule: { mode: 'ONE_TIME_ONLY', date: date.toString(), timeFilter: null } };
+      action: { type: 'ALLOW', allowReturnTraffic: false }, connectionStateFilter: ['NEW', 'ESTABLISHED', 'RELATED'], schedule: { mode: 'ONE_TIME_ONLY', date: date.toString(), timeFilter: null } };
   }
   requireValue(elapsed >= 30_000 && elapsed < 86400_000, 409, 'window_elapsed', 'The scheduled window has elapsed or exceeds one day.');
   validateTimedWindow(startAt, session.ends_at, timezone);
   const crossesMidnight = end.toPlainDate().toString() !== start.toPlainDate().toString();
   requireValue(!crossesMidnight || integration.pilot_checks?.midnight === true, 503, 'schedule_unverified', 'Overnight enforcement has not passed its gateway test.');
   return { ...plan.deny, name: `Family Frame session ${session.id}`, description: `family-frame:${device.id}:session:${session.id}`,
-    action: { type: 'ALLOW', allowReturnTraffic: false }, schedule: { mode: 'ONE_TIME_ONLY', date: start.toPlainDate().toString(),
+    action: { type: 'ALLOW', allowReturnTraffic: false }, connectionStateFilter: ['NEW', 'ESTABLISHED', 'RELATED'], schedule: { mode: 'ONE_TIME_ONLY', date: start.toPlainDate().toString(),
       timeFilter: { startTime: start.toPlainTime().toString({ smallestUnit: 'minute' }), stopTime: end.toPlainTime().toString({ smallestUnit: 'minute' }) } } };
 }
 

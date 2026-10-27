@@ -7,7 +7,47 @@ const CLOUD = 'https://api.ui.com';
 const MAX_BYTES = 1024 * 1024;
 export const requiredPilotChecks = ['management_access', 'unrelated_internet_blocked', 'shared_cdn_isolation', 'expiry', 'existing_connections', 'ipv6', 'controller_outage', 'gateway_restart', 'midnight', 'dst'];
 const ownFields = ['action', 'connectionStateFilter', 'description', 'destination', 'enabled', 'ipProtocolScope', 'ipsecFilter', 'loggingEnabled', 'name', 'schedule', 'source'];
-const isManaged = policy => /^family-frame:[0-9a-f-]{36}:(?:management|apple-push|deny|session:[0-9a-f-]{36})$/.test(policy?.description || '');
+const isManaged = policy => /^family-frame:[0-9a-f-]{36}:(?:management|apple-push|deny|session:[0-9a-f-]{36})$/.test(policy?.description || '')
+  && (!policy.metadata || policy.metadata.origin === 'USER_DEFINED');
+
+// Network Integration API v10.6.106 orders user rules around an implicit,
+// immutable system-rule boundary. It does not return one flat list.
+export function policyOrdering(value) {
+  requireValue(value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).length === 2 && Object.hasOwn(value, 'beforeSystemDefined') && Object.hasOwn(value, 'afterSystemDefined')
+    && Array.isArray(value.beforeSystemDefined) && Array.isArray(value.afterSystemDefined),
+  503, 'policy_review_required', 'UniFi must return both firewall ordering groups.');
+  const ids = [...value.beforeSystemDefined, ...value.afterSystemDefined];
+  requireValue(ids.length <= 1000 && new Set(ids).size === ids.length,
+    503, 'policy_review_required', 'UniFi returned an invalid firewall policy order.');
+  ids.forEach(id => uuidField(id, 'Policy order'));
+  return { beforeSystemDefined: [...value.beforeSystemDefined], afterSystemDefined: [...value.afterSystemDefined] };
+}
+
+export function checkedPolicyOrdering(policies, value, { sourceZoneId, destinationZoneId } = {}) {
+  const order = policyOrdering(value);
+  requireValue(Array.isArray(policies) && policies.length <= 1000, 503, 'policy_review_required', 'The firewall policy inventory is unavailable.');
+  const byId = new Map();
+  for (const policy of policies) {
+    uuidField(policy?.id, 'Policy identity');
+    requireValue(!byId.has(policy.id), 503, 'policy_review_required', 'UniFi returned duplicate policy identities.');
+    byId.set(policy.id, policy);
+  }
+  const ordered = new Set([...order.beforeSystemDefined, ...order.afterSystemDefined]);
+  for (const id of ordered) {
+    const policy = byId.get(id);
+    requireValue(policy?.metadata?.origin === 'USER_DEFINED'
+      && (!sourceZoneId || policy.source?.zoneId === sourceZoneId)
+      && (!destinationZoneId || policy.destination?.zoneId === destinationZoneId),
+    503, 'policy_review_required', 'The custom policy order contains a missing, system, or wrong-zone policy.');
+  }
+  if (sourceZoneId && destinationZoneId) for (const policy of policies) {
+    if (policy.metadata?.origin === 'USER_DEFINED' && policy.source?.zoneId === sourceZoneId && policy.destination?.zoneId === destinationZoneId) {
+      requireValue(ordered.has(policy.id), 503, 'policy_review_required', 'A custom firewall policy is missing from its ordering group.');
+    }
+  }
+  return order;
+}
 
 export function normalizedMac(value) {
   requireValue(typeof value === 'string' && /^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(value.trim()), 422, 'invalid_mac', 'Use a device MAC address in AA:BB:CC:DD:EE:FF format.');
@@ -104,7 +144,7 @@ export function createUniFiClient({ env = process.env, fetchImpl = fetch, budget
       return request(policies(siteId), 'POST', policy);
     },
     replacePolicy: (siteId, policyId, previous, changes) => {
-      requireValue(isManaged(previous) && previous.id === policyId && (!changes.description || changes.description === previous.description),
+      requireValue(isManaged(previous) && previous.metadata?.origin === 'USER_DEFINED' && previous.id === policyId && (!changes.description || changes.description === previous.description),
         409, 'unmanaged_policy', 'This firewall policy is not managed by Family Frame.');
       return request(`${policies(siteId)}/${uuidField(policyId, 'UniFi policy')}`, 'PUT',
         Object.fromEntries(ownFields.filter(key => previous[key] !== undefined || Object.hasOwn(changes, key)).map(key => [key, Object.hasOwn(changes, key) ? changes[key] : previous[key]])));
@@ -112,15 +152,15 @@ export function createUniFiClient({ env = process.env, fetchImpl = fetch, budget
     removePolicy: async (siteId, policyId) => {
       const path = `${policies(siteId)}/${uuidField(policyId, 'UniFi policy')}`;
       const previous = await request(path);
-      requireValue(isManaged(previous), 409, 'unmanaged_policy', 'This firewall policy is not managed by Family Frame.');
+      requireValue(isManaged(previous) && previous.metadata?.origin === 'USER_DEFINED', 409, 'unmanaged_policy', 'This firewall policy is not managed by Family Frame.');
       return request(path, 'DELETE');
     },
-    ordering: (siteId, sourceZoneId, destinationZoneId) => request(`${policies(siteId)}/ordering?sourceFirewallZoneId=${uuidField(sourceZoneId)}&destinationFirewallZoneId=${uuidField(destinationZoneId)}`),
+    ordering: async (siteId, sourceZoneId, destinationZoneId) => {
+      const result = await request(`${policies(siteId)}/ordering?sourceFirewallZoneId=${uuidField(sourceZoneId)}&destinationFirewallZoneId=${uuidField(destinationZoneId)}`);
+      return { orderedFirewallPolicyIds: policyOrdering(result?.orderedFirewallPolicyIds) };
+    },
     reorder: (siteId, sourceZoneId, destinationZoneId, orderedFirewallPolicyIds) => {
-      requireValue(Array.isArray(orderedFirewallPolicyIds) && orderedFirewallPolicyIds.length <= 1000 && new Set(orderedFirewallPolicyIds).size === orderedFirewallPolicyIds.length,
-        422, 'invalid_policy_order', 'Use a unique, complete firewall policy order.');
-      orderedFirewallPolicyIds.forEach(id => uuidField(id));
-      return request(`${policies(siteId)}/ordering?sourceFirewallZoneId=${uuidField(sourceZoneId)}&destinationFirewallZoneId=${uuidField(destinationZoneId)}`, 'PUT', { orderedFirewallPolicyIds });
+      return request(`${policies(siteId)}/ordering?sourceFirewallZoneId=${uuidField(sourceZoneId)}&destinationFirewallZoneId=${uuidField(destinationZoneId)}`, 'PUT', { orderedFirewallPolicyIds: policyOrdering(orderedFirewallPolicyIds) });
     },
   });
 }
@@ -137,7 +177,7 @@ export function managedPolicyPlan({ deviceId, macAddresses, sourceZoneId, destin
   // Management precedes BOTH the baseline deny and any timed allowance. It has
   // no session expiry and is never removed by pause/end. Pilot tests must prove
   // exact-domain isolation on the installed gateway (a shared CDN IP is not proof).
-  const management = { ...structuredClone(base), name: `Family Frame management ${deviceId}`, description: `family-frame:${deviceId}:management`, action: { type: 'ALLOW', allowReturnTraffic: false },
+  const management = { ...structuredClone(base), connectionStateFilter: ['NEW', 'ESTABLISHED', 'RELATED'], name: `Family Frame management ${deviceId}`, description: `family-frame:${deviceId}:management`, action: { type: 'ALLOW', allowReturnTraffic: false },
     destination: { zoneId: destinationZoneId, trafficFilter: { type: 'DOMAIN', domainFilter: { type: 'DOMAINS', domains: [host] },
       portFilter: { type: 'PORTS', matchOpposite: false, items: [{ type: 'PORT_NUMBER', value: 443 }] } } } };
   const deny = { ...structuredClone(base), name: `Family Frame Internet deny ${deviceId}`, description: `family-frame:${deviceId}:deny`, action: { type: 'BLOCK' } };
@@ -145,9 +185,10 @@ export function managedPolicyPlan({ deviceId, macAddresses, sourceZoneId, destin
   // its whole /8. APNs multiplexes notifications for all installed apps; this
   // exception permits that transport, not general Apple web access.
   // https://support.apple.com/en-us/102266 (verified October 2026)
-  const applePush = allowApplePush ? { ...structuredClone(base), name: `Family Frame Apple push ${deviceId}`, description: `family-frame:${deviceId}:apple-push`,
+  const applePush = allowApplePush ? { ...structuredClone(base), connectionStateFilter: ['NEW', 'ESTABLISHED', 'RELATED'], name: `Family Frame Apple push ${deviceId}`, description: `family-frame:${deviceId}:apple-push`,
     action: { type: 'ALLOW', allowReturnTraffic: false },
-    ipProtocolScope: { ipVersion: 'IPV4_AND_IPV6', protocolFilter: { type: 'NAMED_PROTOCOL', matchOpposite: false, protocol: { name: 'tcp' } } },
+    // Numeric TCP avoids the API's inconsistent named-protocol discriminator.
+    ipProtocolScope: { ipVersion: 'IPV4_AND_IPV6', protocolFilter: { type: 'PROTOCOL_NUMBER', matchOpposite: false, protocolNumber: 6 } },
     destination: { zoneId: destinationZoneId, trafficFilter: { type: 'IP_ADDRESS',
       ipAddressFilter: { type: 'IP_ADDRESSES', matchOpposite: false, items: ['17.249.0.0/16', '17.252.0.0/16', '17.57.144.0/22', '17.188.128.0/18', '17.188.20.0/23',
         '2620:149:a44::/48', '2403:300:a42::/48', '2403:300:a51::/48', '2a01:b740:a42::/48'].map(value => ({ type: 'SUBNET', value })) },
@@ -156,32 +197,66 @@ export function managedPolicyPlan({ deviceId, macAddresses, sourceZoneId, destin
 }
 
 export function managedOrdering(existingIds, { managementIds, sessionIds = [], denyIds, insertBeforeId }) {
-  for (const ids of [existingIds, managementIds, sessionIds, denyIds]) {
+  const existing = policyOrdering(existingIds);
+  for (const ids of [managementIds, sessionIds, denyIds]) {
     requireValue(Array.isArray(ids), 422, 'invalid_policy_order', 'Firewall policy order is invalid.');
     ids.forEach(id => uuidField(id));
   }
   const ours = [...managementIds, ...sessionIds, ...denyIds];
   requireValue(managementIds.length > 0 && denyIds.length > 0 && new Set(ours).size === ours.length,
     422, 'management_required', 'Permanent Family Frame access must be present before Internet blocking.');
-  const foreign = existingIds.filter(id => !ours.includes(id));
+  const foreign = existing.beforeSystemDefined.filter(id => !ours.includes(id));
+  requireValue(!existing.afterSystemDefined.some(id => [...managementIds, ...denyIds].includes(id)),
+    409, 'management_policy_changed', 'Permanent device rules must be reviewed before the system-rule boundary.');
   // Choosing an insertion point is part of the reviewed enrollment plan.
   // Never move Family Frame ALLOW rules above existing security rules merely
   // because their relative order would otherwise remain unchanged.
-  requireValue(insertBeforeId && foreign.includes(insertBeforeId) || foreign.length === 0,
+  requireValue(insertBeforeId === 'system' || foreign.includes(insertBeforeId),
     409, 'policy_anchor_required', 'Review an explicit firewall insertion point before enrolling a device.');
-  const at = insertBeforeId ? foreign.indexOf(insertBeforeId) : 0;
-  return [...foreign.slice(0, at), ...ours, ...foreign.slice(at)];
+  const at = insertBeforeId === 'system' ? foreign.length : foreign.indexOf(insertBeforeId);
+  return { beforeSystemDefined: [...foreign.slice(0, at), ...ours, ...foreign.slice(at)],
+    afterSystemDefined: existing.afterSystemDefined.filter(id => !sessionIds.includes(id)) };
 }
 
 const volatilePolicyFields = new Set(['id', 'index', 'position', 'order', 'ordering', 'createdAt', 'updatedAt', 'version', 'statistics', 'counters']);
 const canonicalPolicyValue = value => Array.isArray(value) ? value.map(canonicalPolicyValue) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalPolicyValue(value[key])])) : value;
-const stablePolicy = policy => Object.fromEntries(Object.entries(policy).filter(([key]) => !volatilePolicyFields.has(key)));
+const stablePolicy = policy => Object.fromEntries(Object.entries(policy).filter(([key]) => !volatilePolicyFields.has(key)
+  || key === 'index' && policy.metadata?.origin !== 'USER_DEFINED'));
+// OpenAPI defines unique connection states as a set; the controller sorts them.
+export const connectionStateSet = value => Array.isArray(value) ? [...value].sort() : value ?? null;
+// Only documented unordered match sets are sorted. Preserve every item and
+// duplicate so a changed range, port or address still invalidates the policy.
+export function policyFieldValue(policy, key) {
+  if (key === 'connectionStateFilter') return connectionStateSet(policy?.[key]);
+  const value = policy?.[key] ?? null;
+  if (!['source', 'destination'].includes(key) || !value?.trafficFilter) return value;
+  const normalized = structuredClone(value), filter = normalized.trafficFilter;
+  for (const [name, field] of [['macAddressFilter', 'macAddresses'], ['domainFilter', 'domains'], ['ipAddressFilter', 'items'], ['portFilter', 'items']]) {
+    if (Array.isArray(filter[name]?.[field])) filter[name][field].sort((a, b) =>
+      JSON.stringify(canonicalPolicyValue(a)).localeCompare(JSON.stringify(canonicalPolicyValue(b))));
+  }
+  return normalized;
+}
+
+export function policyInventoryFingerprint(policies, value, { ignoredPolicyIds = [], sourceZoneId, destinationZoneId } = {}) {
+  const order = checkedPolicyOrdering(policies, value, { sourceZoneId, destinationZoneId });
+  requireValue(Array.isArray(ignoredPolicyIds) && ignoredPolicyIds.length <= 1000 && new Set(ignoredPolicyIds).size === ignoredPolicyIds.length,
+    503, 'policy_review_required', 'Policy review exceptions must be explicit unique identities.');
+  ignoredPolicyIds.forEach(id => uuidField(id));
+  const ignored = new Set(ignoredPolicyIds);
+  requireValue(policies.every(policy => !ignored.has(policy.id) || policy.metadata?.origin === 'USER_DEFINED'),
+    503, 'policy_review_required', 'Implicit firewall rules cannot be omitted from review.');
+  return createHash('sha256').update(JSON.stringify(canonicalPolicyValue({ version: 2,
+    order: { beforeSystemDefined: order.beforeSystemDefined.filter(id => !ignored.has(id)), afterSystemDefined: order.afterSystemDefined.filter(id => !ignored.has(id)) },
+    policies: policies.filter(policy => !ignored.has(policy.id)).sort((a, b) => a.id.localeCompare(b.id)).map(policy => ({ id: policy.id, content: stablePolicy(policy) })) }))).digest('hex');
+}
 export function policyContentFingerprint(policy) {
   requireValue(policy && typeof policy === 'object' && !Array.isArray(policy), 503, 'policy_review_required', 'The reviewed firewall policy is unavailable.');
   // Mutable fields normalize absent nullable values. Read-only API metadata is
   // not present in a planned POST, but every traffic-affecting field is owned.
-  return createHash('sha256').update(JSON.stringify(canonicalPolicyValue(Object.fromEntries(ownFields.map(key => [key, policy[key] ?? null]))))).digest('hex');
+  return createHash('sha256').update(JSON.stringify(canonicalPolicyValue(Object.fromEntries(ownFields.map(key =>
+    [key, policyFieldValue(policy, key)]))))).digest('hex');
 }
 
 // Callers may exempt only identified session rules whose content was verified
@@ -190,25 +265,13 @@ export function policyContentFingerprint(policy) {
 // in the same digest detects order drift as well as newly introduced broad ALLOWs.
 export function reviewedPolicyFingerprint(policies, orderedIds, { managementId, denyId, ignoredSessionIds = [] } = {}) {
   uuidField(managementId); uuidField(denyId);
-  requireValue(Array.isArray(policies) && policies.length <= 1000 && Array.isArray(orderedIds)
-    && orderedIds.length <= 1000 && new Set(orderedIds).size === orderedIds.length
-    && Array.isArray(ignoredSessionIds) && !ignoredSessionIds.includes(managementId) && !ignoredSessionIds.includes(denyId),
+  requireValue(Array.isArray(ignoredSessionIds) && !ignoredSessionIds.includes(managementId) && !ignoredSessionIds.includes(denyId),
   503, 'policy_review_required', 'The reviewed firewall policy order is unavailable.');
-  const byId = new Map();
-  for (const policy of policies) {
-    uuidField(policy?.id, 'Policy identity');
-    requireValue(!byId.has(policy.id), 503, 'policy_review_required', 'UniFi returned duplicate policy identities.');
-    byId.set(policy.id, policy);
-  }
-  for (const id of orderedIds) {
-    uuidField(id, 'Policy order');
-    requireValue(byId.has(id), 503, 'policy_review_required', 'The firewall policy inventory is incomplete.');
-  }
-  requireValue(managementId !== denyId && orderedIds.includes(managementId) && orderedIds.includes(denyId)
-    && orderedIds.indexOf(managementId) < orderedIds.indexOf(denyId),
+  const management = policies?.find(policy => policy.id === managementId);
+  const zones = { sourceZoneId: management?.source?.zoneId, destinationZoneId: management?.destination?.zoneId };
+  const order = checkedPolicyOrdering(policies, orderedIds, zones), before = order.beforeSystemDefined;
+  requireValue(managementId !== denyId && before.includes(managementId) && before.includes(denyId)
+    && before.indexOf(managementId) < before.indexOf(denyId),
   503, 'management_policy_changed', 'Permanent Family Frame access must precede Internet blocking.');
-  const ignored = new Set(ignoredSessionIds);
-  const order = orderedIds.filter(id => !ignored.has(id));
-  return createHash('sha256').update(JSON.stringify(canonicalPolicyValue({ order,
-    policies: order.map(id => ({ id, content: stablePolicy(byId.get(id)) })) }))).digest('hex');
+  return policyInventoryFingerprint(policies, order, { ...zones, ignoredPolicyIds: ignoredSessionIds });
 }
