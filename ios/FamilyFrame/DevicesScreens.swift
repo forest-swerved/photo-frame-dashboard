@@ -40,12 +40,14 @@ private struct DevicesContent: View {
     @Environment(\.scenePhase) private var phase
     @ObservedObject var network: InternetModel
     @State private var adding = false
+    @State private var requestDevice: ManagedInternetDevice?
     @State private var grantDevice: ManagedInternetDevice?
     @State private var pickedCredit: RewardCredit?
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 18) {
                 NetworkStatusCard(network: network)
+                if !network.accessRequests.isEmpty { accessRequests }
                 RewardHomeCard(network: network)
                 if !network.liveSessions.isEmpty {
                     VStack(alignment: .leading, spacing: 14) {
@@ -66,15 +68,22 @@ private struct DevicesContent: View {
                                     Image(systemName: device.symbol).font(.title2).frame(width: 32).foregroundStyle(Brand.cyanInk)
                                     VStack(alignment: .leading, spacing: 6) {
                                         Text(device.name).font(.headline).foregroundStyle(Brand.ink)
-                                        Text(device.controlLabel).font(.subheadline).foregroundStyle(Brand.muted)
+                                        Text(device.defaultAccess == "allowed" ? "Free to use · parent control only" : "Blocked by default · earned-time pool").font(.caption).foregroundStyle(Brand.cyanInk)
+                                        Text(network.internetIsOn(device) && device.observedAccess != "allowed" && device.accessPending != true ? "Internet time in progress" : device.controlLabel).font(.subheadline).foregroundStyle(Brand.muted)
                                         Text(device.personIds.map(personName).joined(separator: " · ")).font(.caption).foregroundStyle(Brand.cyanInk)
                                         if let online = device.online { Text(online ? "Connected to the home network" : "Not currently seen on the home network").font(.caption).foregroundStyle(Brand.muted) }
                                     }; Spacer(minLength: 0); Image(systemName: "chevron.right").font(.caption).foregroundStyle(Brand.muted)
                                 }.frame(minHeight: 44)
                             }.buttonStyle(.plain)
+                            if network.isChild {
+                                Button("Request device time") { requestDevice = device }.font(.headline).frame(minHeight: 44)
+                                    .disabled(!network.canChange || network.accessRequests.contains { $0.deviceId == device.id && network.requestIsPending($0) })
+                            }
                             if network.canManage {
+                                Button(network.internetIsOn(device) ? "Turn Internet off" : "Turn Internet on") { Task { _ = await network.controlDevice(device) } }
+                                    .font(.headline).frame(minHeight: 44).disabled(!network.canChange || !network.integrationReady || !device.isReady || device.accessPending == true && device.desiredAccess != "allowed")
                                 Button("Allow Internet time") { grantDevice = device }.font(.headline).frame(minHeight: 44)
-                                    .disabled(!network.canChange || !network.integrationReady || !device.isReady || network.liveSessions.contains { $0.deviceId == device.id })
+                                    .disabled(!network.canChange || !network.integrationReady || !device.isReady || !device.isBlocked || network.liveSessions.contains { $0.deviceId == device.id })
                             }
                         }
                     }
@@ -91,8 +100,34 @@ private struct DevicesContent: View {
                 }
             }
             .sheet(isPresented: $adding) { ManagedDeviceEditor(network: network, device: nil) }
+            .sheet(item: $requestDevice) { DeviceAccessRequestEditor(network: network, device: $0) }
             .sheet(item: $grantDevice) { InternetGrantEditor(network: network, device: $0) }
             .sheet(item: $pickedCredit) { RewardDevicePicker(network: network, credit: $0) }
+    }
+    private var accessRequests: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(network.isChild ? "Your time requests" : "Device time requests").font(.title2.bold()).accessibilityAddTraits(.isHeader)
+            ForEach(Array(network.accessRequests.prefix(20))) { item in
+                FrameCard(accent: Brand.cyan) {
+                    Text("\(personName(item.personId)) · \(network.devices.first(where: { $0.id == item.deviceId })?.name ?? "Device")").font(.headline)
+                    Text("\(item.minutes) minutes · \(item.status == "pending" && !network.requestIsPending(item) ? "Expired" : item.status.capitalized)").font(.subheadline)
+                    if let reason = item.reason { Text(reason).font(.subheadline).foregroundStyle(Brand.muted) }
+                    if network.canManage && network.requestIsPending(item) {
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 20) { requestActions(item) }
+                            VStack(alignment: .leading) { requestActions(item) }
+                        }
+                    }
+                    if item.status == "approved" { Text("Approved. Check the session above for confirmed device access.").font(.caption).foregroundStyle(Brand.muted) }
+                }
+            }
+        }
+    }
+    @ViewBuilder private func requestActions(_ item: DeviceAccessRequest) -> some View {
+        Button("Approve \(item.minutes) min") { Task { _ = await network.decideAccess(item, approve: true) } }
+            .frame(minHeight: 44).disabled(!network.canChange || !network.integrationReady)
+        Button("Decline", role: .destructive) { Task { _ = await network.decideAccess(item, approve: false) } }
+            .frame(minHeight: 44).disabled(!network.canChange)
     }
     private var rewards: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -292,5 +327,32 @@ struct InternetHistoryScreen: View {
         do { let result = try await network.history(); guard !Task.isCancelled else { return }; items = result }
         catch is CancellationError { }
         catch { self.error = error.localizedDescription }
+    }
+}
+
+struct DeviceAccessRequestEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var network: InternetModel
+    let device: ManagedInternetDevice
+    @State private var minutes = 60
+    @State private var reason = ""
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Request time on \(device.name)") {
+                    Stepper("\(minutes) minutes", value: $minutes, in: 1...1439, step: 1)
+                    TextField("Reason (optional)", text: $reason, axis: .vertical).lineLimit(3...6)
+                    if reason.count > 500 { Text("Keep your reason under 500 characters.").foregroundStyle(Brand.red) }
+                }
+                Section {
+                    Text("Your parents will receive this request. Approval starts a device session once the home network confirms access. Requests expire after 24 hours.").font(.footnote).foregroundStyle(Brand.muted)
+                    if let message = network.message { Text(message).foregroundStyle(Brand.red) }
+                    Button("Send request") { Task { if await network.requestAccess(device: device, minutes: minutes, reason: reason) { dismiss() } } }
+                        .disabled(!network.canChange || reason.count > 500)
+                    if network.isChanging { ProgressView("Sending request…") }
+                }
+            }.navigationTitle("Request device time").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(network.isChanging) } }
+        }.interactiveDismissDisabled(network.isChanging)
     }
 }

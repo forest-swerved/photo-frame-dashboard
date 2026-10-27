@@ -77,7 +77,7 @@ test('isolated owner cleanup removes private account data while preserving share
     await db.query(`CREATE SCHEMA ${schema} AUTHORIZATION ${ownerRole}`); created = true;
     await db.query(`SET ROLE ${ownerRole}`);
     await db.query(`SET search_path TO ${schema},pg_catalog`);
-    for (const name of ['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql', 'calendar-sync-schema.sql', 'chore-schema.sql','school-schema.sql', 'account-notifications-schema.sql', 'internet-schema.sql', 'account-deletion-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
+    for (const name of ['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql', 'calendar-sync-schema.sql', 'chore-schema.sql','school-schema.sql', 'account-notifications-schema.sql', 'internet-schema.sql','family-notifications-schema.sql', 'account-deletion-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
     await db.query(await readFile(new URL('account-deletion-schema.sql', import.meta.url), 'utf8'));
     assert.equal(await verifyAccountDeletionBoundary(db, schema, { requireServiceRole: false }), true);
 

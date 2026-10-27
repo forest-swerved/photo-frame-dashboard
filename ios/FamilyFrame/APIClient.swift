@@ -62,9 +62,12 @@ protocol FamilyAPI: AnyObject {
     func members() async throws -> [FamilyMember]
     func changeMemberCapabilities(_ id: String, capabilities: ParentCapabilities) async throws -> MemberCapabilitiesResult
     func internet() async throws -> InternetSnapshot
+    func requestDeviceAccess(deviceID: String, minutes: Int, reason: String?, mutationID: String) async throws -> DeviceAccessRequest
+    func decideDeviceAccess(_ item: DeviceAccessRequest, approve: Bool, mutationID: String) async throws -> DeviceAccessRequest
     func redeemInternet(creditID: String, deviceID: String, mutationID: String) async throws -> InternetSession
     func grantInternet(personID: String, deviceID: String, minutes: Int?, allDay: Bool, reason: String?, mutationID: String) async throws -> InternetSession
     func changeInternetSession(_ id: String, action: InternetSessionAction) async throws -> InternetSession
+    func changeDeviceAccess(_ device: ManagedInternetDevice, access: String, mutationID: String) async throws -> ManagedInternetDevice
     func saveInternetDevice(_ draft: ManagedDeviceDraft, id: String?) async throws -> ManagedInternetDevice
     func deleteInternetDevice(_ item: ManagedInternetDevice, mutationID: String) async throws
     func saveInternetPolicy(_ personID: String, draft: RewardPolicyDraft) async throws -> RewardPolicy
@@ -252,6 +255,14 @@ final class APIClient: FamilyAPI {
         try await send("/api/members/\(id)/capabilities", method: "PATCH", body: encoded(capabilities))
     }
     func internet() async throws -> InternetSnapshot { try await send("/api/internet") }
+    func requestDeviceAccess(deviceID: String, minutes: Int, reason: String?, mutationID: String) async throws -> DeviceAccessRequest {
+        struct Draft: Encodable { let deviceId: String; let minutes: Int; let reason: String?; let mutationId: String }
+        return try await send("/api/internet/requests", method: "POST", body: encoded(Draft(deviceId: deviceID, minutes: minutes, reason: reason, mutationId: mutationID)))
+    }
+    func decideDeviceAccess(_ item: DeviceAccessRequest, approve: Bool, mutationID: String) async throws -> DeviceAccessRequest {
+        struct Decision: Encodable { let action: String; let expectedVersion: Int; let mutationId: String }
+        return try await send("/api/internet/requests/\(item.id)/decision", method: "POST", body: encoded(Decision(action: approve ? "approve" : "decline", expectedVersion: item.version, mutationId: mutationID)))
+    }
     func redeemInternet(creditID: String, deviceID: String, mutationID: String) async throws -> InternetSession {
         try await send("/api/internet/redeem", method: "POST", body: encoded(["creditId": creditID, "deviceId": deviceID, "mutationId": mutationID]))
     }
@@ -260,6 +271,10 @@ final class APIClient: FamilyAPI {
         return try await send("/api/internet/grants", method: "POST", body: encoded(Grant(personId: personID, deviceId: deviceID, minutes: minutes, allDay: allDay, reason: reason, mutationId: mutationID)))
     }
     func changeInternetSession(_ id: String, action: InternetSessionAction) async throws -> InternetSession { try await send("/api/internet/sessions/\(id)/actions", method: "POST", body: encoded(action)) }
+    func changeDeviceAccess(_ device: ManagedInternetDevice, access: String, mutationID: String) async throws -> ManagedInternetDevice {
+        struct Control: Encodable { let access: String; let expectedVersion: Int; let mutationId: String }
+        return try await send("/api/internet/devices/\(device.id)/access", method: "POST", body: encoded(Control(access: access, expectedVersion: device.version, mutationId: mutationID)))
+    }
     func saveInternetDevice(_ draft: ManagedDeviceDraft, id: String?) async throws -> ManagedInternetDevice {
         try await send(id.map { "/api/internet/devices/\($0)" } ?? "/api/internet/devices", method: id == nil ? "POST" : "PATCH", body: encoded(draft))
     }

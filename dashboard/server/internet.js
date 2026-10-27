@@ -23,6 +23,9 @@ export const sessionDto = row => ({ id: row.id, personId: row.person_id, deviceI
   startedAt: iso(row.started_at), endsAt: iso(row.ends_at), remainingSeconds: row.remaining_seconds, verifiedAt: iso(row.verified_at),
   endedAt: iso(row.ended_at), reason: row.reason, lastError: row.last_error, allDay: row.all_day });
 export const deviceDto = (row, parent = false) => ({ id: row.id, name: row.name, kind: row.kind, personIds: row.person_ids, version: row.version,
+  defaultAccess: row.default_access || 'blocked', rewardAvailable: row.reward_available === true,
+  desiredAccess: row.desired_access || 'blocked', observedAccess: row.observed_access || 'unknown',
+  accessVerifiedAt: iso(row.access_verified_at), accessPending: row.access_pending === true, accessError: row.access_error || null,
   allowApplePush: row.allow_apple_push === true,
   controlState: row.control_state, online: row.online, lastSeenAt: iso(row.last_seen_at), managementAccessVerifiedAt: iso(row.management_verified_at),
   ...(parent ? { macAddresses: row.mac_addresses } : {}) });
@@ -78,7 +81,20 @@ export async function internetEvent(client, { householdId, personId = null, sess
   await client.query(`INSERT INTO family_internet_events(id,household_id,person_id,session_id,device_id,type,actor,reason,details,created_at)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10)`, [randomUUID(), householdId, personId, sessionId, deviceId, type, actor, reason, JSON.stringify(details), now]);
 }
-export async function internetNotification(client, { householdId, personId, type, key, sessionId, creditId, payload = {}, now = new Date() }) {
+async function notificationActor(client, principal) {
+  const member = await one(client, `SELECT m.user_id,m.name FROM family_members m WHERE m.household_id=$1 AND m.revoked_at IS NULL
+    AND m.user_id=CASE WHEN $3::uuid IS NULL THEN $2 ELSE (SELECT created_by FROM family_frame_authorizations WHERE household_id=$1 AND id=$3) END`,
+    [principal.household.id, principal.user?.id || null, principal.verifiedFrameGrant?.id || null]);
+  return { actorName: member?.name || principal.user?.name || 'A parent', excludeUserId: member?.user_id || principal.user?.id };
+}
+
+export async function internetNotification(client, { householdId, personId, type, key, sessionId, creditId, deviceId, actorName, excludeUserId, payload = {}, now = new Date() }) {
+  const context = await one(client, `SELECT p.name AS person_name,d.name AS device_name,s.source,s.remaining_seconds,s.all_day
+    FROM family_people p LEFT JOIN family_internet_sessions s ON s.household_id=p.household_id AND s.id=$3
+    LEFT JOIN family_managed_devices d ON d.household_id=p.household_id AND d.id=coalesce($4::uuid,s.device_id)
+    WHERE p.household_id=$1 AND p.id=$2`, [householdId, personId, sessionId || null, deviceId || null]);
+  payload = { personName: context?.person_name, deviceName: context?.device_name, source: context?.source,
+    minutes: context?.remaining_seconds / 60, allDay: context?.all_day, actorName, excludeUserId, ...payload };
   await client.query(`INSERT INTO family_notification_events(id,household_id,event_key,type,person_id,payload,occurred_at,expires_at)
     VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,$8) ON CONFLICT(household_id,event_key) DO NOTHING`,
   [randomUUID(), householdId, key, type, personId, JSON.stringify({ ...payload, ...(sessionId ? { sessionId } : {}), ...(creditId ? { creditId } : {}) }), now, new Date(now.getTime() + 86400_000)]);
@@ -107,6 +123,7 @@ export async function syncChoreReward(client, change, { now = new Date() } = {})
   const today = householdDate(household.timezone, now);
   if (![change.date, ...(change.affectedDates || [])].map(day).includes(today)) return;
   await lockChoreDay(client, household.id, today);
+  await notifyDailyCompletion(client, household, change.personId, today, now);
   const progress = await getRequiredProgress(client, household.id, change.personId, today);
   const existing = await one(client, 'SELECT * FROM family_reward_credits WHERE household_id=$1 AND person_id=$2 AND earned_date=$3::date FOR UPDATE', [household.id, change.personId, today]);
   if (existing) {
@@ -127,6 +144,17 @@ export async function syncChoreReward(client, change, { now = new Date() } = {})
   await internetNotification(client, { householdId: household.id, personId: change.personId, type: 'reward_earned', key: `reward:${change.personId}:${today}`, creditId: id, payload: { minutes: policy.rewardMinutes }, now });
 }
 
+export async function notifyDailyCompletion(client, household, personId, date, now) {
+  const totals = await one(client, `SELECT count(*)::int AS total,bool_and(status='completed') AS complete
+    FROM family_chore_occurrences WHERE household_id=$1 AND person_id=$2 AND date=$3::date AND status<>'skipped'`, [household.id, personId, date]);
+  if (totals.total && totals.complete) await internetNotification(client, { householdId: household.id, personId,
+    type: 'daily_tasks_completed', key: `daily-complete:${personId}:${date}`, payload: { date, audience: 'parents', total: totals.total }, now });
+}
+
+export const accessRequestDto = row => ({ id: row.id, personId: row.person_id, deviceId: row.device_id, minutes: row.minutes,
+  reason: row.reason, status: row.status, version: row.version, requestedAt: iso(row.requested_at), expiresAt: iso(row.expires_at),
+  decidedAt: iso(row.decided_at), sessionId: row.session_id });
+
 export async function internetSnapshot(db, principal, { env = process.env, now = new Date() } = {}) {
   const householdId = requireHousehold(principal), capabilities = await parentCapabilities(db, principal);
   const parent = capabilities.manageInternet;
@@ -146,7 +174,16 @@ export async function internetSnapshot(db, principal, { env = process.env, now =
         credit.status = changed?.status || (await one(client, 'SELECT status FROM family_reward_credits WHERE id=$1', [credit.id])).status;
       }
     }
-    const devices = await client.query('SELECT * FROM family_managed_devices WHERE household_id=$1 AND removed_at IS NULL AND ($2::uuid IS NULL OR $2=ANY(person_ids)) ORDER BY name,id', [householdId, personFilter]);
+    const devices = await client.query(`SELECT d.*,
+      EXISTS(SELECT 1 FROM family_internet_commands c WHERE c.device_id=d.id AND c.state IN ('pending','leased','attention')) AS access_pending,
+      d.default_access='blocked' AND d.desired_access='blocked' AND d.control_state='ready' AND d.management_verified_at IS NOT NULL
+      AND d.observed_access='blocked' AND d.access_verified_at IS NOT NULL
+      AND NOT EXISTS(SELECT 1 FROM family_internet_commands c WHERE c.device_id=d.id AND c.state IN ('pending','leased','attention'))
+      AND NOT EXISTS(SELECT 1 FROM family_internet_sessions s WHERE s.household_id=d.household_id AND s.device_id=d.id AND s.state NOT IN ('ended','failed'))
+      AND coalesce((SELECT s.observed_state='blocked' AND s.verified_at IS NOT NULL FROM family_internet_sessions s WHERE s.household_id=d.household_id AND s.device_id=d.id ORDER BY s.requested_at DESC,s.id DESC LIMIT 1),true) AS reward_available
+      FROM family_managed_devices d WHERE d.household_id=$1 AND d.removed_at IS NULL AND ($2::uuid IS NULL OR $2=ANY(d.person_ids)) ORDER BY d.name,d.id`, [householdId, personFilter]);
+    await client.query("UPDATE family_access_requests SET status='expired',version=version+1 WHERE household_id=$1 AND status='pending' AND expires_at<=$2", [householdId, now]);
+    const requests = await client.query("SELECT * FROM family_access_requests WHERE household_id=$1 AND ($2::uuid IS NULL OR person_id=$2) ORDER BY (status='pending') DESC,requested_at DESC LIMIT 100", [householdId, personFilter]);
     const sessions = await client.query('SELECT * FROM family_internet_sessions WHERE household_id=$1 AND ($2::uuid IS NULL OR person_id=$2) ORDER BY requested_at DESC LIMIT 100', [householdId, personFilter]);
     const integration = await one(client, 'SELECT * FROM family_network_integrations WHERE household_id=$1', [householdId]);
     let configured = false, managementHost = 'forest-family-frame.vercel.app';
@@ -157,7 +194,7 @@ export async function internetSnapshot(db, principal, { env = process.env, now =
       integration: { state: !configured ? 'unconfigured' : integration?.state || 'pilot_required', managementHost,
         managementAccessVerifiedAt: iso(integration?.management_verified_at), lastCheckedAt: iso(integration?.last_checked_at), error: integration?.last_error || null },
       policies: people.map(person => policyDto(policies.rows.find(p => p.person_id === person.id)) || defaultRewardPolicy(person.id)),
-      credits: credits.rows.map(creditDto), devices: devices.rows.map(row => deviceDto(row, parent)), sessions: sessions.rows.map(sessionDto), progress };
+      credits: credits.rows.map(creditDto), devices: devices.rows.map(row => deviceDto(row, parent)), sessions: sessions.rows.map(sessionDto), requests: requests.rows.map(accessRequestDto), progress };
   });
 }
 
@@ -206,10 +243,12 @@ export function deviceFields(body, current = {}) {
   requireValue(['console', 'tablet', 'phone', 'computer', 'tv', 'other'].includes(kind), 422, 'invalid_device', 'Choose a device type.');
   const personIds = body.personIds ?? current.person_ids, macAddresses = body.macAddresses ?? current.mac_addresses;
   requireValue(Array.isArray(personIds) && personIds.length >= 1 && personIds.length <= 20, 422, 'invalid_device', 'Assign at least one child.');
+  const defaultAccess = body.defaultAccess ?? current.default_access ?? 'blocked';
+  requireValue(['blocked', 'allowed'].includes(defaultAccess), 422, 'invalid_device', 'Choose blocked or allowed by default.');
   requireValue(Array.isArray(macAddresses) && macAddresses.length >= 1 && macAddresses.length <= 8, 422, 'invalid_device', 'Enter one to eight stable device MAC addresses.');
   const allowApplePush = body.allowApplePush ?? current.allow_apple_push ?? ['tablet', 'phone'].includes(kind);
   requireValue(typeof allowApplePush === 'boolean', 422, 'invalid_device', 'Choose whether this Apple device needs notifications.');
-  return { name, kind, allowApplePush, personIds: [...new Set(personIds.map(id => uuidField(id, 'Child profile')))].sort(), macAddresses: [...new Set(macAddresses.map(normalizedMac))].sort() };
+  return { name, kind, defaultAccess, allowApplePush, personIds: [...new Set(personIds.map(id => uuidField(id, 'Child profile')))].sort(), macAddresses: [...new Set(macAddresses.map(normalizedMac))].sort() };
 }
 export async function saveManagedDevice(db, principal, id, body, remove = false) {
   await requireCapability(db, principal, 'manageInternet'); if (id) { uuidField(id); versionField(body.expectedVersion); }
@@ -225,8 +264,8 @@ export async function saveManagedDevice(db, principal, id, body, remove = false)
     const people = (await client.query('SELECT id FROM family_people WHERE household_id=$1 AND id=ANY($2::uuid[])', [householdId, value.personIds])).rows;
     requireValue(people.length === value.personIds.length, 422, 'invalid_device', 'Every child must belong to this family.');
     requireValue(!await one(client, 'SELECT id FROM family_managed_devices WHERE household_id=$1 AND removed_at IS NULL AND mac_addresses && $2::text[] AND ($3::uuid IS NULL OR id<>$3)', [householdId, value.macAddresses, id]), 409, 'identity_in_use', 'This MAC address already belongs to a device.');
-    const changed = row ? await one(client, `UPDATE family_managed_devices SET name=$3,kind=$4,person_ids=$5,mac_addresses=$6,allow_apple_push=$7,version=version+1 WHERE household_id=$1 AND id=$2 RETURNING *`, [householdId, id, value.name, value.kind, value.personIds, value.macAddresses, value.allowApplePush])
-      : await one(client, `INSERT INTO family_managed_devices(id,household_id,name,kind,person_ids,mac_addresses,allow_apple_push) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`, [randomUUID(), householdId, value.name, value.kind, value.personIds, value.macAddresses, value.allowApplePush]);
+    const changed = row ? await one(client, `UPDATE family_managed_devices SET name=$3,kind=$4,person_ids=$5,mac_addresses=$6,allow_apple_push=$7,default_access=$8,desired_access=$8,version=version+1 WHERE household_id=$1 AND id=$2 RETURNING *`, [householdId, id, value.name, value.kind, value.personIds, value.macAddresses, value.allowApplePush, value.defaultAccess])
+      : await one(client, `INSERT INTO family_managed_devices(id,household_id,name,kind,person_ids,mac_addresses,allow_apple_push,default_access,desired_access) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$8) RETURNING *`, [randomUUID(), householdId, value.name, value.kind, value.personIds, value.macAddresses, value.allowApplePush, value.defaultAccess]);
     await internetEvent(client, { householdId, deviceId: changed.id, type: row ? 'device_changed' : 'device_added', actor: principal.actor });
     return deviceDto(changed, true);
   });
@@ -249,54 +288,97 @@ export async function queueInternetCommand(client, row, now) {
     VALUES($1,$2,$3,$4,$5,$6,$6) ON CONFLICT(session_id,session_version) DO NOTHING`, [randomUUID(), row.household_id, row.id, row.version, row.desired_state === 'allowed' ? 'allow' : 'block', now]);
 }
 
+export async function changeDeviceAccess(db, principal, id, body, { env = process.env, now = new Date() } = {}) {
+  await requireCapability(db, principal, 'manageInternet'); uuidField(id); versionField(body.expectedVersion);
+  requireValue(['allowed', 'blocked'].includes(body.access), 422, 'invalid_access', 'Choose Internet on or off.');
+  return idempotent(db, principal, body, `device-access:${id}`, async (client, householdId) => {
+    const device = await one(client, 'SELECT * FROM family_managed_devices WHERE household_id=$1 AND id=$2 AND removed_at IS NULL FOR UPDATE', [householdId, id]);
+    if (!device) throw notFound();
+    requireValue(device.version === body.expectedVersion, 409, 'version_conflict', 'This device changed. Refresh and try again.');
+    await requireReady(client, householdId, device, env);
+    const pending = (await client.query("SELECT * FROM family_internet_commands WHERE device_id=$1 AND state IN ('pending','leased','attention')", [id])).rows;
+    requireValue(!pending.length || body.access === 'blocked' && pending.every(command => command.action === 'allow'),
+      409, 'device_access_pending', 'Wait for the current device control to be confirmed.');
+    if (pending.length) await client.query("UPDATE family_internet_commands SET available_at=$2 WHERE device_id=$1 AND state='pending'", [id, now]);
+    // Finish every allowance first, including an ALLOW still awaiting confirmation.
+    const sessions = (await client.query("SELECT * FROM family_internet_sessions WHERE household_id=$1 AND device_id=$2 AND state NOT IN ('ended','failed') FOR UPDATE", [householdId, id])).rows;
+    for (const session of sessions) {
+      const ending = await one(client, "UPDATE family_internet_sessions SET state='ending',desired_state='blocked',pending_action='end',version=version+1,last_error=NULL WHERE id=$1 RETURNING *", [session.id]);
+      await queueInternetCommand(client, ending, now);
+    }
+    const changed = await one(client, "UPDATE family_managed_devices SET desired_access=$3,observed_access='unknown',access_error=NULL,version=version+1 WHERE household_id=$1 AND id=$2 RETURNING *", [householdId, id, body.access]);
+    await client.query(`INSERT INTO family_internet_commands(id,household_id,device_id,session_version,action,available_at,created_at)
+      VALUES($1,$2,$3,$4,$5,$6,$6)`, [randomUUID(), householdId, id, changed.version, body.access === 'allowed' ? 'allow' : 'block', now]);
+    await internetEvent(client, { householdId, deviceId: id, type: 'device_access_requested', actor: principal.actor, details: { access: body.access, version: changed.version }, now });
+    if (body.access === 'allowed') for (const personId of device.person_ids) await internetNotification(client, {
+      householdId, personId, deviceId: id, type: 'access_granted', key: `device-grant:${id}:${changed.version}:${personId}`,
+      ...await notificationActor(client, principal), payload: { indefinite: true }, now });
+    return deviceDto({ ...changed, access_pending: true }, true);
+  });
+}
+
 export async function startInternetSession(db, principal, body, { reward = false, env = process.env, now = new Date() } = {}) {
   const parent = reward ? false : Boolean(await requireCapability(db, principal, 'manageInternet'));
   if (reward) requireValue(principal.role === 'child' && (['user', 'mobile'].includes(principal.authType) || principal.verifiedFrameGrant?.scope === 'child'),
     403, 'child_required', 'Use your own child account, or unlock your profile on the frame with your phone.');
   uuidField(body.deviceId, 'Device'); if (reward) uuidField(body.creditId, 'Reward'); else uuidField(body.personId, 'Child profile');
-  return idempotent(db, principal, body, reward ? 'redeem' : 'grant', async (client, householdId) => {
-    let credit = null;
-    if (reward) {
-      credit = await one(client, 'SELECT *,earned_date::text FROM family_reward_credits WHERE household_id=$1 AND id=$2 AND person_id=$3', [householdId, body.creditId, principal.personId]);
-      if (!credit) throw notFound();
-      requireValue(credit.status === 'available' && new Date(credit.expires_at) > now, 409, 'reward_unavailable', 'This reward is no longer available. Refresh your tasks.');
-      // Redemption rechecks the frozen earning day as well as today's work;
-      // reopening or rescheduling a source task cannot bypass the ledger.
-      await lockChoreDay(client, householdId, day(credit.earned_date));
-      credit = await one(client, 'SELECT *,earned_date::text FROM family_reward_credits WHERE household_id=$1 AND id=$2 AND person_id=$3 FOR UPDATE', [householdId, body.creditId, principal.personId]);
-      requireValue(credit?.status === 'available' && new Date(credit.expires_at) > now, 409, 'reward_unavailable', 'This reward is no longer available. Refresh your tasks.');
-      requireValue(await creditEligible(client, credit), 409, 'chores_incomplete', 'Finish the required tasks for this reward before using it.');
-    }
-    const personId = credit?.person_id || body.personId;
-    const device = await one(client, 'SELECT * FROM family_managed_devices WHERE household_id=$1 AND id=$2 AND removed_at IS NULL FOR UPDATE', [householdId, body.deviceId]);
-    requireValue(device && device.person_ids.includes(personId), 404, 'not_found', 'That device is not assigned to this child.');
-    await requireReady(client, householdId, device, env);
-    requireValue(!await one(client, "SELECT id FROM family_internet_sessions WHERE household_id=$1 AND state NOT IN ('ended','failed') AND (person_id=$2 OR device_id=$3)", [householdId, personId, device.id]), 409, 'session_in_use', 'This child or device already has an Internet session.');
-    const policy = policyDto(await one(client, 'SELECT * FROM family_reward_policies WHERE household_id=$1 AND person_id=$2', [householdId, personId])) || defaultRewardPolicy(personId);
-    const allDay = parent && body.allDay === true;
-    requireValue(body.allDay === undefined || typeof body.allDay === 'boolean', 422, 'invalid_duration', 'All day must be true or false.');
-    const minutes = reward ? credit.minutes : body.minutes ?? 60;
-    requireValue(Number.isInteger(minutes) && minutes >= 1 && minutes <= 1439, 422, 'invalid_duration', 'Choose 1–1439 minutes, or All day.');
-    const candidateEnd = sessionDeadline(now, principal.household.timezone, minutes * 60, { allDay, bedtime: reward ? policy.bedtime : null });
-    // Validate now, but plan a normal window only when the worker first owns
-    // activation. Waiting in the durable queue cannot consume reserved time.
-    const endsAt = allDay ? candidateEnd : null;
-    const seconds = allDay ? Math.floor((candidateEnd - now) / 1000) : minutes * 60;
-    if (reward) {
-      requireValue(policy.enabled, 409, 'rewards_paused', 'A parent has paused Internet rewards.');
-      const from = new Date(Temporal.PlainDate.from(householdDate(principal.household.timezone, now)).toZonedDateTime({ timeZone: principal.household.timezone, plainTime: '00:00' }).epochMilliseconds);
-      const used = await one(client, "SELECT coalesce(sum(allocated_seconds),0)::int AS seconds FROM family_internet_sessions WHERE household_id=$1 AND person_id=$2 AND requested_at>=$3 AND state<>'failed'", [householdId, personId, from]);
-      requireValue(used.seconds + seconds <= policy.dailyLimitMinutes * 60, 409, 'daily_limit', 'This reward exceeds today’s limit. Ask a parent for an adjustment.');
-    }
-    const id = randomUUID();
-    const row = await one(client, `INSERT INTO family_internet_sessions(id,household_id,person_id,device_id,credit_id,source,state,desired_state,requested_at,ends_at,remaining_seconds,allocated_seconds,reason,all_day,policy_snapshot,created_by,pending_action)
-      VALUES($1,$2,$3,$4,$5,$6,'starting','allowed',$7,$8,$9,$9,$10,$11,$12::jsonb,$13,'start') RETURNING *`,
-    [id, householdId, personId, device.id, credit?.id || null, reward ? 'reward' : 'parent', now, endsAt, seconds, body.reason ? textField(body.reason, 'Reason', 500) : null, allDay, JSON.stringify(policy), principal.actor]);
-    if (credit) await client.query("UPDATE family_reward_credits SET status='reserved',reserved_by=$2 WHERE id=$1", [credit.id, id]);
-    await queueInternetCommand(client, row, now);
-    await internetEvent(client, { householdId, personId, deviceId: device.id, sessionId: id, type: 'session_requested', actor: principal.actor, reason: row.reason, details: { endsAt: iso(endsAt), source: row.source }, now });
-    return sessionDto(row);
-  });
+  return idempotent(db, principal, body, reward ? 'redeem' : 'grant', (client, householdId) =>
+    createInternetSession(client, principal, body, { reward, parent, env, now, householdId }));
+}
+
+async function createInternetSession(client, principal, body, { reward = false, parent = true, env, now, householdId }) {
+  let credit = null;
+  if (reward) {
+    credit = await one(client, 'SELECT *,earned_date::text FROM family_reward_credits WHERE household_id=$1 AND id=$2 AND person_id=$3', [householdId, body.creditId, principal.personId]);
+    if (!credit) throw notFound();
+    requireValue(credit.status === 'available' && new Date(credit.expires_at) > now, 409, 'reward_unavailable', 'This reward is no longer available. Refresh your tasks.');
+    // Redemption rechecks the frozen earning day as well as today's work;
+    // reopening or rescheduling a source task cannot bypass the ledger.
+    await lockChoreDay(client, householdId, day(credit.earned_date));
+    credit = await one(client, 'SELECT *,earned_date::text FROM family_reward_credits WHERE household_id=$1 AND id=$2 AND person_id=$3 FOR UPDATE', [householdId, body.creditId, principal.personId]);
+    requireValue(credit?.status === 'available' && new Date(credit.expires_at) > now, 409, 'reward_unavailable', 'This reward is no longer available. Refresh your tasks.');
+    requireValue(await creditEligible(client, credit), 409, 'chores_incomplete', 'Finish the required tasks for this reward before using it.');
+  }
+  const personId = credit?.person_id || body.personId;
+  const device = await one(client, 'SELECT * FROM family_managed_devices WHERE household_id=$1 AND id=$2 AND removed_at IS NULL FOR UPDATE', [householdId, body.deviceId]);
+  requireValue(device && device.person_ids.includes(personId), 404, 'not_found', 'That device is not assigned to this child.');
+  requireValue(!reward || (device.default_access || 'blocked') === 'blocked', 409, 'device_not_reward', 'This device is controlled by parents and is not in the earned-time pool.');
+  await requireReady(client, householdId, device, env);
+  requireValue(device.desired_access === 'blocked' && device.observed_access === 'blocked' && device.access_verified_at
+    && !await one(client, "SELECT id FROM family_internet_commands WHERE device_id=$1 AND state IN ('pending','leased','attention')", [device.id]),
+  409, 'device_not_blocked', 'Choose a device whose Internet blocking is confirmed.');
+  if (reward) {
+    const last = await one(client, 'SELECT state,observed_state,verified_at FROM family_internet_sessions WHERE household_id=$1 AND device_id=$2 ORDER BY requested_at DESC,id DESC LIMIT 1', [householdId, device.id]);
+    requireValue(!last || terminal.has(last.state) && last.observed_state === 'blocked' && last.verified_at, 409, 'device_not_blocked', 'Choose a device whose Internet blocking is confirmed.');
+  }
+  requireValue(!await one(client, "SELECT id FROM family_internet_sessions WHERE household_id=$1 AND state NOT IN ('ended','failed') AND (person_id=$2 OR device_id=$3)", [householdId, personId, device.id]), 409, 'session_in_use', 'This child or device already has an Internet session.');
+  const policy = policyDto(await one(client, 'SELECT * FROM family_reward_policies WHERE household_id=$1 AND person_id=$2', [householdId, personId])) || defaultRewardPolicy(personId);
+  const allDay = parent && body.allDay === true;
+  requireValue(body.allDay === undefined || typeof body.allDay === 'boolean', 422, 'invalid_duration', 'All day must be true or false.');
+  const minutes = reward ? credit.minutes : body.minutes ?? 60;
+  requireValue(Number.isInteger(minutes) && minutes >= 1 && minutes <= 1439, 422, 'invalid_duration', 'Choose 1–1439 minutes, or All day.');
+  const candidateEnd = sessionDeadline(now, principal.household.timezone, minutes * 60, { allDay, bedtime: reward ? policy.bedtime : null });
+  // Validate now, but plan a normal window only when the worker first owns
+  // activation. Waiting in the durable queue cannot consume reserved time.
+  const endsAt = allDay ? candidateEnd : null;
+  const seconds = allDay ? Math.floor((candidateEnd - now) / 1000) : minutes * 60;
+  if (reward) {
+    requireValue(policy.enabled, 409, 'rewards_paused', 'A parent has paused Internet rewards.');
+    const from = new Date(Temporal.PlainDate.from(householdDate(principal.household.timezone, now)).toZonedDateTime({ timeZone: principal.household.timezone, plainTime: '00:00' }).epochMilliseconds);
+    const used = await one(client, "SELECT coalesce(sum(allocated_seconds),0)::int AS seconds FROM family_internet_sessions WHERE household_id=$1 AND person_id=$2 AND requested_at>=$3 AND state<>'failed'", [householdId, personId, from]);
+    requireValue(used.seconds + seconds <= policy.dailyLimitMinutes * 60, 409, 'daily_limit', 'This reward exceeds today’s limit. Ask a parent for an adjustment.');
+  }
+  const id = randomUUID();
+  const row = await one(client, `INSERT INTO family_internet_sessions(id,household_id,person_id,device_id,credit_id,source,state,desired_state,requested_at,ends_at,remaining_seconds,allocated_seconds,reason,all_day,policy_snapshot,created_by,pending_action)
+    VALUES($1,$2,$3,$4,$5,$6,'starting','allowed',$7,$8,$9,$9,$10,$11,$12::jsonb,$13,'start') RETURNING *`,
+  [id, householdId, personId, device.id, credit?.id || null, reward ? 'reward' : 'parent', now, endsAt, seconds, body.reason ? textField(body.reason, 'Reason', 500) : null, allDay, JSON.stringify(policy), principal.actor]);
+  if (credit) await client.query("UPDATE family_reward_credits SET status='reserved',reserved_by=$2 WHERE id=$1", [credit.id, id]);
+  await queueInternetCommand(client, row, now);
+  await internetEvent(client, { householdId, personId, deviceId: device.id, sessionId: id, type: 'session_requested', actor: principal.actor, reason: row.reason, details: { endsAt: iso(endsAt), source: row.source }, now });
+  if (parent && !body.requestId) await internetNotification(client, { householdId, personId, sessionId: id, type: 'access_granted',
+    key: `grant:${id}`, ...await notificationActor(client, principal),
+    payload: { minutes, allDay, reason: row.reason }, now });
+  return sessionDto(row);
 }
 
 export async function changeInternetSession(db, principal, id, body, { now = new Date() } = {}) {
@@ -329,6 +411,12 @@ export async function changeInternetSession(db, principal, id, body, { now = new
       else if (row.state === 'paused') { state = 'paused'; desired = 'blocked'; if (!allDay) endsAt = null; }
       else { state = 'adjusting'; desired = 'allowed'; if (!allDay) endsAt = sessionDeadline(now, principal.household.timezone, remaining); }
     }
+    if (desired === 'allowed') {
+      const device = await one(client, 'SELECT * FROM family_managed_devices WHERE household_id=$1 AND id=$2', [householdId, row.device_id]);
+      requireValue(device?.desired_access === 'blocked' && device.observed_access === 'blocked' && device.access_verified_at
+        && !await one(client, "SELECT id FROM family_internet_commands WHERE device_id=$1 AND state IN ('pending','leased','attention')", [row.device_id]),
+      409, 'device_access_pending', 'A parent device control is being confirmed. Refresh before changing this session.');
+    }
     const changed = await one(client, `UPDATE family_internet_sessions SET state=$3,desired_state=$4,ends_at=$5,remaining_seconds=$6,all_day=$7,version=version+1,last_error=NULL,pending_action=$9,
       activation_planned_at=CASE WHEN $9='resume' THEN NULL ELSE activation_planned_at END,
       allocated_seconds=greatest(0,allocated_seconds+$8) WHERE household_id=$1 AND id=$2 RETURNING *`,
@@ -337,6 +425,10 @@ export async function changeInternetSession(db, principal, id, body, { now = new
     if (state !== 'paused') await queueInternetCommand(client, changed, now);
     await internetEvent(client, { householdId, personId: row.person_id, sessionId: id, deviceId: row.device_id, type: `session_${body.action}_requested`, actor: principal.actor,
       reason: body.reason ? textField(body.reason, 'Reason', 500) : null, details: { version: changed.version, remainingSeconds: remaining, endsAt: iso(endsAt) }, now });
+    if (['all_day','resume'].includes(body.action) || body.action === 'adjust' && body.deltaMinutes > 0) await internetNotification(client, {
+      householdId, personId: row.person_id, sessionId: id, type: 'access_granted', key: `grant-adjust:${id}:${changed.version}`,
+      ...await notificationActor(client, principal),
+      payload: { minutes: body.action === 'resume' ? remaining / 60 : body.deltaMinutes, allDay: body.action === 'all_day' || body.action === 'resume' && row.all_day, additional: body.action === 'adjust' }, now });
     if (state === 'paused') await internetNotification(client, { householdId, personId: row.person_id, sessionId: id, type: 'session_adjusted', key: `session-adjusted:${id}:${changed.version}`, now });
     return sessionDto(changed);
   });
@@ -361,5 +453,46 @@ export async function resolveRewardReview(db, principal, id, body, { now = new D
     const updated = await one(client, 'UPDATE family_reward_credits SET status=$2,reserved_by=NULL WHERE id=$1 RETURNING *,earned_date::text', [id, status]);
     await internetEvent(client, { householdId, personId: row.person_id, type: 'reward_review_resolved', actor: principal.actor, reason, details: { creditId: id, resolution: body.action }, now });
     return creditDto(updated);
+  });
+}
+
+export async function requestDeviceAccess(db, principal, body, { now = new Date() } = {}) {
+  requireValue(principal.role === 'child' && ['user','mobile'].includes(principal.authType), 403, 'child_required', 'Use your own child account to request time.');
+  uuidField(body.deviceId, 'Device');
+  requireValue(Number.isInteger(body.minutes) && body.minutes >= 1 && body.minutes <= 1439, 422, 'invalid_duration', 'Choose 1–1439 minutes.');
+  const reason = body.reason == null || body.reason === '' ? null : textField(body.reason, 'Reason', 500);
+  return idempotent(db, principal, body, 'request-access', async (client, householdId) => {
+    const device = await one(client, 'SELECT * FROM family_managed_devices WHERE household_id=$1 AND id=$2 AND removed_at IS NULL', [householdId, body.deviceId]);
+    requireValue(device?.person_ids.includes(principal.personId), 404, 'not_found', 'That device is not assigned to you.');
+    await client.query("UPDATE family_access_requests SET status='expired',version=version+1 WHERE household_id=$1 AND status='pending' AND expires_at<=$2", [householdId, now]);
+    requireValue(!await one(client, "SELECT id FROM family_access_requests WHERE household_id=$1 AND person_id=$2 AND device_id=$3 AND status='pending'", [householdId, principal.personId, device.id]),
+      409, 'request_pending', 'You already have a pending request for this device.');
+    const count = await one(client, "SELECT count(*)::int AS total FROM family_access_requests WHERE household_id=$1 AND person_id=$2 AND requested_at>$3", [householdId, principal.personId, new Date(now - 86400_000)]);
+    requireValue(count.total < 20, 429, 'request_limit', 'You have sent enough requests today. Ask a parent to review them.');
+    const row = await one(client, `INSERT INTO family_access_requests(id,household_id,person_id,device_id,minutes,reason,requested_at,expires_at)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`, [randomUUID(), householdId, principal.personId, device.id, body.minutes, reason, now, new Date(now.getTime()+86400_000)]);
+    await internetNotification(client, { householdId, personId: principal.personId, deviceId: device.id, type: 'access_requested', key: `access-request:${row.id}`,
+      payload: { requestId: row.id, minutes: row.minutes, reason, audience: 'parents' }, now });
+    return accessRequestDto(row);
+  });
+}
+
+export async function decideDeviceAccess(db, principal, id, body, { env = process.env, now = new Date() } = {}) {
+  await requireCapability(db, principal, 'manageInternet'); uuidField(id); versionField(body.expectedVersion);
+  requireValue(['approve','decline'].includes(body.action), 422, 'invalid_action', 'Approve or decline this request.');
+  return idempotent(db, principal, body, `decide-access:${id}`, async (client, householdId) => {
+    const row = await one(client, 'SELECT * FROM family_access_requests WHERE household_id=$1 AND id=$2 FOR UPDATE', [householdId, id]);
+    if (!row) throw notFound();
+    requireValue(row.version === body.expectedVersion && row.status === 'pending' && new Date(row.expires_at)>now,
+      409, 'request_changed', 'This request changed or expired. Refresh before deciding.');
+    let session = null;
+    if (body.action === 'approve') session = await createInternetSession(client, principal,
+      { deviceId: row.device_id, personId: row.person_id, minutes: row.minutes, reason: row.reason, requestId: row.id }, { env, now, householdId });
+    const result = await one(client, `UPDATE family_access_requests SET status=$3,version=version+1,decided_at=$4,decided_by=$5,session_id=$6
+      WHERE household_id=$1 AND id=$2 RETURNING *`, [householdId, id, session ? 'approved' : 'declined', now, principal.actor, session?.id || null]);
+    await internetNotification(client, { householdId, personId: row.person_id, deviceId: row.device_id, sessionId: session?.id,
+      type: session ? 'access_approved' : 'access_declined', key: `access-decision:${id}`, ...await notificationActor(client, principal),
+      payload: { requestId: id, minutes: row.minutes, reason: row.reason }, now });
+    return accessRequestDto(result);
   });
 }

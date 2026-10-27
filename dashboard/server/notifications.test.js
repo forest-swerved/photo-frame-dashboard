@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import { jwtVerify } from 'jose';
 import { APNS_HOSTS, apnsConfiguration, classifyApnsResult, preflightApns, providerToken, sendApns } from './apns.js';
-import { choreOccurrences, dailyOccurrenceReminders, frameIsOffline, lockScreenPayload, notificationText, occurrenceInstant, preferencesDto, processNotifications, quietUntil, registerPush, validatePreferences } from './notifications.js';
+import { choreOccurrences, dailyTaskReminderSlots, dailyOccurrenceReminders, frameIsOffline, lockScreenPayload, notificationText, occurrenceInstant, preferencesDto, processNotifications, quietUntil, registerPush, validatePreferences } from './notifications.js';
 import { handleRequest } from './app.js';
 
 function signingKey() {
@@ -65,12 +65,12 @@ test('notification preferences accept only explicit booleans and paired valid qu
   }
 });
 
-test('APNs never includes family/private event details in a lock-screen payload', () => {
+test('private APNs mode includes only an opaque notification ID', () => {
   const payload = lockScreenPayload('fixture-notification-id');
   assert.deepEqual(Object.keys(payload).sort(), ['aps', 'notificationId']);
   assert.equal(payload.aps.alert.title, 'Family Frame');
   assert.equal(JSON.stringify(payload).includes('choreId'), false);
-  assert.deepEqual(notificationText({ type: 'chore_completed', payload: { title: 'Private chore title' } }), ['Task completed', 'Private chore title was marked done.']);
+  assert.deepEqual(notificationText({ type: 'chore_completed', payload: { title: 'Private chore title' } }), ['Task completed', 'Your child completed Private chore title.']);
 });
 
 test('APNs distinguishes provider acceptance from retries, invalid tokens, and exhausted attempts', () => {
@@ -188,4 +188,31 @@ test('push registration refuses non-mobile principals and validates client input
   const mobile = { authType: 'mobile', mobileSessionId: '00000000-0000-4000-8000-000000000001', household: { id: '00000000-0000-4000-8000-000000000002' } };
   await assert.rejects(registerPush(db, mobile, { installationId: 'invalid', token: 'a'.repeat(64), environment: 'sandbox' }), error => error.status === 422);
   await assert.rejects(registerPush(db, mobile, { installationId: '00000000-0000-4000-8000-000000000003', token: 'private invalid token', environment: 'sandbox' }), error => error.status === 422);
+});
+
+test('daily task reminder slots follow school classification, local timezone and bounded catch-up', () => {
+  const slots = (date, type, from, to) => dailyTaskReminderSlots(date, type, 'America/Denver', new Date(from), new Date(to)).map(s => s.time);
+  assert.deepEqual(slots('2026-10-26','school_day','2026-10-26T12:59Z','2026-10-26T13:00Z'), ['07:00']);
+  assert.deepEqual(slots('2026-10-26','school_day','2026-10-26T21:59Z','2026-10-26T22:00Z'), ['16:00']);
+  assert.deepEqual(slots('2026-10-26','school_day','2026-10-26T13:00Z','2026-10-26T13:01Z'), []);
+  assert.deepEqual(slots('2026-10-25','non_school_day','2026-10-25T16:59Z','2026-10-25T17:00Z'), ['11:00']);
+  assert.deepEqual(slots('2026-10-25','non_school_day','2026-10-25T12:59Z','2026-10-25T13:00Z'), []);
+  assert.deepEqual(slots('2026-10-26','unknown','2026-10-26T12:59Z','2026-10-26T13:00Z'), []);
+  assert.deepEqual(slots('2026-10-26','school_day','2026-10-26T12:59Z','2026-10-26T20:00Z'), []);
+  assert.deepEqual(slots('2026-11-02','school_day','2026-11-02T13:59Z','2026-11-02T14:00Z'), ['07:00'], 'After DST, the local time stays 7 AM.');
+});
+
+test('detailed push alerts identify the family action while navigation uses an opaque ID', () => {
+  const event = { type: 'access_granted', payload: { actorName: 'Forest', personName: 'Andre', deviceName: 'PS5', minutes: 60 } };
+  const detailed = lockScreenPayload('opaque-id', event);
+  assert.equal(detailed.aps.alert.body, 'Forest granted Andre 1 hour access to PS5. Access is being confirmed.');
+  assert.equal(detailed.notificationId, 'opaque-id');
+  assert.deepEqual(Object.keys(detailed).sort(), ['aps','notificationId']);
+  assert.match(notificationText({ type: 'chore_completed', payload: { personName: 'Andre', title: 'Dishes' } })[1], /Andre completed Dishes/);
+  assert.match(notificationText({ type: 'session_started', payload: { personName: 'Andre', deviceName: 'PS5', source: 'reward' } })[1], /Andre is using earned time on PS5/);
+  assert.match(notificationText({ type: 'access_requested', payload: { personName: 'Andre', deviceName: 'PS5', minutes: 45, reason: 'Play with friends' } })[1], /45 minutes access to PS5.*Play with friends/);
+  for (const key of ['showDetails','taskReminders','dailyCompleted','accessRequests']) {
+    assert.equal(preferencesDto(null, 'America/Denver')[key], true);
+    assert.equal(validatePreferences({ [key]: false }, preferencesDto(null, 'America/Denver'))[key], false);
+  }
 });

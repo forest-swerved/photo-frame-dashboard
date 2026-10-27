@@ -42,7 +42,7 @@ test('isolated TLS PostgreSQL school scheduling, overrides and earned-credit saf
     assert.equal((await pool.query('SELECT current_database() AS name')).rows[0].name, 'family_frame_tests');
     assert.equal((await pool.query('SELECT ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid()')).rows[0].ssl, true);
     await pool.query(`CREATE SCHEMA ${schema}`); created = true;
-    for (const name of ['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql', 'chore-schema.sql', 'school-schema.sql', 'account-notifications-schema.sql', 'internet-schema.sql'])
+    for (const name of ['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql', 'chore-schema.sql', 'school-schema.sql', 'account-notifications-schema.sql', 'internet-schema.sql','family-notifications-schema.sql'])
       await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
     await db.query(await readFile(new URL('school-schema.sql', import.meta.url), 'utf8'));
     await db.query('INSERT INTO family_households(id,title,timezone) VALUES($1,$2,$3)', [household.id, household.title, household.timezone]);

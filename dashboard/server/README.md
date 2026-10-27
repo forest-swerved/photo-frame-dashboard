@@ -81,6 +81,12 @@ The adapter validates every Apple DAV destination and redirect before credential
 
 ## Native iOS and notification service
 
+`family-notifications-schema.sql` adds server-owned device-time requests and account switches for daily reminders, completion summaries, requests/decisions and detailed alerts. Apply it after `internet-schema.sql`; the matching additive Supabase migration is `20261027011601_family_notification_workflows.sql`. The normal owner migration replays this schema too. New table creation requires the existing authorized schema-creation migration path.
+
+`POST /api/internet/requests` accepts a child's assigned `deviceId`, 1–1439 `minutes`, optional `reason` (500 characters) and `mutationId`. Requests expire after 24 hours, with one pending request per child/device and at most 20 requests per day. `POST /api/internet/requests/:id/decision` requires parent Internet capability, `action` (`approve`/`decline`), `expectedVersion` and `mutationId`. Approval uses the existing network-readiness gates and reserves a timed parent session in the same transaction. Retries deduplicate and simultaneous decisions conflict. `/api/internet` includes scoped requests; a child sees only their own.
+
+The minute notification cron uses school calendar classification and household-local time for child-only 07:00/16:00 school-day reminders and 11:00 non-school-day reminders. Unknown coverage produces no scheduled daily reminder. Only pending work is actionable; submitted/approved/skipped work does not trigger reminders. Slots catch up for at most one hour, deduplicate by child/date/time and recheck pending tasks and school classification at delivery. Task completion summaries cover all non-excused daily tasks after approval, once per child/day even when rewards are disabled. Event Activity survives push suppression. Detailed alerts include names, device/task names and request reasons by default; `showDetails:false` keeps generic lock-screen text. Approval/grant alerts exclude the acting parent's account across installations; network-confirmed session starts are separate alerts.
+
 `ios/FamilyFrame.xcodeproj` contains the native iPhone/iPad app. It shares this API and
 household with the frame; see [the iOS guide](../../ios/README.md) for build, signing,
 and Apple push configuration.
@@ -112,8 +118,8 @@ A production Vercel Cron calls `/api/mobile/jobs/notifications` every minute usi
 `CRON_SECRET`. The worker maintains a durable inbox and per-installation delivery
 leases, suppresses obsolete reminders after completion/reassignment, respects quiet
 hours, retries transient APNs failures and disables rejected tokens. Push acceptance
-and inbox read status are different states. Lock-screen payloads are generic; event
-details are available only through the authenticated inbox.
+and inbox read status are different states. Private alert mode uses generic lock-screen text. Detailed alert mode shows family
+actions; detail/deep-link IDs are still resolved through the authenticated inbox.
 
 Supported categories are completed/reopened chores, due-soon/overdue chores, upcoming
 timed calendar events, calendar sync-health transitions and frame connection status.
@@ -194,8 +200,8 @@ on reruns. Read state merges across known device inboxes. Both browser and nativ
 access recheck provider sessions and current household membership. Child visibility
 uses immutable occurrence ownership, excludes parent-review/enforcement alerts, and
 allows only that child's reward/session events. Paired frames cannot read a general
-account's Activity. Push payloads retain generic text; validated detail/deep-link IDs
-are returned only from the authenticated inbox endpoint.
+account's Activity. Push text follows the account's alert-details preference; validated
+detail/deep-link IDs are returned only from the authenticated inbox endpoint.
 
 ## Internet rewards and protected frame controls
 

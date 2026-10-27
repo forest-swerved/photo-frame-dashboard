@@ -215,14 +215,23 @@ struct NotificationPreferencesScreen: View {
     }
     var body: some View {
         Form {
-            Section { Toggle("Send push notifications", isOn: $value.pushEnabled) }
+            Section {
+                Toggle("Send push notifications", isOn: $value.pushEnabled)
+                Toggle("Show family details in alerts", isOn: $value.showDetails)
+                Text("Includes names, tasks, devices and request reasons. Turn off to keep push alerts private; details remain in Activity.").font(.footnote).foregroundStyle(Brand.muted)
+            }
             Section("Tasks") {
+                if model.session?.isChild == true {
+                    Toggle("Daily task reminders", isOn: $value.taskReminders)
+                    Text("School days: 7 AM and 4 PM. Non-school days: 11 AM. Only while tasks remain, using the household timezone and school calendar.").font(.footnote).foregroundStyle(Brand.muted)
+                } else { Toggle("All daily tasks completed", isOn: $value.dailyCompleted) }
                 Toggle("Marked complete", isOn: $value.choreCompleted)
                 Toggle("Reopened", isOn: $value.choreReopened)
                 Toggle("Due soon", isOn: $value.choreDueSoon)
                 Toggle("Overdue", isOn: $value.choreOverdue)
             }
             Section("Internet time") {
+                Toggle("Device requests and decisions", isOn: $value.accessRequests)
                 Toggle("Earned rewards", isOn: $value.rewards)
                 Toggle("Session updates and warnings", isOn: $value.internetSessions)
             }

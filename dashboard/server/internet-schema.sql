@@ -67,6 +67,11 @@ CREATE TABLE IF NOT EXISTS family_managed_devices (
   UNIQUE(household_id,id)
 );
 CREATE INDEX IF NOT EXISTS family_managed_device_household ON family_managed_devices(household_id);
+ALTER TABLE family_managed_devices ADD COLUMN IF NOT EXISTS default_access text NOT NULL DEFAULT 'blocked' CHECK(default_access IN ('blocked','allowed'));
+ALTER TABLE family_managed_devices ADD COLUMN IF NOT EXISTS desired_access text NOT NULL DEFAULT 'blocked' CHECK(desired_access IN ('blocked','allowed'));
+ALTER TABLE family_managed_devices ADD COLUMN IF NOT EXISTS observed_access text NOT NULL DEFAULT 'unknown' CHECK(observed_access IN ('unknown','blocked','allowed'));
+ALTER TABLE family_managed_devices ADD COLUMN IF NOT EXISTS access_verified_at timestamptz;
+ALTER TABLE family_managed_devices ADD COLUMN IF NOT EXISTS access_error text;
 CREATE TABLE IF NOT EXISTS family_internet_sessions (
   id uuid PRIMARY KEY,
   household_id uuid NOT NULL REFERENCES family_households(id),
@@ -128,6 +133,18 @@ CREATE TABLE IF NOT EXISTS family_internet_commands (
 );
 CREATE INDEX IF NOT EXISTS family_internet_commands_due ON family_internet_commands(available_at) WHERE state IN ('pending','leased');
 CREATE INDEX IF NOT EXISTS family_internet_command_session ON family_internet_commands(household_id,session_id);
+ALTER TABLE family_internet_commands ALTER COLUMN session_id DROP NOT NULL;
+ALTER TABLE family_internet_commands ADD COLUMN IF NOT EXISTS device_id uuid;
+ALTER TABLE family_internet_commands ADD COLUMN IF NOT EXISTS before_fingerprint text;
+ALTER TABLE family_internet_commands ADD COLUMN IF NOT EXISTS after_fingerprint text;
+DO $device_command$
+BEGIN
+  IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='family_internet_commands'::regclass AND conname='family_internet_command_target') THEN
+    ALTER TABLE family_internet_commands ADD CONSTRAINT family_internet_command_target CHECK((session_id IS NULL)<>(device_id IS NULL));
+    ALTER TABLE family_internet_commands ADD CONSTRAINT family_internet_command_device FOREIGN KEY(household_id,device_id) REFERENCES family_managed_devices(household_id,id);
+  END IF;
+END
+$device_command$;
 CREATE TABLE IF NOT EXISTS family_internet_events (
   id uuid PRIMARY KEY,
   household_id uuid NOT NULL REFERENCES family_households(id),

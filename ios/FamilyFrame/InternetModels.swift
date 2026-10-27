@@ -71,15 +71,24 @@ struct ManagedInternetDevice: Decodable, Identifiable, Equatable {
     let lastSeenAt: String?
     let managementAccessVerifiedAt: String?
     var allowApplePush: Bool? = nil
+    var defaultAccess: String? = nil
+    var desiredAccess: String? = nil
+    var observedAccess: String? = nil
+    var accessVerifiedAt: String? = nil
+    var accessPending: Bool? = nil
+    var accessError: String? = nil
+    var rewardAvailable: Bool? = nil
+    var isBlocked: Bool { desiredAccess == "blocked" && observedAccess == "blocked" && accessVerifiedAt.flatMap(Dates.instant) != nil && accessPending != true }
     var isReady: Bool { controlState == "ready" && managementAccessVerifiedAt.flatMap(Dates.instant) != nil }
     var symbol: String {
         switch kind { case "console": return "gamecontroller.fill"; case "tablet": return "ipad"; case "phone": return "iphone"; case "computer": return "laptopcomputer"; case "tv": return "tv"; default: return "desktopcomputer" }
     }
     var controlLabel: String {
-        switch controlState { case "unenrolled": return "Awaiting network setup"; case "ready": return isReady ? "Default rule: Internet blocked" : "Management access not verified"; default: return "Needs network attention" }
+        switch controlState { case "unenrolled": return "Awaiting network setup"; case "ready": return isReady ? (accessPending == true ? "Changing Internet access…" : observedAccess == "allowed" ? "Internet on · allowed by parent" : isBlocked ? "Internet off · blocking confirmed" : "Internet access unconfirmed") : "Management access not verified"; default: return "Needs network attention" }
     }
 }
 struct ManagedDeviceDraft: Encodable {
+    var defaultAccess: String = "blocked"
     let name: String
     let kind: String
     let personIds: [String]
@@ -155,6 +164,20 @@ struct RequiredChoreProgress: Decodable, Identifiable {
     let occurrenceIds: [String]
     var id: String { personId }
 }
+struct DeviceAccessRequest: Decodable, Identifiable, Equatable {
+    let id: String
+    let personId: String
+    let deviceId: String
+    let minutes: Int
+    let reason: String?
+    let status: String
+    let version: Int
+    let requestedAt: String
+    let expiresAt: String
+    let decidedAt: String?
+    let sessionId: String?
+}
+
 struct InternetSnapshot: Decodable {
     let serverTime: String
     let timezone: String
@@ -166,6 +189,7 @@ struct InternetSnapshot: Decodable {
     var devices: [ManagedInternetDevice]
     var sessions: [InternetSession]
     let progress: [RequiredChoreProgress]
+    var requests: [DeviceAccessRequest]? = nil
 }
 struct InternetHistoryItem: Decodable, Identifiable {
     let id: String

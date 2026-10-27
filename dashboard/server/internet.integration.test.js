@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createPool, transaction } from './database.js';
 import { ensureDailyOccurrences, setOccurrenceCompletion, changeChoreOccurrence, getRequiredProgress } from './chore-occurrences.js';
-import { changeInternetSession, internetSnapshot, saveManagedDevice, saveRewardPolicy, startInternetSession, syncChoreReward, resolveRewardReview } from './internet.js';
+import { changeInternetSession, internetSnapshot, saveManagedDevice, changeDeviceAccess, saveRewardPolicy, startInternetSession, syncChoreReward, resolveRewardReview } from './internet.js';
 import { createFrameAccessCode, frameAuthorization, redeemFrameAccess, parentCapabilities, changeMemberCapabilities, transferOwnership, revokeFrameAccessAfterRecovery } from './capabilities.js';
 import { managedPolicyPlan, requiredPilotChecks, reviewedPolicyFingerprint } from './unifi.js';
 import { processInternetJobs } from './internet-worker.js';
@@ -56,9 +56,9 @@ test('reward reservation, frame authorization and durable provider reconciliatio
   try {
     assert.equal((await pool.query('SELECT current_database() AS name')).rows[0].name, 'family_frame_tests');
     await pool.query(`CREATE SCHEMA ${schema}`); created = true;
-    for (const name of ['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql', 'calendar-sync-schema.sql', 'chore-schema.sql','school-schema.sql', 'account-notifications-schema.sql', 'internet-schema.sql', 'account-deletion-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
+    for (const name of ['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql', 'calendar-sync-schema.sql', 'chore-schema.sql','school-schema.sql', 'account-notifications-schema.sql', 'internet-schema.sql','family-notifications-schema.sql', 'account-deletion-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
     await db.query(await readFile(new URL('internet-schema.sql', import.meta.url), 'utf8'));
-    assert.equal(await verifySchema(db, schema, 36), 36);
+    assert.equal(await verifySchema(db, schema, 37), 37);
     await db.query('CREATE TABLE fixture_auth_sessions(id uuid PRIMARY KEY,user_id uuid NOT NULL,not_after timestamptz)');
     await db.query('INSERT INTO fixture_auth_sessions(id,user_id) VALUES($1,$2)', [parent.sessionId, parent.user.id]);
     await db.query('INSERT INTO family_households(id,title,timezone) VALUES($1,$2,$3)', [household.id, household.title, household.timezone]);
@@ -199,7 +199,7 @@ test('reward reservation, frame authorization and durable provider reconciliatio
       await db.query(`INSERT INTO family_network_integrations(household_id,site_id,source_zone_id,external_zone_id,state,management_host,pilot_checks,management_verified_at)
         VALUES($1,$2,$3,$4,'ready','forest-family-frame.vercel.app',$5::jsonb,$6)`, [household.id, site, sourceZone, externalZone, JSON.stringify(Object.fromEntries(requiredPilotChecks.map(key => [key, true]))), now]);
       const fingerprint = reviewedPolicyFingerprint([...policies.values()], ordered, { managementId: management.id, denyId: deny.id });
-      await db.query("UPDATE family_managed_devices SET control_state='ready',management_verified_at=$2,management_policy_id=$3,deny_policy_id=$4,reviewed_policy_fingerprint=$5 WHERE id=$1", [device.id, now, management.id, deny.id, fingerprint]);
+      await db.query("UPDATE family_managed_devices SET control_state='ready',observed_access='blocked',access_verified_at=$2,management_verified_at=$2,management_policy_id=$3,deny_policy_id=$4,reviewed_policy_fingerprint=$5 WHERE id=$1", [device.id, now, management.id, deny.id, fingerprint]);
       const body = { creditId: credit.id, deviceId: device.id, mutationId: randomUUID() };
       const results = await Promise.all([0, 1].map(() => startInternetSession(db, child, body, { reward: true, env, now })));
       assert.deepEqual(results[0], results[1]); session = results[0]; assert.equal(session.state, 'starting');
@@ -304,7 +304,7 @@ test('reward reservation, frame authorization and durable provider reconciliatio
       const known = (await db.query('SELECT policy_id FROM family_internet_sessions WHERE policy_id IS NOT NULL')).rows.map(row => row.policy_id);
       assert.ok(known.every(id => policies.get(id).enabled === false));
       const fingerprint = reviewedPolicyFingerprint([...policies.values()], ordered, { managementId: management.id, denyId: deny.id, ignoredSessionIds: known });
-      await db.query("UPDATE family_managed_devices SET control_state='ready',management_verified_at=$2,management_policy_id=$3,deny_policy_id=$4,reviewed_policy_fingerprint=$5 WHERE id=$1", [siblingDevice.id, now, management.id, deny.id, fingerprint]);
+      await db.query("UPDATE family_managed_devices SET control_state='ready',observed_access='blocked',access_verified_at=$2,management_verified_at=$2,management_policy_id=$3,deny_policy_id=$4,reviewed_policy_fingerprint=$5 WHERE id=$1", [siblingDevice.id, now, management.id, deny.id, fingerprint]);
       const grant = await startInternetSession(db, sibling, { creditId: siblingCredit.id, deviceId: siblingDevice.id, mutationId: randomUUID() }, { reward: true, env, now });
       const replace = provider.replacePolicy; let failed = false;
       provider.replacePolicy = async (...args) => { const result = await replace(...args); if (args[3].enabled && !failed) { failed = true; throw Error('Response lost after ALLOW'); } return result; };
@@ -317,6 +317,74 @@ test('reward reservation, frame authorization and durable provider reconciliatio
       await assert.rejects(resolveRewardReview(db, sibling, siblingCredit.id, body, { now }), e => e.status === 403);
       const restored = await resolveRewardReview(db, parent, siblingCredit.id, body, { now }); assert.equal(restored.status, 'available');
       assert.deepEqual(await resolveRewardReview(db, parent, siblingCredit.id, body, { now }), restored);
+    });
+    let freeDevice, sharedDevice;
+    const deviceRow = async id => (await db.query('SELECT * FROM family_managed_devices WHERE id=$1', [id])).rows[0];
+    const control = async (id, access, at = now) => changeDeviceAccess(db, parent, id, { access, expectedVersion: (await deviceRow(id)).version, mutationId: randomUUID() }, { env, now: at });
+    await t.test('default access separates shared earned devices from parent-only free devices', async () => {
+      freeDevice = await saveManagedDevice(db, parent, null, { name: 'Free TV', kind: 'tv', defaultAccess: 'allowed', personIds: [child.personId, sibling.personId], macAddresses: ['02:11:22:33:44:77'], mutationId: randomUUID() });
+      sharedDevice = await saveManagedDevice(db, parent, null, { name: 'Shared console', kind: 'console', defaultAccess: 'blocked', personIds: [child.personId, sibling.personId], macAddresses: ['02:11:22:33:44:88'], mutationId: randomUUID() });
+      assert.equal(freeDevice.defaultAccess, 'allowed'); assert.equal(freeDevice.desiredAccess, 'allowed'); assert.equal(sharedDevice.defaultAccess, 'blocked');
+      for (const device of [freeDevice, sharedDevice]) {
+        const plan = managedPolicyPlan({ deviceId: device.id, macAddresses: device.macAddresses, sourceZoneId: sourceZone, destinationZoneId: externalZone });
+        const management = { ...plan.management, id: randomUUID() }, deny = { ...plan.deny, enabled: device.defaultAccess === 'blocked', id: randomUUID() };
+        policies.set(management.id, management); policies.set(deny.id, deny); ordered.push(management.id, deny.id);
+        await db.query("UPDATE family_managed_devices SET control_state='ready',management_verified_at=$2,management_policy_id=$3,deny_policy_id=$4,observed_access=desired_access,access_verified_at=$2 WHERE id=$1", [device.id, now, management.id, deny.id]);
+      }
+      const first = await deviceRow(freeDevice.id), ignored = (await db.query('SELECT policy_id FROM family_internet_sessions WHERE policy_id IS NOT NULL')).rows.map(s => s.policy_id);
+      const digest = reviewedPolicyFingerprint([...policies.values()], ordered, { managementId: first.management_policy_id, denyId: first.deny_policy_id, ignoredSessionIds: ignored });
+      await db.query("UPDATE family_managed_devices SET reviewed_policy_fingerprint=$1 WHERE control_state='ready'", [digest]);
+      for (const actor of [child, sibling]) {
+        const data = await snapshot(actor);
+        assert.equal(data.devices.find(d => d.id === freeDevice.id).rewardAvailable, false);
+        assert.equal(data.devices.find(d => d.id === sharedDevice.id).rewardAvailable, true);
+      }
+      await assert.rejects(changeDeviceAccess(db, child, sharedDevice.id, { access: 'allowed', expectedVersion: 1, mutationId: randomUUID() }, { env, now }), e => e.status === 403);
+      await assert.rejects(startInternetSession(db, sibling, { creditId: siblingCredit.id, deviceId: freeDevice.id, mutationId: randomUUID() }, { reward: true, env, now }), e => e.code === 'device_not_reward');
+    });
+    await t.test('a shared device reserved by the other child disappears without disclosing their session', async () => {
+      const session = await startInternetSession(db, parent, { personId: sibling.personId, deviceId: sharedDevice.id, minutes: 60, mutationId: randomUUID() }, { env, now });
+      const data = await snapshot(child);
+      assert.equal(data.sessions.some(s => s.id === session.id), false);
+      assert.equal(data.devices.find(d => d.id === sharedDevice.id).rewardAvailable, false);
+      assert.equal((await worker()).state, 'active');
+      const off = await control(sharedDevice.id, 'blocked'); assert.equal(off.accessPending, true); assert.equal(off.observedAccess, 'unknown');
+      for (let n = 0; n < 4; n++) await worker(new Date(now.getTime() + (n + 1) * 2000));
+      assert.equal((await deviceRow(sharedDevice.id)).observed_access, 'blocked');
+      const ended = (await db.query('SELECT * FROM family_internet_sessions WHERE id=$1', [session.id])).rows[0]; assert.equal(ended.state, 'ended'); assert.equal(ended.observed_state, 'blocked');
+      assert.equal((await snapshot(child)).devices.find(d => d.id === sharedDevice.id).rewardAvailable, true);
+    });
+    await t.test('parent cutoff during an applied but unconfirmed On reconciles before blocking', async () => {
+      await control(freeDevice.id, 'blocked'); assert.equal((await worker()).state, 'blocked');
+      assert.equal((await snapshot(sibling)).devices.find(d => d.id === freeDevice.id).rewardAvailable, false, 'A free device never enters the earned pool, even when blocked.');
+      const replace = provider.replacePolicy; let dropped = false;
+      provider.replacePolicy = async (...args) => { const result = await replace(...args); if (args[3].enabled === false && !dropped) { dropped = true; throw Error('On response lost'); } return result; };
+      await control(freeDevice.id, 'allowed');
+      try { assert.equal((await worker()).state, 'checking'); } finally { provider.replacePolicy = replace; }
+      assert.equal((await deviceRow(freeDevice.id)).observed_access, 'unknown');
+      const off = await control(freeDevice.id, 'blocked'); assert.equal(off.accessPending, true);
+      assert.equal((await worker()).state, 'allowed', 'Reconcile the old applied On before publishing the newer cutoff.');
+      assert.equal((await worker()).state, 'blocked');
+      const final = await deviceRow(freeDevice.id); assert.equal(final.desired_access, 'blocked'); assert.equal(final.observed_access, 'blocked'); assert.equal(policies.get(final.deny_policy_id).enabled, true);
+      const digests = (await db.query("SELECT DISTINCT reviewed_policy_fingerprint FROM family_managed_devices WHERE control_state='ready'")).rows; assert.equal(digests.length, 1, 'Only the known enabled-bit change rebases every ready device.');
+    });
+    await t.test('confirmed parent cutoff clears terminal network uncertainty without rewriting reward accounting', async () => {
+      const id = randomUUID();
+      await db.query(`INSERT INTO family_internet_sessions(id,household_id,person_id,device_id,source,state,desired_state,observed_state,requested_at,remaining_seconds,allocated_seconds,policy_snapshot,created_by)
+        VALUES($1,$2,$3,$4,'parent','failed','blocked','unknown',$5,0,0,'{}','fixture')`, [id, household.id, child.personId, sharedDevice.id, new Date(now.getTime() + 60_000)]);
+      assert.equal((await snapshot(child)).devices.find(d => d.id === sharedDevice.id).rewardAvailable, false);
+      await control(sharedDevice.id, 'blocked'); assert.equal((await worker()).state, 'blocked');
+      const failed = (await db.query('SELECT * FROM family_internet_sessions WHERE id=$1', [id])).rows[0];
+      assert.equal(failed.state, 'failed'); assert.equal(failed.observed_state, 'blocked'); assert.ok(failed.verified_at);
+      assert.equal((await snapshot(child)).devices.find(d => d.id === sharedDevice.id).rewardAvailable, true);
+    });
+    await t.test('foreign policy drift is never accepted as part of a device toggle', async () => {
+      const extra = { ...policies.get((await deviceRow(freeDevice.id)).deny_policy_id), id: randomUUID(), description: 'foreign security rule' };
+      policies.set(extra.id, extra); ordered.push(extra.id);
+      const blocks = calls.blocks; await control(freeDevice.id, 'allowed'); assert.equal((await worker()).state, 'checking');
+      assert.equal(calls.blocks, blocks); assert.equal((await deviceRow(freeDevice.id)).observed_access, 'unknown');
+      policies.delete(extra.id); ordered = ordered.filter(id => id !== extra.id);
+      assert.equal((await worker(new Date(now.getTime() + 31_000))).state, 'allowed');
     });
   } finally {
     if (created) await pool.query(`DROP SCHEMA ${schema} CASCADE`);

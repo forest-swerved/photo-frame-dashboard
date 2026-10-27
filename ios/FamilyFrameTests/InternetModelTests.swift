@@ -6,7 +6,7 @@ import UIKit
 enum InternetFixtures {
     static let time = "2026-10-17T18:00:00Z"
     static let child = "synthetic-child"
-    static let device = ManagedInternetDevice(id: "synthetic-console", name: "Synthetic console", kind: "console", personIds: [child], macAddresses: ["02:00:00:00:00:01"], version: 1, controlState: "ready", online: true, lastSeenAt: time, managementAccessVerifiedAt: time)
+    static let device = ManagedInternetDevice(id: "synthetic-console", name: "Synthetic console", kind: "console", personIds: [child], macAddresses: ["02:00:00:00:00:01"], version: 1, controlState: "ready", online: true, lastSeenAt: time, managementAccessVerifiedAt: time, defaultAccess: "blocked", desiredAccess: "blocked", observedAccess: "blocked", accessVerifiedAt: time, accessPending: false, rewardAvailable: true)
     static func credit(status: String = "available", id: String = "synthetic-credit", person: String = child) -> RewardCredit { RewardCredit(id: id, personId: person, earnedDate: "2026-10-17", minutes: 60, status: status, expiresAt: "2026-10-25T06:00:00Z", policyVersion: 1) }
     static func session(state: String = "active", version: Int = 1, observed: String = "allowed", end: String? = "2026-10-17T19:00:00Z", allDay: Bool = false, person: String = child, credit: String? = "synthetic-credit", remaining: Int = 1800) -> InternetSession {
         InternetSession(id: "synthetic-session", personId: person, deviceId: device.id, creditId: credit, source: credit == nil ? "parent" : "reward", state: state, version: version, desiredState: ["paused", "pausing", "ending", "ended"].contains(state) ? "blocked" : "allowed", observedState: observed, requestedAt: time, startedAt: state == "starting" ? nil : time, endsAt: end, remainingSeconds: remaining, verifiedAt: observed == "unknown" ? nil : time, endedAt: state == "ended" ? time : nil, reason: nil, lastError: nil, allDay: allDay)
@@ -180,4 +180,77 @@ final class InternetModelTests: XCTestCase {
         let result = await model.act(original, action: "adjust", deltaMinutes: 15)
         XCTAssertFalse(result); XCTAssertEqual(api.internetActionCalls, 0)
     }
+    func testRewardPickerExcludesFreeDevicesEvenAfterAParentBlocksThem() async {
+        let (model, api) = fixture()
+        var free = InternetFixtures.device; free.defaultAccess = "allowed"
+        var pending = InternetFixtures.device; pending.accessPending = true
+        var busy = InternetFixtures.device; busy.rewardAvailable = false
+        var unknown = InternetFixtures.device; unknown.observedAccess = "unknown"
+        api.internetData = InternetFixtures.snapshot()
+        await model.refresh()
+        XCTAssertEqual(model.rewardDevices(for: InternetFixtures.child).count, 1)
+        for unavailable in [free, pending, busy, unknown] {
+            api.internetData?.devices = [unavailable]; await model.refresh()
+            XCTAssertTrue(model.rewardDevices(for: InternetFixtures.child).isEmpty)
+        }
+        api.internetData = InternetFixtures.snapshot(integration: "pilot_required"); await model.refresh()
+        XCTAssertTrue(model.rewardDevices(for: InternetFixtures.child).isEmpty)
+    }
+
+    private func accessRequest(status: String = "pending", version: Int = 1, person: String = InternetFixtures.child, expires: String = "2026-10-18T18:00:00Z") -> DeviceAccessRequest {
+        DeviceAccessRequest(id: "synthetic-request", personId: person, deviceId: InternetFixtures.device.id, minutes: 60, reason: "Play with friends", status: status, version: version, requestedAt: InternetFixtures.time, expiresAt: expires, decidedAt: status == "pending" ? nil : InternetFixtures.time, sessionId: status == "approved" ? "synthetic-session" : nil)
+    }
+    func testChildCanRequestWithoutNetworkEnrollmentAndPendingRequestBlocksDuplicate() async {
+        let (model, api) = fixture(); api.internetData = InternetFixtures.snapshot(integration: "pilot_required")
+        await model.refresh(); let item = accessRequest(); var calls = 0
+        api.requestAccessHandler = { calls += 1; api.internetData?.requests = [item]; return item }
+        let success = await model.requestAccess(device: InternetFixtures.device, minutes: 60, reason: "Play with friends")
+        XCTAssertTrue(success); XCTAssertEqual(model.accessRequests, [item])
+        let duplicate = await model.requestAccess(device: InternetFixtures.device, minutes: 60, reason: "Again")
+        XCTAssertFalse(duplicate); XCTAssertEqual(calls, 1)
+    }
+    func testRequestRequiresOwnDeviceValidDurationAndFreshSnapshot() async {
+        let (model, api) = fixture(); await model.refresh(); var calls = 0
+        api.requestAccessHandler = { calls += 1; return self.accessRequest() }
+        for minutes in [0, 1440] { let result = await model.requestAccess(device: InternetFixtures.device, minutes: minutes, reason: ""); XCTAssertFalse(result) }
+        let long = await model.requestAccess(device: InternetFixtures.device, minutes: 60, reason: String(repeating: "x", count: 501)); XCTAssertFalse(long)
+        api.internetData?.devices = []; await model.refresh()
+        let unavailable = await model.requestAccess(device: InternetFixtures.device, minutes: 60, reason: ""); XCTAssertFalse(unavailable); XCTAssertEqual(calls, 0)
+    }
+    func testDecisionRequiresCurrentParentAuthorityAndRequestVersion() async {
+        let (model, api) = fixture(role: "admin"); let item = accessRequest()
+        api.internetData?.requests = [item]; await model.refresh(); var calls = 0
+        api.decideAccessHandler = { calls += 1; let approved = self.accessRequest(status: "approved", version: 2); api.internetData?.requests = [approved]; return approved }
+        let approved = await model.decideAccess(item, approve: true); XCTAssertTrue(approved)
+        XCTAssertEqual(model.accessRequests.first?.status, "approved"); XCTAssertTrue(model.liveSessions.isEmpty, "Approval cannot invent confirmed device access")
+        let repeated = await model.decideAccess(item, approve: true); XCTAssertFalse(repeated); XCTAssertEqual(calls, 1)
+        let (childModel, childAPI) = fixture(); childAPI.internetData?.requests = [item]; await childModel.refresh()
+        let forbidden = await childModel.decideAccess(item, approve: true); XCTAssertFalse(forbidden)
+    }
+    func testDeclineWorksWithoutNetworkButApprovalAndExpiredRequestsAreBlocked() async {
+        let (model, api) = fixture(role: "admin"); let item = accessRequest()
+        api.internetData = InternetFixtures.snapshot(role: "admin", integration: "pilot_required"); api.internetData?.requests = [item]; await model.refresh()
+        let approval = await model.decideAccess(item, approve: true); XCTAssertFalse(approval)
+        api.decideAccessHandler = { let declined = self.accessRequest(status: "declined", version: 2); api.internetData?.requests = [declined]; return declined }
+        let decline = await model.decideAccess(item, approve: false); XCTAssertTrue(decline)
+        let expired = accessRequest(expires: InternetFixtures.time); api.internetData?.requests = [expired]; await model.refresh()
+        let stale = await model.decideAccess(expired, approve: false); XCTAssertFalse(stale)
+    }
+    func testLateRequestAcknowledgmentCannotRestorePreviousAccountAfterSignOut() async {
+        let (model, api) = fixture(); await model.refresh()
+        var continuation: CheckedContinuation<DeviceAccessRequest, Error>?
+        api.requestAccessHandler = { try await withCheckedThrowingContinuation { continuation = $0 } }
+        let change = Task { await model.requestAccess(device: InternetFixtures.device, minutes: 60, reason: "") }
+        await until { continuation != nil }; model.bind(nil); continuation?.resume(returning: accessRequest())
+        let success = await change.value; XCTAssertFalse(success); XCTAssertTrue(model.accessRequests.isEmpty); XCTAssertNil(model.snapshot)
+    }
+    func testUncertainRequestIsNotReplayedAndRequiresRefresh() async {
+        let (model, api) = fixture(); await model.refresh(); var calls = 0
+        api.requestAccessHandler = { calls += 1; throw APIError(status: 0, code: "transport", message: "Unknown") }
+        let first = await model.requestAccess(device: InternetFixtures.device, minutes: 60, reason: "")
+        XCTAssertFalse(first); XCTAssertTrue(model.isStale); XCTAssertTrue(model.mutationNeedsReview)
+        let retry = await model.requestAccess(device: InternetFixtures.device, minutes: 60, reason: "")
+        XCTAssertFalse(retry); XCTAssertEqual(calls, 1)
+    }
+
 }

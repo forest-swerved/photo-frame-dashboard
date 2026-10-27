@@ -9,9 +9,9 @@ async function fixture({ role = 'admin', frame = false, ready = true, width = 39
   await page.clock.install({ time: new Date('2026-10-17T18:00:00Z') });
   const home = { id: 'fixture-home', title: 'Synthetic household', timezone: 'America/Denver' };
   const person = { id: 'fixture-child', name: 'Synthetic child', color: '#00748c' };
-  const device = { id: 'fixture-device', name: 'Synthetic console', kind: 'console', personIds: [person.id], version: 4, controlState: ready ? 'ready' : 'unenrolled', online: true, macAddresses: ['02:00:00:00:00:01'], allowApplePush: false };
+  const device = { id: 'fixture-device', name: 'Synthetic console', kind: 'console', personIds: [person.id], version: 4, controlState: ready ? 'ready' : 'unenrolled', online: true, macAddresses: ['02:00:00:00:00:01'], allowApplePush: false, defaultAccess: 'blocked', desiredAccess: 'blocked', observedAccess: ready ? 'blocked' : 'unknown', accessVerifiedAt: ready ? '2026-10-17T18:00:00Z' : null, accessPending: false, rewardAvailable: ready };
   const credit = { id: 'fixture-credit', personId: person.id, minutes: 60, earnedDate: '2026-10-17', expiresAt: '2026-10-25T06:00:00Z', status: 'available', policyVersion: 1 };
-  const state = { calls: [], errors: [], grant: null, sessions: [], credits: [credit], deleted: false, deleteGuard: false, complete: false, failRedeem: false };
+  const state = { devices: [device], calls: [], errors: [], grant: null, sessions: [], credits: [credit], deleted: false, deleteGuard: false, complete: false, failRedeem: false };
   page.on('pageerror', error => state.errors.push(error.message));
   await page.route('**/api/**', async route => {
     const req = route.request(), url = new URL(req.url()), method = req.method();
@@ -29,7 +29,7 @@ async function fixture({ role = 'admin', frame = false, ready = true, width = 39
     else if (url.pathname === '/api/calendar/connection') data = { connected: false, calendars: [] };
     else if (url.pathname === '/api/devices') data = { devices: [] };
     else if (url.pathname === '/api/members') data = { members: [{ id: 'fixture-adult', role: 'member', name: 'Synthetic adult' }] };
-    else if (url.pathname === '/api/internet') data = { serverTime: '2026-10-17T18:00:00Z', timezone: home.timezone, role: activeRole, capabilities: { manageInternet: activeRole === 'admin' }, integration: { state: ready ? 'ready' : 'pilot_required' }, devices: [{ ...device, ...(activeRole === 'admin' ? {} : { macAddresses: undefined }) }], sessions: state.sessions, policies: [{ personId: person.id, version: 1, enabled: true, rewardMinutes: 60, carryoverDays: 7, dailyLimitMinutes: 180, warningMinutes: 5, bedtime: '21:00' }], credits: state.credits, progress: [{ personId: person.id, requiredCount: 1, completedCount: state.complete ? 1 : 0, pendingApprovalCount: 0 }] };
+    else if (url.pathname === '/api/internet') data = { serverTime: '2026-10-17T18:00:00Z', timezone: home.timezone, role: activeRole, capabilities: { manageInternet: activeRole === 'admin' }, integration: { state: ready ? 'ready' : 'pilot_required' }, devices: state.devices.map(item => ({ ...item, ...(activeRole === 'admin' ? {} : { macAddresses: undefined }) })), sessions: state.sessions, policies: [{ personId: person.id, version: 1, enabled: true, rewardMinutes: 60, carryoverDays: 7, dailyLimitMinutes: 180, warningMinutes: 5, bedtime: '21:00' }], credits: state.credits, progress: [{ personId: person.id, requiredCount: 1, completedCount: state.complete ? 1 : 0, pendingApprovalCount: 0 }] };
     else if (url.pathname.endsWith('/completion')) { state.complete = true; data = { ...occurrence, status: 'completed', version: 2 }; }
     else if (url.pathname === '/api/internet/redeem' || url.pathname === '/api/internet/grants') {
       if (state.failRedeem) { await route.abort('failed'); return; }
@@ -37,6 +37,7 @@ async function fixture({ role = 'admin', frame = false, ready = true, width = 39
     } else if (url.pathname.endsWith('/actions')) { const item = state.sessions[0]; data = { ...item, state: body.action === 'pause' ? 'pausing' : body.action === 'resume' ? 'resuming' : body.action === 'end' ? 'ending' : 'adjusting', version: item.version + 1 }; state.sessions = [data]; }
     else if (url.pathname === '/api/internet/history') data = { history: [{ id: 'fixture-history', personId: person.id, deviceId: device.id, type: 'session_requested', reason: 'Synthetic weekend', createdAt: '2026-10-17T18:00:00Z' }] };
     else if (url.pathname.includes('/api/internet/policies/')) data = { personId: person.id, version: 2, ...body };
+    else if (url.pathname.endsWith('/access')) { Object.assign(device, { version: device.version + 1, desiredAccess: body.access, observedAccess: 'unknown', accessPending: true, rewardAvailable: false }); data = device; status = 202; }
     else if (url.pathname.endsWith('/resolve')) { credit.status = body.action === 'restore' ? 'available' : 'spent'; data = credit; }
     else if (url.pathname === '/api/internet/devices') data = { ...body, id: 'fixture-new-device', version: 1, controlState: 'unenrolled' };
     else if (url.pathname === '/api/frame-access/redeem') { state.grant = true; data = { token: 'fixture-child-grant', scope: 'child', personId: person.id, expiresAt: '2026-10-17T18:10:00Z' }; }
@@ -148,7 +149,7 @@ test('account deletion requires typed confirmation, clears secrets and local sta
     await f.page.getByLabel('Current password', { exact: true }).fill('fixture-long-password'); await f.page.getByLabel('Type DELETE MY ACCOUNT to confirm').fill('DELETE MY ACCOUNT');
     await f.page.getByRole('button', { name: 'Permanently delete my account', exact: true }).click(); await f.page.getByText('Your account has been deleted.', { exact: true }).waitFor();
     const body = f.state.calls.find(call => call.path === '/api/account/delete').body; assert.deepEqual(body, { password: 'fixture-long-password', confirmation: 'DELETE MY ACCOUNT' });
-    assert.equal(await f.page.getByLabel('Current password', { exact: true }).count(), 0); assert.equal(await f.page.getByRole('link', { name: 'Devices', exact: true }).count(), 0); assert.deepEqual(f.state.errors, []);
+    assert.equal(await f.page.getByLabel('Current password', { exact: true }).inputValue(), ''); assert.equal(await f.page.getByLabel('Current password', { exact: true }).isVisible(), false); assert.equal(await f.page.getByRole('link', { name: 'Devices', exact: true }).count(), 0); assert.deepEqual(f.state.errors, []);
   } finally { await f.browser.close(); }
 });
 
@@ -263,6 +264,32 @@ test('local wall-clock changes do not add or remove elapsed session time', { ski
     await f.open(); await f.page.getByText('2:00', { exact: true }).waitFor();
     await f.page.clock.setSystemTime(new Date('2026-10-17T19:00:00Z')); await f.page.clock.runFor(2000);
     assert.match(await f.page.locator('[data-session-remaining]').innerText(), /^1:5[89]$/);
+    assert.deepEqual(f.state.errors, []);
+  } finally { await f.browser.close(); }
+});
+
+
+test('parent device control stays pending and an uncertain On can be cut off with one tap', { skip: !base }, async () => {
+  const f = await fixture();
+  try {
+    await f.open(); await f.page.getByRole('button', { name: 'Turn Internet on', exact: true }).click();
+    await f.page.getByText('Changing Internet access · waiting for confirmation', { exact: true }).waitFor();
+    await f.page.getByRole('button', { name: 'Turn Internet off', exact: true }).click();
+    const calls = f.state.calls.filter(c => c.path.endsWith('/access'));
+    assert.deepEqual(calls.map(c => [c.body.access, c.body.expectedVersion]), [['allowed', 4], ['blocked', 5]]);
+    await f.page.getByRole('button', { name: 'Turn Internet on', exact: true }).waitFor();
+    assert.equal(await f.page.getByRole('button', { name: 'Turn Internet on', exact: true }).isDisabled(), true);
+    assert.deepEqual(f.state.errors, []);
+  } finally { await f.browser.close(); }
+});
+test('child picker hides free devices and reservations instead of listing disabled choices', { skip: !base }, async () => {
+  const f = await fixture({ role: 'child' });
+  try {
+    f.state.devices.push({ ...f.device, id: 'new-console', name: 'New console' }, { ...f.device, id: 'free-tv', name: 'Free TV', defaultAccess: 'allowed' }, { ...f.device, id: 'busy-ipad', name: 'Busy iPad', rewardAvailable: false });
+    await f.open(); await f.page.getByRole('button', { name: 'Use reward', exact: true }).click();
+    assert.equal(await f.page.getByRole('dialog').getByRole('radio').count(), 2);
+    assert.equal(await f.page.getByRole('dialog').getByText('Free TV', { exact: true }).count(), 0);
+    assert.equal(await f.page.getByRole('dialog').getByText('Busy iPad', { exact: true }).count(), 0);
     assert.deepEqual(f.state.errors, []);
   } finally { await f.browser.close(); }
 });

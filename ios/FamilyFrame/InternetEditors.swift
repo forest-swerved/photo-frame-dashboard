@@ -12,7 +12,7 @@ struct RewardDevicePicker: View {
             List {
                 Section { Text("Choose one device for your \(credit.minutes)-minute reward.").font(.headline); Text("Your other devices keep their default Internet block.").font(.subheadline).foregroundStyle(Brand.muted) }
                 if !network.integrationReady { Section { Text(network.snapshot?.integration.detail ?? "Network setup is not complete.").foregroundStyle(Brand.muted) } }
-                ForEach(network.devices.filter { $0.personIds.contains(credit.personId) }) { device in
+                ForEach(network.rewardDevices(for: credit.personId)) { device in
                     let available = network.deviceAvailable(device, for: credit.personId)
                     Button { selected = device.id } label: {
                         HStack(spacing: 12) {
@@ -22,7 +22,7 @@ struct RewardDevicePicker: View {
                         }.foregroundStyle(Brand.ink).frame(minHeight: 44)
                     }.disabled(!available || starting).accessibilityAddTraits(selected == device.id ? .isSelected : [])
                 }
-                if network.devices.isEmpty { Text("A parent needs to assign a device to your profile first.").foregroundStyle(Brand.muted) }
+                if network.rewardDevices(for: credit.personId).isEmpty { Text("No earned-time devices are currently blocked and available. Your reward stays saved; try again when a device is free.").foregroundStyle(Brand.muted) }
                 if let message = network.message { Text(message).foregroundStyle(Brand.red) }
                 if review { Text("Close this picker, refresh Devices and review your reward and any session before trying again.").foregroundStyle(Brand.red) }
                 Section {
@@ -148,6 +148,7 @@ struct ManagedDeviceEditor: View {
     @State private var kind: String
     @State private var people: Set<String>
     @State private var addresses: String
+    @State private var defaultAccess: String
     @State private var allowApplePush: Bool
     @State private var saving = false
     @State private var review = false
@@ -156,6 +157,7 @@ struct ManagedDeviceEditor: View {
         self.network = network; self.device = device
         _name = State(initialValue: device?.name ?? ""); _kind = State(initialValue: device?.kind ?? "console")
         _people = State(initialValue: Set(device?.personIds ?? [])); _addresses = State(initialValue: device?.macAddresses?.joined(separator: "\n") ?? "")
+        _defaultAccess = State(initialValue: device?.defaultAccess ?? "blocked")
         _allowApplePush = State(initialValue: device?.allowApplePush ?? ["tablet", "phone"].contains(device?.kind ?? "console"))
     }
     var body: some View {
@@ -165,6 +167,9 @@ struct ManagedDeviceEditor: View {
                     TextField("PS5, Switch 2, iPad…", text: $name).textInputAutocapitalization(.words)
                     Picker("Type", selection: $kind) { Text("Console").tag("console"); Text("Tablet").tag("tablet"); Text("Phone").tag("phone"); Text("Computer").tag("computer"); Text("TV").tag("tv"); Text("Other").tag("other") }
                 }
+                Section {
+                    Picker("Default Internet", selection: $defaultAccess) { Text("Blocked · kids earn time").tag("blocked"); Text("Allowed · parent control").tag("allowed") }
+                } footer: { Text("Only blocked-by-default devices enter the earned-time pool. Parent on/off controls work independently of tasks.") }
                 Section("Assigned children") {
                     ForEach(model.snapshot?.people ?? []) { person in
                         Toggle(person.name, isOn: Binding(get: { people.contains(person.id) }, set: { enabled in if enabled { people.insert(person.id) } else { people.remove(person.id) } }))
@@ -181,6 +186,7 @@ struct ManagedDeviceEditor: View {
                 if review { Text("Close and refresh the device list to review whether the change was saved.").foregroundStyle(Brand.red) }
                 if device != nil { Section { Button("Remove device", role: .destructive) { removing = true }.disabled(saving || review || !network.canChange) } }
             }.navigationTitle(device == nil ? "Add device" : "Edit device").navigationBarTitleDisplayMode(.inline)
+                .onAppear { if device == nil && people.isEmpty { people = Set((model.snapshot?.people ?? []).map(\.id)) } }
                 .onChange(of: kind) { _, value in if device == nil { allowApplePush = ["tablet", "phone"].contains(value) } }
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(saving) }
@@ -193,6 +199,7 @@ struct ManagedDeviceEditor: View {
     private var validMACs: Bool { (1...8).contains(macs.count) && Set(macs).count == macs.count && macs.allSatisfy { $0.range(of: "^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$", options: .regularExpression) != nil } }
     private func save() async {
         saving = true; var draft = ManagedDeviceDraft(name: name.trimmingCharacters(in: .whitespacesAndNewlines), kind: kind, personIds: people.sorted(), macAddresses: macs.sorted(), mutationId: UUID().uuidString.lowercased(), expectedVersion: device?.version)
+        draft.defaultAccess = defaultAccess
         draft.allowApplePush = ["tablet", "phone"].contains(kind) && allowApplePush
         let success = await network.saveDevice(draft, id: device?.id); saving = false
         if success { dismiss() } else { review = network.mutationNeedsReview }
