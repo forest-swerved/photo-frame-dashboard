@@ -16,7 +16,7 @@ struct RewardDevicePicker: View {
                     let available = network.deviceAvailable(device, for: credit.personId)
                     Button { selected = device.id } label: {
                         HStack(spacing: 12) {
-                            Image(systemName: device.symbol).frame(width: 28).foregroundStyle(Brand.cyanInk)
+                            DeviceArtwork(device: device, size: 64)
                             VStack(alignment: .leading, spacing: 5) { Text(device.name).font(.headline); if !available { Text(device.isReady ? "A session is already using this child or device" : device.controlLabel).font(.caption).foregroundStyle(Brand.muted) } }
                             Spacer(); Image(systemName: selected == device.id ? "checkmark.circle.fill" : "circle").foregroundStyle(Brand.cyanInk)
                         }.foregroundStyle(Brand.ink).frame(minHeight: 44)
@@ -127,7 +127,7 @@ struct ManagedDeviceDetail: View {
         let device = network.devices.first(where: { $0.id == original.id }) ?? original
         List {
             Section {
-                Label(device.name, systemImage: device.symbol).font(.title2.bold())
+                HStack(spacing: 16) { DeviceArtwork(device: device, size: 96); Text(device.name).font(.title2.bold()) }
                 Text(device.controlLabel).font(.headline).foregroundStyle(Brand.cyanInk)
                 Text(device.personIds.map { id in model.snapshot?.people.first(where: { $0.id == id })?.name ?? "Family member" }.joined(separator: " · "))
                 if let last = device.lastSeenAt { Text("Last seen \(Dates.relative(last))").font(.caption).foregroundStyle(Brand.muted) }

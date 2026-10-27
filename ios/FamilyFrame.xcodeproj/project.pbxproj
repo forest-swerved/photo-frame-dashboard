@@ -35,6 +35,7 @@
 		CD9FAFAFD868C40709F20A9D /* EntryUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC1569D1880B64B10B170B11 /* EntryUITests.swift */; };
 		D40A9E74C5ECE583E02681D8 /* ChoreBreakScreens.swift in Sources */ = {isa = PBXBuildFile; fileRef = 169502A9B4C740E6C598DB80 /* ChoreBreakScreens.swift */; };
 		DD607BC25B71288AD9F4A46C /* SecureStorageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7D27BA2E54A0142861C3E1A /* SecureStorageTests.swift */; };
+		ED504151B2079FD07269DE76 /* DeviceArtwork.swift in Sources */ = {isa = PBXBuildFile; fileRef = D88092FA1641532BC979CE98 /* DeviceArtwork.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -82,6 +83,7 @@
 		D062E39CEA18BFA55B8B5978 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		D197380552E546061B894DC1 /* FamilyFrame.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = FamilyFrame.xcconfig; sourceTree = "<group>"; };
 		D7D27BA2E54A0142861C3E1A /* SecureStorageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureStorageTests.swift; sourceTree = "<group>"; };
+		D88092FA1641532BC979CE98 /* DeviceArtwork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceArtwork.swift; sourceTree = "<group>"; };
 		E6FFF3EC13423797DE6DAB0D /* FamilyAccessScreens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FamilyAccessScreens.swift; sourceTree = "<group>"; };
 		EAEBF625E1A80A12A3DDACB0 /* SecureStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureStorage.swift; sourceTree = "<group>"; };
 		EC8E5981AE0D262FBAEB35D1 /* CalendarAgendaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarAgendaTests.swift; sourceTree = "<group>"; };
@@ -145,6 +147,7 @@
 				169502A9B4C740E6C598DB80 /* ChoreBreakScreens.swift */,
 				459C736616AA4A2041FB0294 /* ChoreOccurrences.swift */,
 				01C6B9845A12AE50B741CA05 /* DashboardScreens.swift */,
+				D88092FA1641532BC979CE98 /* DeviceArtwork.swift */,
 				24DB5BC43100F41E6CDC1D57 /* DevicesScreens.swift */,
 				FC4DB9B036EC0D245C455E9A /* EditorAndSettings.swift */,
 				E6FFF3EC13423797DE6DAB0D /* FamilyAccessScreens.swift */,
@@ -308,6 +311,7 @@
 				D40A9E74C5ECE583E02681D8 /* ChoreBreakScreens.swift in Sources */,
 				B9C8E72786D5CD7CCF4C841A /* ChoreOccurrences.swift in Sources */,
 				4A620E973FD95E3EA5F86536 /* DashboardScreens.swift in Sources */,
+				ED504151B2079FD07269DE76 /* DeviceArtwork.swift in Sources */,
 				6EEDCAF1E99AD19F248D36C2 /* DevicesScreens.swift in Sources */,
 				0470EF284C159BC254D0EB2A /* EditorAndSettings.swift in Sources */,
 				7AA4C91D4B47D399EBB2235E /* FamilyAccessScreens.swift in Sources */,
@@ -449,7 +453,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = FamilyFrame/FamilyFrame.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				INFOPLIST_FILE = FamilyFrame/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -574,7 +578,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = FamilyFrame/FamilyFrame.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				INFOPLIST_FILE = FamilyFrame/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
