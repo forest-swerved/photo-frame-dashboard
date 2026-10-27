@@ -148,11 +148,12 @@ test('account deletion requires typed confirmation, clears secrets and local sta
   try {
     await f.open('setup');
     await f.page.locator('[data-action="settings-section"][data-id="account"]').click(); await f.page.getByRole('button', { name: 'Delete my account', exact: true }).click();
+    const retainedPassword = await f.page.getByLabel('Current password', { exact: true }).elementHandle();
     await f.page.getByLabel('Current password', { exact: true }).fill('fixture-long-password'); await f.page.getByLabel('Type DELETE MY ACCOUNT to confirm').fill('DELETE MY ACCOUNT');
     await f.page.getByRole('button', { name: 'Permanently delete my account', exact: true }).click(); await f.page.getByText('Your account has been deleted.', { exact: true }).waitFor();
     const body = f.state.calls.find(call => call.path === '/api/account/delete').body; assert.deepEqual(body, { password: 'fixture-long-password', confirmation: 'DELETE MY ACCOUNT' });
-    assert.equal(await f.page.getByLabel('Current password', { exact: true }).inputValue(), '');
-    assert.equal(await f.page.getByLabel('Current password', { exact: true }).isVisible(), false);
+    assert.equal(await retainedPassword.evaluate(input => input.value), '', 'The removed dialog input must clear its retained password.');
+    assert.equal(await f.page.getByLabel('Current password', { exact: true }).count(), 0);
     assert.equal(await f.page.getByRole('link', { name: 'Devices', exact: true }).count(), 0); assert.deepEqual(f.state.errors, []);
   } finally { await f.browser.close(); }
 });

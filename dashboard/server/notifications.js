@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Temporal } from '@js-temporal/polyfill';
 import { ApiError, requireValue, uuidField } from './errors.js';
-import { decryptCredentials, digest, encryptCredentials, keyedDigest } from './credentials.js';
+import { decryptCredentials, encryptCredentials, keyedDigest } from './credentials.js';
 import { one, transaction } from './database.js';
 import { classifyApnsResult, preflightApns, sendApns } from './apns.js';
 import { activeMobileSessionSql as activeSession } from './mobile.js';
@@ -340,15 +340,8 @@ async function scanHousehold(db, household, now) {
       const type = calendarBad ? 'calendar_unavailable' : 'calendar_restored';
       events += await insertEvent(client, { householdId: household.id, key: `${type}:${iso(checkpoint.scanned_at)}`, type, at: now, expiresAt: new Date(now.getTime() + 6 * 3600_000) });
     }
-    if (!inserted && healthy) for (const item of cache.snapshot.events || []) {
-      if (item.allDay || !item.startAt || !Number.isFinite(Date.parse(item.startAt))) continue;
-      const start = new Date(item.startAt);
-      const at = new Date(start.getTime() - 10 * 60_000);
-      // A cache may recover after the ten-minute threshold. Catch up while the
-      // event is still upcoming; the occurrence key prevents repeat reminders.
-      if (at <= now && start > now) events += await insertEvent(client, { householdId: household.id,
-        key: `calendar_upcoming:${digest(`${item.calendarId}:${item.id}:${item.startAt}`)}`, type: 'calendar_upcoming', at, expiresAt: start, payload: { title: String(item.title || 'An event').slice(0, 160) } });
-    }
+    // Timed event reminders belong on the paired frame. Apple Calendar owns
+    // event-start alerts on phones; do not enqueue new account/APNs reminders.
     const devices = (await client.query('SELECT id,last_seen_at FROM family_devices WHERE household_id=$1 AND revoked_at IS NULL AND expires_at>$2', [household.id, now])).rows;
     const frames = Object.fromEntries(devices.filter(device => device.last_seen_at).map(device => [device.id, frameIsOffline(device.last_seen_at, now)]));
     if (!inserted) for (const [id, offline] of Object.entries(frames)) if (checkpoint.state.frames?.[id] !== undefined && checkpoint.state.frames[id] !== offline) {
@@ -424,6 +417,7 @@ async function deliver(db, lease, env, now, send) {
     const session = await one(client, `SELECT s.* FROM family_mobile_sessions s WHERE s.id=$1 AND ${activeSession()} AND s.household_id=$3 FOR SHARE OF s`, [delivery.mobile_session_id, now, delivery.household_id]);
     if (!session || delivery.disabled_at || delivery.installation_session !== delivery.mobile_session_id) return suppress('recipient_inactive');
     if (new Date(delivery.expires_at) <= now) return suppress('expired');
+    if (delivery.type === 'calendar_upcoming') return suppress('frame_only');
     if (delivery.attempts >= 6) return suppress('attempt_limit');
     if (session.kind === 'child' && (delivery.person_id !== session.person_id || ![...childChoreKinds, ...childNetworkKinds, ...childDailyKinds].includes(delivery.type))) return suppress('recipient_scope');
     if (delivery.payload?.excludeUserId === session.user_id || delivery.payload?.audience === 'parents' && session.kind === 'child'

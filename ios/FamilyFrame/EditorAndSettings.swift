@@ -264,7 +264,7 @@ struct NotificationPreferencesScreen: View {
             }
             if model.canViewChildSettings {
                 Section("Around the house") {
-                    Toggle("Calendar reminders", isOn: $value.calendarEvents)
+                    Toggle("Calendar connection status", isOn: $value.calendarEvents)
                     Toggle("Frame offline / reconnected", isOn: $value.frameStatus)
                 }
             }
