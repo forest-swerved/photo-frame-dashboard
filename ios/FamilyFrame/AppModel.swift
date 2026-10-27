@@ -571,6 +571,17 @@ final class AppModel: ObservableObject {
             NotificationController.shared.registrationMessage = "Registered with Family Frame"
         } catch { NotificationController.shared.registrationMessage = "Push registration has not reached Family Frame. Open the app online to retry." }
     }
+    func sendTestNotification() async throws {
+        guard session != nil else { throw APIError(status: 401, code: "session_required", message: "Sign in again to test notifications.") }
+        let started = generation
+        do {
+            try await api.sendTestNotification()
+            guard started == generation else { throw CancellationError() }
+        } catch {
+            guard started == generation else { throw CancellationError() }
+            throw error
+        }
+    }
     func signOut() async {
         do { try await api.signOut(); await forgetSession(reason: nil) }
         catch {

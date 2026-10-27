@@ -85,6 +85,7 @@ final class DashboardAPI: FamilyAPI {
     func deleteChore(_ chore: Chore) async throws { }
     func markRead(id: String) async throws { markReadCalls += 1; try await markReadHandler?() }
     func registerPush(token: String, environment: String, installationID: String) async throws { }
+    func sendTestNotification() async throws { }
     func savePreferences(_ prefs: NotificationPreferences) async throws -> NotificationPreferences { try await savePreferencesHandler?(prefs) ?? prefs }
     func devices() async throws -> [MobileDevice] { [] }
     func revokeDevice(id: String) async throws { }

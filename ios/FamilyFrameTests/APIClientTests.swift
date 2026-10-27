@@ -76,6 +76,20 @@ final class APIClientTests: XCTestCase {
         }
         try await api.registerPush(token: "test-token", environment: "sandbox", installationID: installation)
     }
+    @MainActor func testPushDiagnosticUsesCurrentSessionAndRequiresAppleAcceptance() async throws {
+        let api = client()
+        MockProtocol.handler = { [self] request in
+            XCTAssertEqual(request.url?.path, "/api/mobile/notifications/test")
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "FamilyMobile " + String(repeating: "a", count: 43))
+            XCTAssertTrue(body(request).isEmpty)
+            return (200, Data(#"{"data":{"accepted":true}}"#.utf8))
+        }
+        try await api.sendTestNotification()
+        MockProtocol.handler = { _ in (200, Data(#"{"data":{"accepted":false}}"#.utf8)) }
+        do { try await api.sendTestNotification(); XCTFail("Rejected pushes must not report acceptance") }
+        catch let error as APIError { XCTAssertEqual(error.code, "push_test_rejected") }
+    }
     @MainActor func testSharedSignInExchangesProviderTokenForOpaqueRoleDerivedSession() async throws {
         let api = client(); var paths: [String] = []
         let token = String(repeating: "b", count: 43)

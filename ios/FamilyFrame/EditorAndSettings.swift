@@ -140,6 +140,8 @@ struct SettingsScreen: View {
     @State private var confirmSignOut = false
     @State private var signingOut = false
     @State private var deletingAccount = false
+    @State private var testingNotification = false
+    @State private var testNotificationMessage: String?
     var body: some View {
         List {
             Section {
@@ -161,6 +163,18 @@ struct SettingsScreen: View {
                 }
                 if let prefs = model.preferences { NavigationLink("Choose notifications and quiet hours") { NotificationPreferencesScreen(initial: prefs) } }
                 else { Button("Load notification preferences") { Task { await model.refresh(includePreferences: true, includeStatus: true) } }.disabled(model.isLoading) }
+                Button(testingNotification ? "Sending test…" : "Send test notification") {
+                    Task {
+                        testingNotification = true; testNotificationMessage = nil
+                        defer { testingNotification = false }
+                        do {
+                            try await model.sendTestNotification()
+                            testNotificationMessage = "Apple accepted the test. Check this iPhone for an alert. Focus and iOS settings can delay it."
+                        } catch is CancellationError { }
+                        catch { testNotificationMessage = error.localizedDescription }
+                    }
+                }.disabled(testingNotification || model.deliveryStatus?.pushConfigured != true || ![.authorized, .provisional].contains(notifications.authorizationStatus))
+                if let testNotificationMessage { Text(testNotificationMessage).font(.caption).foregroundStyle(Brand.muted) }
                 DisclosureGroup("Delivery status") {
                 if let server = model.deliveryStatus {
                     Label(server.pushConfigured ? "Apple push service configured" : "Push delivery awaits Apple developer configuration", systemImage: server.pushConfigured ? "checkmark.shield" : "clock").font(.caption).foregroundStyle(server.pushConfigured ? Brand.cyanInk : Brand.muted)
