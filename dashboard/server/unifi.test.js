@@ -1,11 +1,30 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createUniFiClient, ipv4OnlyScope, managedOrdering, managedPolicyPlan, managementHost, networkChecksPassed, normalizedMac, policyOrdering, requiredPilotChecks, unifiConfiguration, verifyNetworkScope } from './unifi.js';
+import { createUniFiClient, ipv4OnlyScope, managedOrdering, managedPolicyPlan, managementHost, networkChecksPassed, applePushReady, parentAcceptedSetup, normalizedMac, policyOrdering, requiredPilotChecks, unifiConfiguration, verifyNetworkScope } from './unifi.js';
 
 const ids = Array.from({ length: 7 }, (_, i) => `00000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`);
 const env = { FAMILY_UNIFI_API_KEY: 'synthetic-provider-key-not-a-secret', FAMILY_UNIFI_CONSOLE_ID: `${'a'.repeat(64)}:1234567890` };
 const buckets = (beforeSystemDefined = [], afterSystemDefined = []) => ({ beforeSystemDefined, afterSystemDefined });
 const plan = () => managedPolicyPlan({ deviceId: ids[0], sourceZoneId: ids[1], destinationZoneId: ids[2], macAddresses: ['02:11:22:33:44:55'] });
+test('parent-accepted setup is scoped to the actual household, devices and live IPv4 configuration without inventing passes', async () => {
+  const zone = { id: ids[1], networkIds: [ids[3]] }, network = { id: ids[3], zoneId: ids[1], management: 'GATEWAY', enabled: true, ipv4Configuration: { hostIpAddress: '10.64.0.1', prefixLength: 24 } };
+  const scope = ipv4OnlyScope(zone, [network]);
+  const basis = { version: 1, mode: 'parent_accepted', capabilityScope: 'same_day', parentUserId: ids[4], householdId: ids[5],
+    siteId: ids[0], sourceZoneId: ids[1], externalZoneId: ids[2], managementHost: 'frame.example.test', acceptedAt: '2026-10-27T23:00:00Z',
+    evidenceSha256: 'a'.repeat(64), reviewedPolicyFingerprint: 'b'.repeat(64), deviceIds: [ids[6]], networkConfigurationHash: scope.configurationHash, applePushConfigured: true };
+  const integration = { household_id: ids[5], site_id: ids[0], source_zone_id: ids[1], external_zone_id: ids[2], management_host: basis.managementHost,
+    pilot_checks: { enrollmentBasis: basis, ipv6Scope: scope } };
+  assert.equal(networkChecksPassed(integration, ids[6]), true); assert.equal(applePushReady(integration, ids[6]), true);
+  assert.equal(networkChecksPassed(integration, ids[4]), false); assert.equal(applePushReady(integration, ids[4]), false);
+  assert.equal(integration.pilot_checks.expiry, undefined); assert.equal(integration.pilot_checks.midnight, undefined);
+  for (const changed of [{ household_id: ids[4] }, { source_zone_id: ids[2] }, { management_host: 'other.example.test' },
+    { pilot_checks: { ...integration.pilot_checks, enrollmentBasis: { ...basis, evidenceSha256: '' } } },
+    { pilot_checks: { ...integration.pilot_checks, enrollmentBasis: { ...basis, capabilityScope: 'all_day' } } }]) assert.equal(parentAcceptedSetup({ ...integration, ...changed }), false);
+  const provider = { zones: async () => [zone], network: async () => network };
+  await verifyNetworkScope(provider, integration);
+  await assert.rejects(verifyNetworkScope({ ...provider, network: async () => ({ ...network, ipv6Configuration: {} }) },
+    { ...integration, pilot_checks: { ...integration.pilot_checks, ipv6: true } }), e => e.code === 'network_scope_changed');
+});
 test('IPv4-only enrollment records observed configuration without claiming an IPv6 packet test', async () => {
   const zone = { id: ids[1], networkIds: [ids[3]] }, network = { id: ids[3], zoneId: ids[1], management: 'GATEWAY', enabled: true,
     ipv4Configuration: { hostIpAddress: '10.64.0.1', prefixLength: 24 }, ipv6Configuration: null };

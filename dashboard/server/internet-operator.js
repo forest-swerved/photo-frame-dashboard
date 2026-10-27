@@ -167,8 +167,90 @@ async function exclusiveContext(client, original) {
   return { device, integration };
 }
 
+async function acceptSetup(db, input, options) {
+  await assertOperatorDatabase(db, options.expectedRole);
+  const manifest = input.manifest, now = options.now || new Date(), env = options.env || process.env;
+  requireValue(manifest?.version === 1 && Array.isArray(manifest.devices) && manifest.devices.length > 0 && manifest.devices.length <= 100,
+    422, 'invalid_acceptance', 'Supply the exact household device manifest for parent-accepted setup.');
+  uuidField(manifest.householdId); uuidField(manifest.parentUserId);
+  const summary = textField(manifest.summary, 'Parent acceptance', 1000);
+  requireValue(/^[a-f0-9]{64}$/.test(input.evidenceSha256 || ''), 422, 'invalid_acceptance', 'Provide the private pilot and parent acceptance evidence.');
+  const ids = manifest.devices.map(item => uuidField(item.deviceId));
+  requireValue(new Set(ids).size === ids.length, 422, 'invalid_acceptance', 'Each device must appear exactly once.');
+  const provider = options.provider || createUniFiClient({ env });
+  const contexts = [];
+  for (const item of manifest.devices) {
+    const context = await loadDevice(db, { ...input, ...item });
+    requireValue(context.device.household_id === manifest.householdId, 409, 'acceptance_household_changed', 'Every selected device must belong to the accepted household.');
+    contexts.push({ ...context, input: { ...input, ...item } });
+  }
+  const { config, integration } = contexts[0];
+  requireValue(integration && contexts.every(c => JSON.stringify(c.config) === JSON.stringify(config)
+    && c.integration?.version === integration.version), 409, 'integration_changed', 'Review one consistent household connection.');
+  const [info, sites, zones, policies, ordering, sessions] = await Promise.all([
+    provider.info(), provider.sites(), provider.zones(config.siteId), provider.policies(config.siteId),
+    provider.ordering(config.siteId, config.sourceZoneId, config.externalZoneId),
+    db.query('SELECT * FROM family_internet_sessions WHERE household_id=$1 AND policy_id IS NOT NULL', [manifest.householdId]),
+  ]);
+  requireValue(sites.some(s => s.id === config.siteId) && zones.some(z => z.id === config.sourceZoneId) && zones.some(z => z.id === config.externalZoneId),
+    422, 'network_selection_invalid', 'The accepted network selection must exist.');
+  const networkScope = await readIPv4Scope(provider, config.siteId, config.sourceZoneId, zones);
+  requireValue(networkScope, 409, 'network_scope_unverified', 'Parent-accepted setup currently supports a verified IPv4-only source network.');
+  const { consoleId } = unifiConfiguration(env);
+  for (const context of contexts) {
+    context.plan = inspectPolicyInventory({ ...context, policies, orderedIds: ordering.orderedFirewallPolicyIds,
+      knownSessions: sessions.rows, networkScope, consoleId, applicationVersion: info.applicationVersion, env, now });
+    requireValue(context.plan.reviewedFingerprint, 409, 'permanent_policies_unverified', 'Every device needs its exact permanent exceptions, default policy and reviewed order.');
+  }
+  const fingerprint = contexts[0].plan.reviewedFingerprint;
+  requireValue(contexts.every(c => c.plan.reviewedFingerprint === fingerprint), 409, 'policy_review_required', 'All devices must share one final reviewed policy inventory.');
+  const basis = { version: 1, mode: 'parent_accepted', capabilityScope: 'same_day', householdId: manifest.householdId,
+    parentUserId: manifest.parentUserId, acceptedAt: now.toISOString(), summary, evidenceSha256: input.evidenceSha256,
+    deviceIds: [...ids].sort(), siteId: config.siteId, sourceZoneId: config.sourceZoneId, externalZoneId: config.externalZoneId,
+    managementHost: contexts[0].plan.managementHost, applicationVersion: info.applicationVersion,
+    reviewedPolicyFingerprint: fingerprint, networkConfigurationHash: networkScope.configurationHash, applePushConfigured: true };
+  const validateOwnerAndDevices = async client => {
+    const member = await one(client, "SELECT role,person_id FROM family_members WHERE household_id=$1 AND user_id=$2 AND revoked_at IS NULL FOR SHARE", [manifest.householdId, manifest.parentUserId]);
+    requireValue(member?.role === 'admin' && !member.person_id, 403, 'parent_acceptance_required', 'The accepting person must be an active parent administrator.');
+    const all = (await client.query('SELECT id FROM family_managed_devices WHERE household_id=$1 AND removed_at IS NULL ORDER BY id FOR UPDATE', [manifest.householdId])).rows.map(r => r.id).sort();
+    requireValue(JSON.stringify(all) === JSON.stringify(basis.deviceIds), 409, 'device_inventory_changed', 'Review every active household device together before publishing the shared policy fingerprint.');
+  };
+  if (!input.apply) {
+    await validateOwnerAndDevices(db);
+    return { dryRun: true, basis, deviceCount: ids.length, providerWrites: false };
+  }
+  requireValue(input.confirmHousehold === manifest.householdId, 422, 'operator_confirmation_required', 'Confirm the exact household before accepting setup.');
+  // Re-read provider state after preparing all device plans. No provider writes
+  // happen here; exact drift checks remain mandatory for every future command.
+  const [latestPolicies, latestOrder, latestScope] = await Promise.all([
+    provider.policies(config.siteId), provider.ordering(config.siteId, config.sourceZoneId, config.externalZoneId),
+    readIPv4Scope(provider, config.siteId, config.sourceZoneId),
+  ]);
+  const latestPlan = inspectPolicyInventory({ ...contexts[0], policies: latestPolicies, orderedIds: latestOrder.orderedFirewallPolicyIds,
+    knownSessions: sessions.rows, networkScope: latestScope, consoleId, applicationVersion: info.applicationVersion, env, now });
+  requireValue(latestScope?.configurationHash === networkScope.configurationHash && latestPlan.reviewedFingerprint === fingerprint,
+    409, 'policy_review_required', 'The provider inventory changed before accepting setup.');
+  return transaction(db, async client => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`internet:${manifest.householdId}`]);
+    await validateOwnerAndDevices(client);
+    for (const context of [...contexts].sort((a, b) => a.device.id.localeCompare(b.device.id))) await exclusiveContext(client, context);
+    for (const { device, plan } of contexts) {
+      await client.query(`UPDATE family_managed_devices SET control_state='ready',management_policy_id=$2,deny_policy_id=$3,apple_push_policy_id=$4,
+        reviewed_policy_fingerprint=$5,management_verified_at=$6,desired_access=default_access,observed_access=default_access,access_verified_at=$6,access_error=NULL,version=version+1 WHERE id=$1`,
+      [device.id, plan.policyIds.management, plan.policyIds.deny, plan.policyIds.applePush, fingerprint, now]);
+    }
+    await client.query(`UPDATE family_network_integrations SET state='ready',pilot_checks=pilot_checks||$2::jsonb,
+      management_verified_at=$3,last_checked_at=$3,last_error=NULL,version=version+1 WHERE household_id=$1`,
+    [manifest.householdId, JSON.stringify({ enrollmentBasis: basis, ipv6Scope: networkScope }), now]);
+    await client.query("INSERT INTO family_internet_events(id,household_id,type,actor,details,created_at) VALUES($1,$2,'operator_parent_accepted_setup',$3,$4::jsonb,$5)",
+      [randomUUID(), manifest.householdId, `user:${manifest.parentUserId}`, JSON.stringify(basis), now]);
+    return { ready: true, basis: 'parent_accepted', deviceCount: ids.length, reviewedFingerprint: fingerprint, providerWrites: false };
+  });
+}
+
 export async function runOperator(db, command, input, options = {}) {
   const now = options.now || new Date();
+  if (command === 'accept-setup') return acceptSetup(db, input, options);
   if (command === 'inventory') {
     await assertOperatorDatabase(db, options.expectedRole);
     const devices = (await db.query('SELECT id,name,kind,person_ids,mac_addresses,control_state FROM family_managed_devices WHERE removed_at IS NULL ORDER BY name,id LIMIT 100')).rows;
@@ -279,11 +361,14 @@ export async function operatorMain(argv = process.argv.slice(2), env = process.e
     'management-policy': { type: 'string' }, 'deny-policy': { type: 'string' }, 'apple-policy': { type: 'string' },
     apply: { type: 'boolean', default: false }, 'confirm-device': { type: 'string' }, check: { type: 'string' }, result: { type: 'string' },
     operator: { type: 'string' }, summary: { type: 'string' }, evidence: { type: 'string' }, 'observed-at': { type: 'string' },
+    manifest: { type: 'string' }, 'confirm-household': { type: 'string' },
   } });
   requireValue(positionals.length === 1, 422, 'invalid_command', 'Supply one operator command. See docs/unifi-operator-guide.md.');
   const input = { deviceId: values.device, siteId: values.site, sourceZoneId: values['source-zone'], externalZoneId: values['external-zone'], beforePolicyId: values.before,
     managementPolicyId: values['management-policy'], denyPolicyId: values['deny-policy'], applePolicyId: values['apple-policy'], apply: values.apply,
-    confirmDevice: values['confirm-device'], check: values.check, result: values.result, operator: values.operator, summary: values.summary, observedAt: values['observed-at'] };
+    confirmDevice: values['confirm-device'], check: values.check, result: values.result, operator: values.operator, summary: values.summary, observedAt: values['observed-at'],
+    confirmHousehold: values['confirm-household'] };
+  if (values.manifest) input.manifest = JSON.parse(await readFile(values.manifest, 'utf8'));
   if (values.evidence) {
     const file = await readFile(values.evidence);
     requireValue(file.length > 0 && file.length <= 5 * 1024 * 1024, 422, 'invalid_proof', 'Keep each private evidence file between 1 byte and 5 MiB.');

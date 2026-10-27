@@ -6,7 +6,7 @@ import { requireHousehold } from './auth.js';
 import { parentCapabilities, requireCapability } from './capabilities.js';
 import { ApiError, dateField, householdDate, requireValue, textField, uuidField, versionField } from './errors.js';
 import { ensureDailyOccurrences, getRequiredProgress, lockChoreDay } from './chore-occurrences.js';
-import { normalizedMac, unifiConfiguration, managementHost as configuredManagementHost, networkChecksPassed } from './unifi.js';
+import { normalizedMac, unifiConfiguration, managementHost as configuredManagementHost, networkChecksPassed, applePushReady, parentAcceptedSetup } from './unifi.js';
 
 const iso = value => value ? new Date(value).toISOString() : null;
 const day = value => value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10);
@@ -204,6 +204,7 @@ export async function internetSnapshot(db, principal, { env = process.env, now =
     for (const person of people) progress.push(await getRequiredProgress(client, householdId, person.id, date));
     return { serverTime: now.toISOString(), timezone: principal.household.timezone, role: principal.role, capabilities,
       integration: { state: !configured ? 'unconfigured' : integration?.state || 'pilot_required', managementHost,
+        enrollmentBasis: parentAcceptedSetup(integration) ? 'parent_accepted' : 'pilot',
         scheduleSupport: scheduleSupport(integration, principal.household.timezone, now),
         managementAccessVerifiedAt: iso(integration?.management_verified_at), lastCheckedAt: iso(integration?.last_checked_at), error: integration?.last_error || null },
       policies: people.map(person => policyDto(policies.rows.find(p => p.person_id === person.id)) || defaultRewardPolicy(person.id)),
@@ -288,8 +289,8 @@ async function requireReady(client, householdId, device, env) {
   unifiConfiguration(env);
   const integration = await one(client, 'SELECT * FROM family_network_integrations WHERE household_id=$1', [householdId]);
   requireValue(integration?.state === 'ready' && integration.management_host === configuredManagementHost(env) && integration.management_verified_at
-    && networkChecksPassed(integration)
-    && (!device.allow_apple_push || integration.pilot_checks?.apple_push === true && device.apple_push_policy_id)
+    && networkChecksPassed(integration, device.id)
+    && (!device.allow_apple_push || applePushReady(integration, device.id) && device.apple_push_policy_id)
     && device.control_state === 'ready' && device.management_verified_at && device.management_policy_id && device.deny_policy_id && device.reviewed_policy_fingerprint,
   503, 'network_not_ready', 'A parent must finish the UniFi access and blocking checks before starting Internet time. Family Frame access must stay available.');
   return integration;
