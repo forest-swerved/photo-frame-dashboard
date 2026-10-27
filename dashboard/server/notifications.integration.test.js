@@ -6,7 +6,8 @@ import { createPool } from './database.js';
 import { digest } from './credentials.js';
 import { createChore, householdSnapshot, setCompletion } from './household.js';
 import { authenticateMobile, createMobileSession, createMobilePair, redeemMobilePair } from './mobile.js';
-import { markNotificationRead, notificationInbox, notificationPreferences, processNotifications, registerPush } from './notifications.js';
+import { markNotificationRead, notificationInbox, notificationPreferences, processNotifications, registerPush, sendTestNotification } from './notifications.js';
+import { dispatch } from './app.js';
 
 const enabled = Boolean(process.env.FAMILY_RUN_DB_TESTS === '1' && process.env.DATABASE_URL);
 test('isolated PostgreSQL mobile notification authorization, outbox, and deadline races', { skip: !enabled, timeout: 360_000 }, async t => {
@@ -76,6 +77,36 @@ test('isolated PostgreSQL mobile notification authorization, outbox, and deadlin
       for (const table of tables) { assert.equal(table.relrowsecurity, true); assert.equal(table.relforcerowsecurity, false); assert.equal(table.revoked, true); }
       const trigger = (await db.query('SELECT p.prosecdef FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=$1 AND p.proname=$2', [schema, 'family_enqueue_completion_notification'])).rows[0];
       assert.equal(trigger.prosecdef, false);
+    });
+
+    await t.test('push tests target only the current app installation, report acceptance and enforce a committed limit', async () => {
+      const messages = [];
+      const options = { env, send: async message => { messages.push(message); return { accepted: true, status: 200 }; } };
+      const response = await dispatch(new Request('https://frame.test/api/mobile/notifications/test', { method: 'POST' }), db, principals.childA,
+        'mobile/notifications/test', { notificationOptions: options });
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).data.accepted, true);
+      assert.equal(messages[0].token, 'b'.repeat(64));
+      assert.equal(messages[0].environment, 'sandbox');
+      assert.deepEqual(messages[0].payload, { aps: { alert: { title: 'Family Frame test', body: 'Your test notification arrived successfully.' }, sound: 'default' } });
+      for (let i = 0; i < 2; i++) await sendTestNotification(db, principals.childA, options);
+      await assert.rejects(sendTestNotification(db, principals.childA, options), error => error.status === 429);
+      assert.equal(messages.length, 3);
+      assert.equal((await db.query('SELECT attempts FROM family_rate_limits WHERE bucket_key=$1', [`push-test:${principals.childA.mobileSessionId}`])).rows[0].attempts, 4);
+      await assert.rejects(sendTestNotification(db, { ...principals.childA, mobileSessionId: principals.childB.mobileSessionId }, options), error => error.status === 401);
+      await assert.rejects(dispatch(new Request('https://frame.test/api/mobile/notifications/test', { method: 'POST' }), db, parent,
+        'mobile/notifications/test', { notificationOptions: options }), error => error.status === 403);
+      assert.equal(messages.length, 3);
+    });
+
+    await t.test('push tests distinguish provider rejection and missing registration without exposing provider details', async () => {
+      await assert.rejects(sendTestNotification(db, principals.childB, { env, send: async () => ({ accepted: false, status: 400, reason: 'private-provider-text' }) }),
+        error => error.status === 502 && error.code === 'push_test_rejected' && !error.message.includes('private-provider-text'));
+      await db.query('UPDATE family_push_installations SET disabled_at=now() WHERE mobile_session_id=$1', [principals.parent.mobileSessionId]);
+      let sent = false;
+      await assert.rejects(sendTestNotification(db, principals.parent, { env, send: async () => { sent = true; } }), error => error.status === 409 && error.code === 'push_registration_required');
+      assert.equal(sent, false);
+      await db.query('UPDATE family_push_installations SET disabled_at=NULL WHERE mobile_session_id=$1', [principals.parent.mobileSessionId]);
     });
 
     await t.test('transition trigger and duplicate worker runs fan out once to parent and assigned child only', async () => {

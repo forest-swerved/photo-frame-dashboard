@@ -129,6 +129,39 @@ export async function registerPush(db, principal, body, env = process.env) {
   });
 }
 
+export async function sendTestNotification(db, principal, { env = process.env, now = new Date(), send = sendApns } = {}) {
+  // A test is always addressed to this authenticated app session, never a token
+  // or recipient supplied by the caller. Failed attempts also consume the limit.
+  const allowed = await transaction(db, async client => {
+    const session = await checkedSession(client, principal, now, 'FOR SHARE OF s');
+    const limit = await one(client, `INSERT INTO family_rate_limits(bucket_key,window_start,attempts)
+      VALUES($1,date_trunc('minute',$2::timestamptz),1) ON CONFLICT(bucket_key) DO UPDATE SET
+      attempts=CASE WHEN family_rate_limits.window_start=EXCLUDED.window_start THEN family_rate_limits.attempts+1 ELSE 1 END,
+      window_start=EXCLUDED.window_start RETURNING attempts`, [`push-test:${session.id}`, now]);
+    return limit.attempts <= 3;
+  });
+  requireValue(allowed, 429, 'push_test_rate_limited', 'Wait a minute before sending another test notification.');
+  return transaction(db, async client => {
+    const session = await checkedSession(client, principal, now, 'FOR SHARE OF s');
+    const installation = await one(client, `SELECT credentials,environment FROM family_push_installations
+      WHERE household_id=$1 AND mobile_session_id=$2 AND disabled_at IS NULL ORDER BY registered_at DESC LIMIT 1 FOR SHARE`, [session.household_id, session.id]);
+    requireValue(installation, 409, 'push_registration_required', 'This iPhone has not registered for push notifications. Enable notifications, then reopen Family Frame.');
+    let credentials;
+    try { credentials = decryptCredentials(session.household_id, installation.credentials, env); } catch { /* Sanitized below. */ }
+    requireValue(credentials?.purpose === 'apns-device', 503, 'push_registration_unavailable', 'Push registration could not be read. Reopen Family Frame and try again.');
+    let result;
+    try {
+      result = await send({ token: credentials.token, environment: installation.environment, notificationId: randomUUID(),
+        expiresAt: new Date(now.getTime() + 300_000), payload: { aps: { alert: { title: 'Family Frame test', body: 'Your test notification arrived successfully.' }, sound: 'default' } } }, env);
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'push_not_configured') throw error;
+      throw new ApiError(502, 'push_test_unavailable', 'Apple could not be reached. Try again shortly.');
+    }
+    requireValue(result?.accepted === true && result.status === 200, 502, 'push_test_rejected', 'Apple did not accept this test. Refresh notification registration and try again.');
+    return { accepted: true, acceptedAt: new Date().toISOString() };
+  });
+}
+
 export function notificationText(event) {
   const task = String(event.payload?.title || 'A task').slice(0, 160);
   const person = String(event.payload?.personName || 'Your child').slice(0, 100);

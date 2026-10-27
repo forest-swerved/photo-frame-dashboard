@@ -46,6 +46,7 @@ protocol FamilyAPI: AnyObject {
     func devices() async throws -> [MobileDevice]
     func revokeDevice(id: String) async throws
     func registerPush(token: String, environment: String, installationID: String) async throws
+    func sendTestNotification() async throws
     func preferences() async throws -> NotificationPreferences
     func savePreferences(_ prefs: NotificationPreferences) async throws -> NotificationPreferences
     func notifications() async throws -> [FamilyNotification]
@@ -217,6 +218,11 @@ final class APIClient: FamilyAPI {
     func revokeDevice(id: String) async throws { let _: Acknowledgement = try await send("/api/mobile/devices/\(id)", method: "DELETE") }
     func registerPush(token: String, environment: String, installationID: String) async throws {
         let _: Acknowledgement = try await send("/api/mobile/push-installations", method: "POST", body: encoded(["token": token, "environment": environment, "installationId": installationID]))
+    }
+    func sendTestNotification() async throws {
+        struct Result: Decodable { let accepted: Bool }
+        let result: Result = try await send("/api/mobile/notifications/test", method: "POST", body: Data("{}".utf8))
+        guard result.accepted else { throw APIError(status: 502, code: "push_test_rejected", message: "Apple did not accept this test notification.") }
     }
     func preferences() async throws -> NotificationPreferences { try await send("/api/mobile/notification-preferences") }
     func savePreferences(_ prefs: NotificationPreferences) async throws -> NotificationPreferences {
