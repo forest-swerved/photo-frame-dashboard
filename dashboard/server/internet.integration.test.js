@@ -42,15 +42,20 @@ test('reward reservation, frame authorization and durable provider reconciliatio
   const snapshot = actor => internetSnapshot(db, actor || child, { env, now });
   let created = false, device, credit, session;
   const sourceZone = randomUUID(), externalZone = randomUUID(), site = randomUUID();
-  const policies = new Map(), calls = { creates: 0, allows: 0, blocks: 0 };
-  let ordered = [], ambiguousCreate = false, failRead = false;
+  const foreignAfterIds = [randomUUID(), randomUUID()];
+  const policies = new class extends Map { set(id, policy) { return super.set(id, { metadata: { origin: 'USER_DEFINED', configurable: true }, ...policy }); } }(), calls = { creates: 0, allows: 0, blocks: 0 };
+  let ordered = [], afterOrdered = [], ambiguousCreate = false, failRead = false;
   const provider = {
     async policies() { if (failRead) throw Error('provider unreachable'); return [...policies.values()].map(row => structuredClone(row)); },
-    async createPolicy(_site, policy) { calls.creates++; const row = { ...structuredClone(policy), id: randomUUID() }; policies.set(row.id, row); if (ambiguousCreate) { ambiguousCreate = false; throw Error('ambiguous transport'); } return structuredClone(row); },
+    async createPolicy(_site, policy) { calls.creates++; const row = { ...structuredClone(policy), id: randomUUID(), metadata: { origin: 'USER_DEFINED', configurable: true } }; policies.set(row.id, row); afterOrdered.push(row.id); if (ambiguousCreate) { ambiguousCreate = false; throw Error('ambiguous transport'); } return structuredClone(row); },
     async policy(_site, id) { return structuredClone(policies.get(id)); },
     async replacePolicy(_site, id, _previous, value) { const row = { ...policies.get(id), ...structuredClone(value) }; policies.set(id, row); row.enabled ? calls.allows++ : calls.blocks++; return structuredClone(row); },
-    async ordering() { return { orderedFirewallPolicyIds: [...ordered] }; },
-    async reorder(_site, _source, _external, ids) { ordered = [...ids]; },
+    async ordering() { return { orderedFirewallPolicyIds: { beforeSystemDefined: [...ordered], afterSystemDefined: [...afterOrdered] } }; },
+    async reorder(_site, _source, _external, ids) {
+      if (policies.has(foreignAfterIds[0])) assert.deepEqual(ids.afterSystemDefined.filter(id => foreignAfterIds.includes(id)), foreignAfterIds,
+        'Existing rules after the system boundary must retain their bucket and relative order.');
+      ordered = [...ids.beforeSystemDefined]; afterOrdered = [...ids.afterSystemDefined];
+    },
   };
   const worker = at => processInternetJobs(db, { env, now: at || now, provider, clock: () => at || now });
   try {
@@ -196,9 +201,12 @@ test('reward reservation, frame authorization and durable provider reconciliatio
       const plan = managedPolicyPlan({ deviceId: device.id, macAddresses: ['02:11:22:33:44:55'], sourceZoneId: sourceZone, destinationZoneId: externalZone });
       const management = { ...plan.management, id: randomUUID() }, deny = { ...plan.deny, id: randomUUID() };
       policies.set(management.id, management); policies.set(deny.id, deny); ordered = [management.id, deny.id];
+      for (const id of foreignAfterIds) policies.set(id, { id, name: 'Existing after-system security rule', enabled: true,
+        action: { type: 'BLOCK' }, source: { zoneId: sourceZone }, destination: { zoneId: externalZone } });
+      afterOrdered = [...foreignAfterIds];
       await db.query(`INSERT INTO family_network_integrations(household_id,site_id,source_zone_id,external_zone_id,state,management_host,pilot_checks,management_verified_at)
         VALUES($1,$2,$3,$4,'ready','forest-family-frame.vercel.app',$5::jsonb,$6)`, [household.id, site, sourceZone, externalZone, JSON.stringify(Object.fromEntries(requiredPilotChecks.map(key => [key, true]))), now]);
-      const fingerprint = reviewedPolicyFingerprint([...policies.values()], ordered, { managementId: management.id, denyId: deny.id });
+      const fingerprint = reviewedPolicyFingerprint([...policies.values()], { beforeSystemDefined: ordered, afterSystemDefined: afterOrdered }, { managementId: management.id, denyId: deny.id });
       await db.query("UPDATE family_managed_devices SET control_state='ready',observed_access='blocked',access_verified_at=$2,management_verified_at=$2,management_policy_id=$3,deny_policy_id=$4,reviewed_policy_fingerprint=$5 WHERE id=$1", [device.id, now, management.id, deny.id, fingerprint]);
       const body = { creditId: credit.id, deviceId: device.id, mutationId: randomUUID() };
       const results = await Promise.all([0, 1].map(() => startInternetSession(db, child, body, { reward: true, env, now })));
@@ -266,7 +274,7 @@ test('reward reservation, frame authorization and durable provider reconciliatio
         assert.equal((await worker(at)).processed, 0, 'Live lease prevents a concurrent BLOCK/ALLOW race.');
         finish(); assert.equal((await starting).state, 'superseded');
         assert.equal((await worker(at)).state, 'ended');
-        const allowance = [...policies.values()].find(p => p.description.endsWith(`session:${grant.id}`)); assert.equal(allowance.enabled, false);
+        const allowance = [...policies.values()].find(p => p.description?.endsWith(`session:${grant.id}`)); assert.equal(allowance.enabled, false);
       } finally { finish?.(); provider.replacePolicy = replace; }
     });
     await t.test('all-day preserves an explicit home-midnight cutoff through DST and pause', async () => {
@@ -274,7 +282,7 @@ test('reward reservation, frame authorization and durable provider reconciliatio
       const grant = await startInternetSession(db, parent, { personId: child.personId, deviceId: device.id, allDay: true, mutationId: randomUUID() }, { env, now: at });
       assert.equal(grant.endsAt, '2026-11-02T07:00:00.000Z'); assert.ok(grant.remainingSeconds > 86400);
       assert.equal((await worker(new Date(at.getTime() + 5 * 60_000))).state, 'active');
-      const allowance = [...policies.values()].find(p => p.description.endsWith(`session:${grant.id}`));
+      const allowance = [...policies.values()].find(p => p.description?.endsWith(`session:${grant.id}`));
       assert.deepEqual(allowance.schedule, { mode: 'ONE_TIME_ONLY', date: '2026-11-01', timeFilter: null });
       let current = (await db.query('SELECT * FROM family_internet_sessions WHERE id=$1', [grant.id])).rows[0];
       await changeInternetSession(db, parent, grant.id, { action: 'pause', expectedVersion: current.version, mutationId: randomUUID() }, { now: at });
@@ -303,7 +311,7 @@ test('reward reservation, frame authorization and durable provider reconciliatio
       policies.set(management.id, management); policies.set(deny.id, deny); ordered.push(management.id, deny.id);
       const known = (await db.query('SELECT policy_id FROM family_internet_sessions WHERE policy_id IS NOT NULL')).rows.map(row => row.policy_id);
       assert.ok(known.every(id => policies.get(id).enabled === false));
-      const fingerprint = reviewedPolicyFingerprint([...policies.values()], ordered, { managementId: management.id, denyId: deny.id, ignoredSessionIds: known });
+      const fingerprint = reviewedPolicyFingerprint([...policies.values()], { beforeSystemDefined: ordered, afterSystemDefined: afterOrdered }, { managementId: management.id, denyId: deny.id, ignoredSessionIds: known });
       await db.query("UPDATE family_managed_devices SET control_state='ready',observed_access='blocked',access_verified_at=$2,management_verified_at=$2,management_policy_id=$3,deny_policy_id=$4,reviewed_policy_fingerprint=$5 WHERE id=$1", [siblingDevice.id, now, management.id, deny.id, fingerprint]);
       const grant = await startInternetSession(db, sibling, { creditId: siblingCredit.id, deviceId: siblingDevice.id, mutationId: randomUUID() }, { reward: true, env, now });
       const replace = provider.replacePolicy; let failed = false;
@@ -332,7 +340,7 @@ test('reward reservation, frame authorization and durable provider reconciliatio
         await db.query("UPDATE family_managed_devices SET control_state='ready',management_verified_at=$2,management_policy_id=$3,deny_policy_id=$4,observed_access=desired_access,access_verified_at=$2 WHERE id=$1", [device.id, now, management.id, deny.id]);
       }
       const first = await deviceRow(freeDevice.id), ignored = (await db.query('SELECT policy_id FROM family_internet_sessions WHERE policy_id IS NOT NULL')).rows.map(s => s.policy_id);
-      const digest = reviewedPolicyFingerprint([...policies.values()], ordered, { managementId: first.management_policy_id, denyId: first.deny_policy_id, ignoredSessionIds: ignored });
+      const digest = reviewedPolicyFingerprint([...policies.values()], { beforeSystemDefined: ordered, afterSystemDefined: afterOrdered }, { managementId: first.management_policy_id, denyId: first.deny_policy_id, ignoredSessionIds: ignored });
       await db.query("UPDATE family_managed_devices SET reviewed_policy_fingerprint=$1 WHERE control_state='ready'", [digest]);
       for (const actor of [child, sibling]) {
         const data = await snapshot(actor);

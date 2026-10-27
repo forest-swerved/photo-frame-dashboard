@@ -69,10 +69,13 @@ node --env-file=.env.operator.local server/internet-operator.js plan \
   --before "$task_before"
 ```
 
-The insertion anchor is an explicit reviewed policy UUID. Use `--before none`
-only when the foreign order is empty. Foreign policies must keep their content
-and relative order. Do not move Family Frame above existing security rules just
-to make a test pass. Review the complete plan before changing UniFi.
+The current Network Integration API returns separate `beforeSystemDefined` and
+`afterSystemDefined` custom-policy arrays. Review an explicit custom policy UUID
+in the first group, or use `--before system` to insert immediately before the
+built-in rules. Both groups retain foreign policy membership and relative order;
+built-in IDs never enter the ordering PUT. Family Frame ALLOW rules explicitly
+exclude INVALID connection states, preserving the gateway's built-in invalid
+traffic block. Review the complete plan before changing UniFi.
 
 The plan includes exact management, optional APNs, and deny request bodies, the
 grouped addresses, required checks, content/order fingerprints, and the Network
