@@ -46,6 +46,7 @@ async function fixture({ role = 'admin', frame = false, ready = true, width = 39
       state.deleted = true; data = { deleted: true };
     } else if (url.pathname === '/api/account/transfer-ownership') data = { transferred: true, userId: body.userId };
     else if (url.pathname.startsWith('/api/auth/')) data = { success: true };
+    else if (url.pathname === '/api/notifications') data = { notifications: [] };
     else throw new Error(`Missing synthetic route ${method} ${url.pathname}`);
     const payload = JSON.stringify(url.pathname.startsWith('/api/auth/') ? data : { data });
     if (url.pathname === '/api/internet' && state.deferNextRead) { state.deferNextRead = false; await new Promise(resolve => { state.releaseRead = resolve; }); }
@@ -54,7 +55,7 @@ async function fixture({ role = 'admin', frame = false, ready = true, width = 39
   });
   return { browser, page, state, device, credit, async open(view = 'devices') {
     await page.goto(new URL(`/family.html${frame ? '?display=frame' : ''}#${view}`, origin).href);
-    await page.getByRole('heading', { name: unclaimed ? 'A place for your family.' : view === 'chores' ? 'Tasks' : view[0].toUpperCase() + view.slice(1), exact: true, level: 1 }).waitFor();
+    await page.getByRole('heading', { name: unclaimed ? 'A place for your family.' : view === 'setup' ? 'Settings' : view === 'chores' ? (role === 'child' ? 'My tasks' : 'Tasks') : view[0].toUpperCase() + view.slice(1), exact: true, level: 1 }).waitFor();
   } };
 }
 
@@ -99,7 +100,7 @@ test('child completes last chore, saves credit, then selects one device for a co
 test('bare frame needs a child-scoped code before reward spending; private grant stays in memory', { skip: !base }, async () => {
   const f = await fixture({ frame: true, width: 1280 });
   try {
-    await f.open(); await f.page.getByRole('button', { name: 'Use reward', exact: true }).click();
+    await f.open(); await f.page.getByRole('button', { name: 'Unlock to use', exact: true }).click();
     await f.page.getByLabel('Unlock code', { exact: true }).fill('123456');
     assert.equal(f.state.calls.filter(call => call.path === '/api/internet/redeem').length, 0);
     await f.page.getByRole('button', { name: 'Unlock controls', exact: true }).click();
@@ -145,11 +146,12 @@ test('uncertain reward response disables repeat submission until reviewed', { sk
 test('account deletion requires typed confirmation, clears secrets and local state on synthetic success', { skip: !base }, async () => {
   const f = await fixture();
   try {
-    await f.open('setup'); await f.page.getByRole('button', { name: 'Delete my account', exact: true }).click();
+    await f.open('setup');
+    await f.page.locator('[data-action="settings-section"][data-id="account"]').click(); await f.page.getByRole('button', { name: 'Delete my account', exact: true }).click();
     await f.page.getByLabel('Current password', { exact: true }).fill('fixture-long-password'); await f.page.getByLabel('Type DELETE MY ACCOUNT to confirm').fill('DELETE MY ACCOUNT');
     await f.page.getByRole('button', { name: 'Permanently delete my account', exact: true }).click(); await f.page.getByText('Your account has been deleted.', { exact: true }).waitFor();
     const body = f.state.calls.find(call => call.path === '/api/account/delete').body; assert.deepEqual(body, { password: 'fixture-long-password', confirmation: 'DELETE MY ACCOUNT' });
-    assert.equal(await f.page.getByLabel('Current password', { exact: true }).inputValue(), ''); assert.equal(await f.page.getByLabel('Current password', { exact: true }).isVisible(), false); assert.equal(await f.page.getByRole('link', { name: 'Devices', exact: true }).count(), 0); assert.deepEqual(f.state.errors, []);
+    assert.equal(await f.page.getByLabel('Current password', { exact: true }).count(), 0); assert.equal(await f.page.getByRole('link', { name: 'Devices', exact: true }).count(), 0); assert.deepEqual(f.state.errors, []);
   } finally { await f.browser.close(); }
 });
 
@@ -159,7 +161,7 @@ test('unclaimed signed-in account can retry deletion and parent ownership transf
   finally { await f.browser.close(); }
   const parent = await fixture();
   try {
-    await parent.open('setup'); await parent.page.getByRole('button', { name: 'Transfer household ownership', exact: true }).click();
+    await parent.open('setup'); await parent.page.locator('[data-action="settings-section"][data-id="account"]').click(); await parent.page.getByRole('button', { name: 'Transfer household ownership', exact: true }).click();
     await parent.page.getByLabel('New administrator', { exact: true }).selectOption('fixture-adult'); await parent.page.getByLabel('Type TRANSFER to confirm').fill('TRANSFER'); await parent.page.getByRole('button', { name: 'Transfer ownership', exact: true }).click();
     await parent.page.waitForFunction(() => !document.querySelector('dialog').open); assert.deepEqual(parent.state.calls.find(call => call.path === '/api/account/transfer-ownership').body, { userId: 'fixture-adult' }); assert.deepEqual(parent.state.errors, []);
   } finally { await parent.browser.close(); }
@@ -187,14 +189,22 @@ test('parents edit future reward policy, review uncertain credit with a reason, 
     assert.equal(resolution.action, 'restore'); assert.ok(resolution.mutationId); assert.equal(f.credit.status, 'available');
     await f.page.getByRole('button', { name: 'Internet history', exact: true }).click();
     await f.page.getByRole('heading', { name: 'Internet time history', exact: true }).waitFor();
-    await f.page.getByText('Synthetic weekend', { exact: true }).waitFor(); assert.deepEqual(f.state.errors, []);
+    await f.page.getByText('Synthetic weekend', { exact: true }).waitFor();
+    await f.page.getByLabel('From date (optional)', { exact:true }).fill('2026-10-18');
+    await f.page.getByRole('button', { name:'Filter history', exact:true }).click();
+    await f.page.getByText('No Internet time changes in this selection.', { exact:true }).waitFor();
+    await f.page.getByLabel('From date (optional)', { exact:true }).fill('2026-10-17');
+    await f.page.getByRole('button', { name:'Filter history', exact:true }).click();
+    await f.page.getByText('Synthetic weekend', { exact:true }).waitFor();
+    assert.deepEqual(f.state.errors, []);
   } finally { await f.browser.close(); }
 });
 
 test('ownership guard keeps account signed in and directs a parent to transfer ownership', { skip: !base }, async () => {
   const f = await fixture();
   try {
-    f.state.deleteGuard = true; await f.open('setup'); await f.page.getByRole('button', { name: 'Delete my account', exact: true }).click();
+    f.state.deleteGuard = true; await f.open('setup');
+    await f.page.locator('[data-action="settings-section"][data-id="account"]').click(); await f.page.getByRole('button', { name: 'Delete my account', exact: true }).click();
     await f.page.getByLabel('Current password', { exact: true }).fill('fixture-long-password'); await f.page.getByLabel('Type DELETE MY ACCOUNT to confirm').fill('DELETE MY ACCOUNT');
     await f.page.getByRole('button', { name: 'Permanently delete my account', exact: true }).click();
     await f.page.getByText('Transfer ownership to another adult from Setup, then delete your account.', { exact: true }).waitFor();
@@ -248,6 +258,7 @@ test('acknowledged pause stays interruptible even while the following status rea
     await f.page.getByRole('button', { name: 'Pause', exact: true }).click();
     await f.page.getByText('Pausing · checking block', { exact: true }).waitFor();
     while (!f.state.releaseRead) await new Promise(resolve => setTimeout(resolve, 5));
+    await f.page.getByText('More controls', { exact: true }).click();
     assert.equal(await f.page.getByRole('button', { name: 'End now', exact: true }).isEnabled(), true);
     await f.page.getByRole('button', { name: 'End now', exact: true }).click(); await f.page.getByRole('dialog').getByRole('button', { name: 'End now', exact: true }).click();
     await f.page.getByText('Ending · checking block', { exact: true }).waitFor();
@@ -291,5 +302,17 @@ test('child picker hides free devices and reservations instead of listing disabl
     assert.equal(await f.page.getByRole('dialog').getByText('Free TV', { exact: true }).count(), 0);
     assert.equal(await f.page.getByRole('dialog').getByText('Busy iPad', { exact: true }).count(), 0);
     assert.deepEqual(f.state.errors, []);
+  } finally { await f.browser.close(); }
+});
+
+test('unavailable rewards explain device eligibility before opening a picker', { skip: !base }, async () => {
+  const f = await fixture({ role:'child' });
+  try {
+    f.device.rewardAvailable = false;
+    await f.open();
+    await f.page.getByText('No earned-time device is currently available. Your reward stays saved.', { exact:true }).waitFor();
+    assert.equal(await f.page.getByRole('button', { name:'Use reward', exact:true }).isDisabled(), true);
+    assert.equal(await f.page.getByRole('dialog').count(), 0);
+    assert.equal(f.state.calls.filter(call => call.path === '/api/internet/redeem').length, 0);
   } finally { await f.browser.close(); }
 });

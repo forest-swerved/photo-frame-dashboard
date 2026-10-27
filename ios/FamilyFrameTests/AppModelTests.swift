@@ -661,7 +661,7 @@ final class AppModelTests: XCTestCase {
         guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else { return XCTFail("Simulator window scene is required") }
         let previous = scene.windows.first(where: \.isKeyWindow)
         let window = UIWindow(windowScene: scene); window.frame = CGRect(x: 0, y: 0, width: 402, height: 874)
-        let host = UIHostingController(rootView: content.preferredColorScheme(.light).tint(Brand.red)); window.rootViewController = host; window.makeKeyAndVisible()
+        let host = UIHostingController(rootView: content.preferredColorScheme(.light).tint(Brand.primary)); window.rootViewController = host; window.makeKeyAndVisible()
         defer { window.isHidden = true; previous?.makeKey() }
         host.view.frame = window.bounds; host.view.setNeedsLayout(); host.view.layoutIfNeeded()
         try? await Task.sleep(for: .milliseconds(150))

@@ -1,30 +1,31 @@
 :root {
   color-scheme: light;
-  /* Voltage Light palette, shared with Swerved Stack's active light theme. */
+  /* Family Frame: semantic purple actions, readable neon accents, distinct danger. */
   --paper: #ffffff;
   --surface: #ffffff;
-  --surface-soft: #f5f5f7;
+  --surface-soft: #faf8fd;
   --ink: #111111;
   --ink-soft: #434349;
   --muted: #63636b;
-  --line: #dcdce2;
+  --line: #e4dfe9;
   --line-strong: #92929b;
-  --action: #de1f26;
-  --action-hover: #b5151b;
-  --action-ink: #c4181f;
-  --action-tint: #fff0f1;
-  --cyan: #00cfff;
-  --cyan-ink: #00748c;
-  --cyan-tint: #e8fbff;
-  --lime: #c8ff00;
-  --lime-ink: #4a6400;
-  --magenta: #ff2ebc;
-  --magenta-ink: #a91675;
-  --magenta-tint: #fff0fb;
+  --primary: #8a00c4;
+  --action: var(--primary);
+  --action-hover: #6d009c;
+  --action-ink: #7600a8;
+  --action-tint: #f3e8fb;
+  --cyan: #3bceff;
+  --cyan-ink: #00536e;
+  --cyan-tint: #e5f8ff;
+  --lime: #00f5a0;
+  --lime-ink: #006b49;
+  --magenta: #ff5c5c;
+  --magenta-ink: #a32929;
+  --magenta-tint: #fff0f0;
   --complete: #15803d;
   --complete-tint: #ecfdf3;
-  --warning: #92400e;
-  --warning-tint: #fffbeb;
+  --warning: #a32929;
+  --warning-tint: #fff0f0;
   --red: #c62839;
   --red-tint: #fff5f6;
   /* Compatibility aliases for existing action and selection styles. */
@@ -104,7 +105,7 @@ fieldset { min-width: 0; }
 .button-secondary:hover { background: var(--surface-soft); border-color: var(--line-strong); }
 .button-small { min-height: 42px; padding: 10px 16px; font-size: 13px; }
 .button-danger { background: var(--red); border-color: var(--red); }
-.button-danger:hover { background: var(--action-hover); border-color: var(--action-hover); }
+.button-danger:hover { background: #a41d30; border-color: #a41d30; }
 .danger-text { color: var(--red); }
 .supporting { color: var(--muted); font-size: 14px; line-height: 1.6; margin-top: 12px; }
 .soft-label { color: var(--muted); font-size: 12px; line-height: 1.6; }

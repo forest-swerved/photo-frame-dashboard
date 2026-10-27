@@ -2,67 +2,66 @@ import SwiftUI
 
 struct TodayScreen: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.dynamicTypeSize) private var typeSize
     var body: some View {
         RewardAwareScroll(network: model.internet) {
-            LazyVStack(alignment: .leading, spacing: 20) {
+            LazyVStack(alignment: .leading, spacing: 16) {
                 StaleBanner()
-                FrameCard(accent: Brand.cyan) {
+                FrameCard(accent: Brand.primary) {
+                    Text(Dates.dayLabel(model.snapshot?.date ?? model.today).uppercased()).font(.caption.weight(.bold)).foregroundStyle(Brand.primary)
                     HStack(alignment: .top) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(Dates.dayLabel(model.snapshot?.date ?? model.today).uppercased()).font(.caption.weight(.bold)).tracking(1).foregroundStyle(Brand.cyanInk)
-                            Text(model.session?.household.title ?? "Our family").font(.largeTitle.bold())
-                            Text("Good things happen together.").foregroundStyle(Brand.muted)
-                        }
-                        Spacer(); BrandMark()
+                        Text(model.session?.household.title ?? "Our family").font(.title2.bold()).fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 8)
+                        if !typeSize.isAccessibilitySize { BrandMark() }
                     }
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text("\(model.completedCount)").font(.largeTitle.bold())
-                        Text("of \(model.requiredCount) \(model.snapshot?.occurrences == nil ? "tasks" : "required tasks") done today").font(.subheadline).foregroundStyle(Brand.muted)
+                    Text(model.requiredCount == 0 ? "No required tasks today" : "\(model.completedCount) of \(model.requiredCount) required tasks done")
+                        .font(.subheadline.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                    if model.requiredCount > 0 {
+                        ProgressView(value: Double(model.completedCount), total: Double(model.requiredCount)).tint(Brand.primary)
+                            .accessibilityLabel("Required tasks approved").accessibilityValue("\(model.completedCount) of \(model.requiredCount)")
                     }
-                    ProgressView(value: Double(model.completedCount), total: Double(max(model.requiredCount, 1))).tint(Color(hex: "4a6400")).padding(10).background(Brand.lime, in: Capsule())
                 }
-                RewardHomeCard(network: model.internet).id("earned-reward")
                 SchoolDayCard()
-                InternetHomeSessions(network: model.internet)
+                ApprovalQueue()
+                RewardHomeCard(network: model.internet).id("earned-reward")
+                if model.session?.isChild == true { HomeRewardBalance(network: model.internet) }
+                if model.session?.isChild != true { InternetHomeSessions(network: model.internet) }
                 if let snapshot = model.snapshot, snapshot.occurrences != nil {
-                    if model.approvalCount > 0 { Label("\(model.approvalCount) required \(model.approvalCount == 1 ? "task" : "tasks") waiting for parent approval", systemImage: "clock").font(.subheadline).foregroundStyle(Brand.magentaInk) }
-                    ApprovalQueue()
                     ForEach(model.chorePeople.filter { model.session?.isChild != true || $0.id == model.session?.personId }) { person in
                         PersonOccurrencesCard(person: person, occurrences: model.visibleOccurrences.filter { $0.personId == person.id })
                     }
                     let shared = model.visibleOccurrences.filter { $0.personId == nil }
                     if !shared.isEmpty { PersonOccurrencesCard(person: nil, occurrences: shared) }
-                    if model.chorePeople.isEmpty && shared.isEmpty { FrameCard(accent: Brand.lime) { EmptyState(symbol: "checklist", title: "Nothing scheduled today", detail: model.canManageChores ? "Add a routine or a one-time task from Tasks." : "Your scheduled tasks will appear here.") } }
+                    if model.chorePeople.isEmpty && shared.isEmpty { FrameCard(accent: Brand.mint) { EmptyState(symbol: "checklist", title: "Nothing scheduled today", detail: model.canManageChores ? "Add a routine or a one-time task from Tasks." : "Your scheduled tasks will appear here.") } }
                 } else if let snapshot = model.snapshot {
-                    ForEach(visiblePeople(snapshot)) { person in
+                    ForEach(snapshot.people.filter { model.session?.isChild != true || $0.id == model.session?.personId }) { person in
                         PersonChoresCard(person: person, chores: snapshot.todaysChores.filter { $0.personId == person.id })
                     }
                     let shared = snapshot.todaysChores.filter { $0.personId == nil }
                     if !shared.isEmpty { PersonChoresCard(person: nil, chores: shared) }
-                    if snapshot.people.isEmpty && shared.isEmpty {
-                        FrameCard(accent: Brand.lime) { EmptyState(symbol: "checklist", title: "Room for good habits", detail: model.canManageChores ? "Create a task from the Tasks tab to get started." : "Your household hasn't added any tasks yet.") }
-                    }
+                    if snapshot.people.isEmpty && shared.isEmpty { FrameCard(accent: Brand.mint) { EmptyState(symbol: "checklist", title: "Room for good habits", detail: "Create a task from the Tasks tab to get started.") } }
                 } else if model.isLoading { ProgressView("Loading your household…").frame(maxWidth: .infinity).padding() }
-                FrameCard(accent: Brand.magenta) {
-                    HStack { Text("On the calendar").font(.title2.bold()); Spacer(); Button("View all") { model.selectedTab = 2 }.font(.subheadline.weight(.semibold)) }
-                    if let warning = model.calendarMessage ?? model.calendar?.error?.message { Text(warning).font(.caption).foregroundStyle(.orange) }
+                if model.session?.isChild == true { InternetHomeSessions(network: model.internet) }
+                FrameCard(accent: Brand.blue) {
+                    HStack { Text("Up next").font(.title2.bold()); Spacer(); Button("Calendar") { model.selectedTab = 2 }.font(.subheadline.weight(.semibold)).frame(minHeight: 44) }
+                    if let warning = model.calendarMessage ?? model.calendar?.error?.message { Text(warning).font(.caption).foregroundStyle(Brand.attentionInk) }
                     let events = model.calendarAgenda.first(where: { $0.day == model.today })?.items ?? []
-                    if events.isEmpty {
-                        Text(todayCalendarMessage).foregroundStyle(Brand.muted)
-                    } else { ForEach(Array(events.prefix(5))) { EventRow(item: $0) } }
+                    let upcoming = events.filter { item in item.event.allDay || (item.event.endAt.flatMap(Dates.instant) ?? item.event.startAt.flatMap(Dates.instant) ?? .distantFuture) >= model.presentationNow }
+                    if upcoming.isEmpty { Text(todayCalendarMessage).foregroundStyle(Brand.muted) }
+                    else { ForEach(Array(upcoming.prefix(3))) { EventRow(item: $0) } }
+                    let earlier = events.filter { item in !upcoming.contains(where: { $0.id == item.id }) }
+                    if !earlier.isEmpty { DisclosureGroup("Earlier today · \(earlier.count)") { ForEach(earlier) { EventRow(item: $0) } }.font(.subheadline) }
                 }
             }.padding(20).frame(maxWidth: 1000).frame(maxWidth: .infinity)
         }.background(Brand.background).navigationTitle("Today")
             .refreshable { await model.refresh() }
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { refreshButton } }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise") }.disabled(model.isLoading).accessibilityLabel("Refresh family dashboard") } }
     }
     private var todayCalendarMessage: String {
         guard let calendar = model.calendar else { return "Calendar availability is not confirmed yet." }
-        if calendar.status == "not_configured" { return "Connect Apple Calendar in the web dashboard's Setup." }
-        return model.confirmsCalendarAvailability(from: model.today, to: Dates.shiftedDay(model.today, by: 1)) ? "No events today." : calendar.availabilityMessage
+        if calendar.status == "not_configured" { return "Connect Apple Calendar in the web dashboard's Settings." }
+        return model.confirmsCalendarAvailability(from: model.today, to: Dates.shiftedDay(model.today, by: 1)) ? "The rest of today is clear." : calendar.availabilityMessage
     }
-    private func visiblePeople(_ snapshot: HouseholdSnapshot) -> [Person] { snapshot.people.filter { model.session?.isChild != true || $0.id == model.session?.personId } }
-    private var refreshButton: some View { Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise") }.disabled(model.isLoading).accessibilityLabel("Refresh family dashboard") }
 }
 
 struct PersonChoresCard: View {
@@ -81,8 +80,10 @@ struct PersonChoresCard: View {
             ForEach(TaskSections.groups(chores, schoolDay: model.isSchoolDay, showEmpty: showEmptySections)) { group in
                 Text(group.title).font(.headline).foregroundStyle(Brand.cyanInk).accessibilityAddTraits(.isHeader).padding(.top, 6)
                 if group.items.isEmpty { Text("No tasks scheduled.").font(.subheadline).foregroundStyle(Brand.muted) }
-                ForEach(group.items) { ChoreRow(chore: $0) }
+                ForEach(group.items.filter { !$0.completion.completed }) { ChoreRow(chore: $0) }
             }
+            let completed = chores.filter { $0.completion.completed }
+            if !completed.isEmpty { DisclosureGroup("Completed · \(completed.count)") { ForEach(completed) { ChoreRow(chore: $0) } }.font(.subheadline) }
         }
     }
 }
@@ -96,7 +97,7 @@ struct ChoreRow: View {
             Button { Task { await model.toggle(chore) } } label: {
                 Group {
                     if model.changingChores.contains(chore.id) { ProgressView() }
-                    else { Image(systemName: chore.completion.completed ? "checkmark.circle.fill" : "circle").font(.system(size: 28)).foregroundStyle(chore.completion.completed ? Color(hex: "15803d") : Brand.muted) }
+                    else { Image(systemName: chore.completion.completed ? "checkmark.circle.fill" : "circle").font(.system(size: 28)).foregroundStyle(chore.completion.completed ? Brand.successInk : Brand.muted) }
                 }.frame(width: 44, height: 44)
             }.buttonStyle(.plain).disabled(!allowCompletion || !model.canChange || model.changingChores.contains(chore.id))
                 .accessibilityLabel(chore.completion.completed ? "Reopen \(chore.title)" : "Complete \(chore.title)")
@@ -124,6 +125,8 @@ struct ChoresScreen: View {
     @State private var adding = false
     @State private var selectedPerson: String?
     @State private var routinesVisible = false
+    @State private var routineQuery = ""
+    @State private var routineSchedule = "all"
     var body: some View {
         RewardAwareScroll(network: model.internet) {
             LazyVStack(alignment: .leading, spacing: 20) {
@@ -136,9 +139,13 @@ struct ChoresScreen: View {
                         HStack { filterPill("Everyone", id: nil); ForEach(model.chorePeople) { person in filterPill(person.name, id: person.id) } }
                     }
                 }
-                if routinesVisible && model.session?.isChild != true { routinesList }
+                if routinesVisible && model.session?.isChild != true {
+                    TextField("Find a routine", text: $routineQuery).textFieldStyle(.roundedBorder).accessibilityLabel("Find a routine")
+                    Picker("Schedule", selection: $routineSchedule) { Text("All schedules").tag("all"); Text("Weekly").tag("weekly"); Text("One time").tag("one_off") }.pickerStyle(.segmented)
+                    routinesList
+                }
                 else if let snapshot = model.snapshot, snapshot.occurrences != nil {
-                    ApprovalQueue()
+                    ApprovalQueue(personID: selectedPerson)
                     ForEach(model.chorePeople.filter { (selectedPerson == nil || $0.id == selectedPerson) && (model.session?.isChild != true || $0.id == model.session?.personId) }) { person in
                         PersonOccurrencesCard(person: person, occurrences: model.visibleOccurrences.filter { $0.personId == person.id }, showEmptySections: true)
                     }
@@ -152,9 +159,12 @@ struct ChoresScreen: View {
                     let shared = snapshot.todaysChores.filter { $0.personId == nil }
                     if selectedPerson == nil && !shared.isEmpty { PersonChoresCard(person: nil, chores: shared, showEmptySections: true) }
                 }
+                DisclosureGroup("History and schedule tools") {
                 NavigationLink { ChoreHistoryScreen() } label: { Label("Task history", systemImage: "clock.arrow.circlepath").font(.headline).frame(minHeight: 44) }
                 NavigationLink { SchoolCalendarScreen() } label: { Label("School calendar", systemImage: "calendar").font(.headline).frame(minHeight: 44) }
                 if model.canManageChores { NavigationLink { ChoreBreaksScreen() } label: { Label("Holidays and task breaks", systemImage: "sun.max").font(.headline).frame(minHeight: 44) } }
+                Text("School dates choose routines. Task breaks excuse work during time away.").font(.caption).foregroundStyle(Brand.muted)
+                }
             }.padding(20).frame(maxWidth: 1000).frame(maxWidth: .infinity)
         }.background(Brand.background).navigationTitle(model.session?.isChild == true ? "My tasks" : "Tasks")
             .refreshable { await model.refresh() }
@@ -163,7 +173,7 @@ struct ChoresScreen: View {
             .sheet(item: $editing) { ChoreEditor(routine: $0) }
     }
     private var routinesList: some View {
-        ForEach(model.routines.filter { selectedPerson == nil || $0.personId == selectedPerson }) { routine in
+        ForEach(model.routines.filter { (selectedPerson == nil || $0.personId == selectedPerson) && (routineSchedule == "all" || $0.scheduleType == routineSchedule) && (routineQuery.isEmpty || $0.title.localizedCaseInsensitiveContains(routineQuery)) }) { routine in
             FrameCard(accent: routine.required ? Brand.cyan : Brand.lime) {
                 HStack {
                     Text(routine.title).font(.headline); Spacer()
@@ -185,52 +195,61 @@ struct ChoresScreen: View {
 struct CalendarScreen: View {
     @EnvironmentObject var model: AppModel
     @State private var selectedCalendar: String?
+    @State private var selectedDay: String?
+    private var days: [String] { (0..<14).map { Dates.shiftedDay(model.today, by: $0) } }
+    private var visibleAgenda: [CalendarDaySection] {
+        model.calendarAgenda.compactMap { section in
+            guard selectedDay == nil || selectedDay == section.day else { return nil }
+            let items = section.items.filter { selectedCalendar == nil || $0.event.calendarId == selectedCalendar }
+            return items.isEmpty ? nil : CalendarDaySection(day: section.day, label: section.label, items: items)
+        }
+    }
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 20) {
+            LazyVStack(alignment: .leading, spacing: 16) {
                 StaleBanner()
-                Text("The next two weeks").font(.title2.bold()).accessibilityAddTraits(.isHeader)
-                Text(model.session?.household.timezone ?? "Household time").font(.subheadline).foregroundStyle(Brand.muted)
+                HStack { Text("The next two weeks").font(.headline); Spacer(); Button("Today") { selectedDay = model.today }.frame(minHeight: 44) }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        dayFilter("All dates", day: nil)
+                        ForEach(days, id: \.self) { day in dayFilter(Dates.dayLabel(day), day: day) }
+                    }
+                }.accessibilityLabel("Choose an agenda date")
                 if let calendars = model.calendar?.calendars, !calendars.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
-                        HStack {
-                            calendarFilter("All calendars", id: nil, color: Brand.ink)
-                            ForEach(calendars) { calendar in calendarFilter(calendar.name, id: calendar.id, color: Color(hex: calendar.color)) }
-                        }
+                        HStack { calendarFilter("All calendars", id: nil, color: Brand.ink); ForEach(calendars) { calendar in calendarFilter(calendar.name, id: calendar.id, color: Color(hex: calendar.color)) } }
                     }
                 }
-                if let warning = model.calendarMessage ?? model.calendar?.error?.message { Label(warning, systemImage: "exclamationmark.triangle").font(.subheadline).foregroundStyle(Brand.red) }
-                if model.calendar?.isStale == true { Label("Showing the last calendar sync", systemImage: "clock.arrow.circlepath").font(.subheadline).foregroundStyle(Brand.muted) }
+                if let warning = model.calendarMessage ?? model.calendar?.error?.message { Label(warning, systemImage: "exclamationmark.triangle").font(.subheadline).foregroundStyle(Brand.attentionInk) }
+                if model.calendar?.isStale == true { Label("Showing the last calendar sync", systemImage: "clock.arrow.circlepath").font(.caption).foregroundStyle(Brand.muted) }
                 if model.calendar?.status == "not_configured" {
-                    FrameCard { EmptyState(symbol: "calendar.badge.plus", title: "Connect your family calendar", detail: "A parent can connect Apple Calendar in the web dashboard's Setup.") }
-                } else if model.calendarAgenda.isEmpty {
+                    FrameCard { EmptyState(symbol: "calendar.badge.plus", title: "Connect your family calendar", detail: "A parent can connect Apple Calendar in web Settings."); Link("Continue in web Settings", destination: Brand.webSettings("calendar")).frame(minHeight: 44) }
+                } else if visibleAgenda.isEmpty {
                     FrameCard {
-                        let confirmed = model.confirmsCalendarAvailability(from: model.today, to: Dates.shiftedDay(model.today, by: 14))
-                        EmptyState(symbol: confirmed ? "calendar" : "calendar.badge.clock", title: confirmed ? "A little breathing room" : "Checking your calendar", detail: confirmed ? "No events in the next two weeks." : (model.calendar?.availabilityMessage ?? "Calendar availability is not confirmed yet."))
+                        let from = selectedDay ?? model.today
+                        let through = selectedDay.map { Dates.shiftedDay($0, by: 1) } ?? Dates.shiftedDay(model.today, by: 14)
+                        let confirmed = model.confirmsCalendarAvailability(from: from, to: through)
+                        EmptyState(symbol: confirmed ? "calendar" : "calendar.badge.clock", title: confirmed ? "A little breathing room" : "Calendar not confirmed", detail: confirmed ? (selectedCalendar == nil ? "No events in this date range." : "No events from this calendar in this date range.") : model.calendar?.availabilityMessage ?? "Calendar availability is not confirmed yet.")
                     }
                 } else {
-                    ForEach(model.calendarAgenda) { section in
-                        let items = section.items.filter { selectedCalendar == nil || $0.event.calendarId == selectedCalendar }
-                        if !items.isEmpty {
-                            FrameCard(accent: Brand.cyan) {
-                                Text(section.label).font(.headline).accessibilityAddTraits(.isHeader)
-                                ForEach(items) { EventRow(item: $0) }
-                            }
-                        }
+                    ForEach(visibleAgenda) { section in
+                        FrameCard(accent: Brand.blue) { Text(section.label).font(.headline).accessibilityAddTraits(.isHeader); ForEach(section.items) { EventRow(item: $0) } }
                     }
                 }
+                Text("Times follow \(model.session?.household.timezone ?? "the household timezone"). Edit events in Apple Calendar.").font(.caption).foregroundStyle(Brand.muted)
                 if let synced = model.calendar?.lastSuccessfulSyncAt { Text("Calendar synced \(Dates.relative(synced))").font(.caption).foregroundStyle(Brand.muted) }
             }.padding(20).frame(maxWidth: 1000).frame(maxWidth: .infinity)
         }.background(Brand.background).navigationTitle("Calendar").refreshable { await model.refresh() }
-            .onChange(of: model.calendar?.calendars.map(\.id)) { _, ids in
-                if let selectedCalendar, ids?.contains(selectedCalendar) != true { self.selectedCalendar = nil }
-            }
+            .onChange(of: model.calendar?.calendars.map(\.id)) { _, ids in if let selectedCalendar, ids?.contains(selectedCalendar) != true { self.selectedCalendar = nil } }
+            .onChange(of: model.today) { _, _ in if let selectedDay, !days.contains(selectedDay) { self.selectedDay = nil } }
+    }
+    private func dayFilter(_ title: String, day: String?) -> some View {
+        Button { selectedDay = day } label: { Text(title).font(.subheadline.weight(.semibold)).padding(.horizontal, 15).frame(minHeight: 44).background(selectedDay == day ? Brand.primaryTint : .white, in: Capsule()).foregroundStyle(selectedDay == day ? Brand.primary : Brand.ink) }.buttonStyle(.plain).accessibilityAddTraits(selectedDay == day ? .isSelected : [])
     }
     private func calendarFilter(_ name: String, id: String?, color: Color) -> some View {
         Button { selectedCalendar = id } label: {
             Label { Text(name).font(.subheadline.weight(.semibold)) } icon: { Circle().fill(color).frame(width: 9, height: 9) }
-                .padding(.horizontal, 16).frame(minHeight: 44).background(selectedCalendar == id ? Brand.lime : .white, in: Capsule())
-                .foregroundStyle(Brand.ink).overlay { Capsule().stroke(Brand.line, lineWidth: 1) }
+                .padding(.horizontal, 16).frame(minHeight: 44).background(selectedCalendar == id ? Brand.primaryTint : .white, in: Capsule()).foregroundStyle(selectedCalendar == id ? Brand.primary : Brand.ink).overlay { Capsule().stroke(Brand.line, lineWidth: 1) }
         }.buttonStyle(.plain).accessibilityAddTraits(selectedCalendar == id ? .isSelected : []).accessibilityValue(selectedCalendar == id ? "Selected" : "Not selected")
     }
 }
@@ -288,30 +307,35 @@ struct EventRow: View {
 
 struct ActivityScreen: View {
     @EnvironmentObject var model: AppModel
+    private var days: [String] { Array(Set(model.notifications.map { $0.createdAt.flatMapDate(in: model.zone) ?? "unknown" })).sorted(by: >) }
     var body: some View {
         ScrollView {
-            LazyVStack(spacing: 16) {
+            LazyVStack(alignment: .leading, spacing: 16) {
                 StaleBanner()
-                if let message = model.activityMessage { Text(message).font(.subheadline).foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading) }
+                if let message = model.activityMessage { Text(message).font(.subheadline).foregroundStyle(Brand.attentionInk) }
                 if model.notifications.isEmpty && !model.hasLoadedActivity && model.activityMessage == nil { ProgressView("Loading Activity…") }
-                if model.notifications.isEmpty && model.hasLoadedActivity && model.activityMessage == nil {
-                    FrameCard(accent: Brand.magenta) { EmptyState(symbol: "bell.badge", title: "You're all caught up", detail: "Task updates and reminders will appear here. You can choose which ones reach your phone in Settings.") }
-                }
-                ForEach(model.notifications) { item in
-                    Button { Task { await model.openNotification(id: item.id) } } label: {
-                        FrameCard(accent: item.readAt == nil ? Brand.magenta : Brand.line) {
-                            HStack(alignment: .top) {
-                                Image(systemName: item.kind.contains("chore") ? "checklist" : "bell").foregroundStyle(Brand.cyanInk).frame(width: 24)
-                                VStack(alignment: .leading, spacing: 8) {
-                                    HStack { Text(item.title).font(.headline); Spacer(); if item.readAt == nil { Circle().fill(Brand.magenta).frame(width: 8, height: 8).accessibilityLabel("Unread") } }
-                                    Text(item.body).font(.subheadline).foregroundStyle(Brand.muted)
-                                    Text(Dates.relative(item.createdAt)).font(.caption).foregroundStyle(Brand.muted)
-                                }
+                if model.notifications.isEmpty && model.hasLoadedActivity && model.activityMessage == nil { FrameCard(accent: Brand.coral) { EmptyState(symbol: "bell.badge", title: "You're all caught up", detail: "Task updates and reminders will appear here. Choose which ones reach your phone in Settings.") } }
+                ForEach(days, id: \.self) { day in
+                    Text(day == model.today ? "Today" : day == Dates.shiftedDay(model.today, by: -1) ? "Yesterday" : (day == "unknown" ? "Earlier activity" : Dates.dayLabel(day))).font(.headline).accessibilityAddTraits(.isHeader)
+                    ForEach(model.notifications.filter { ($0.createdAt.flatMapDate(in: model.zone) ?? "unknown") == day }) { item in
+                        Button { Task { await model.openNotification(id: item.id) } } label: {
+                            FrameCard(accent: item.readAt == nil ? Brand.coral : Brand.line) {
+                                HStack(alignment: .top, spacing: 12) {
+                                    Image(systemName: item.kind.contains("chore") ? "checklist" : "bell").foregroundStyle(Brand.blueInk).frame(width: 24)
+                                    VStack(alignment: .leading, spacing: 7) {
+                                        HStack(alignment: .top) { Text(item.title).font(.headline); Spacer(); if item.readAt == nil { Circle().fill(Brand.coral).frame(width: 8, height: 8).accessibilityLabel("Unread") } }
+                                        Text(item.body).font(.subheadline).foregroundStyle(Brand.muted)
+                                        Text(Dates.relative(item.createdAt)).font(.caption).foregroundStyle(Brand.muted)
+                                    }
+                                }.foregroundStyle(Brand.ink)
                             }
-                        }
-                    }.buttonStyle(.plain).accessibilityHint("Opens the related task or family update and marks this activity as read")
+                        }.buttonStyle(.plain).accessibilityHint("Opens the related update and marks it read")
+                    }
                 }
             }.padding(20).frame(maxWidth: 1000).frame(maxWidth: .infinity)
         }.background(Brand.background).navigationTitle("Activity").refreshable { await model.refresh() }
     }
+}
+private extension String {
+    func flatMapDate(in zone: TimeZone) -> String? { Dates.instant(self).map { Dates.day($0, in: zone) } }
 }

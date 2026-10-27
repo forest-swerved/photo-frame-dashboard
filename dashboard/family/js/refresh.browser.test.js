@@ -56,12 +56,13 @@ async function fixture({ frame = true, width = 1280, height = 800 } = {}) {
       const chore = chores.find(item => url.pathname.includes(`/${item.id}/`));
       chore.completion = { date, completed: body.completed, version: body.expectedVersion + 1 };
       data = { choreId: chore.id, ...chore.completion, mutationId: body.mutationId };
-    } else throw new Error(`Unexpected fixture path ${url.pathname}`);
+    } else if (url.pathname === '/api/notifications') data = { notifications: [] };
+    else throw new Error(`Unexpected fixture path ${url.pathname}`);
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(url.pathname.startsWith('/api/auth/') ? data : { data }) });
   });
   return { browser, page, state, origin, async open(view = 'today') {
     await page.goto(new URL(`/family.html${frame ? '?display=frame' : ''}#${view}`, origin).href);
-    await page.getByRole('heading', { name: view === 'chores' ? 'Tasks' : view[0].toUpperCase() + view.slice(1), exact: true, level: 1 }).waitFor();
+    await page.getByRole('heading', { name: view === 'setup' ? 'Settings' : view === 'chores' ? 'Tasks' : view[0].toUpperCase() + view.slice(1), exact: true, level: 1 }).waitFor();
     if (view === 'today' || view === 'calendar') await page.locator('.calendar-meta').waitFor();
   } };
 }
@@ -70,6 +71,7 @@ test('frame polling preserves the keyed shell, scroll, focus, chosen week, and s
   const f = await fixture();
   try {
     await f.open('calendar');
+    await f.page.getByRole('button', { name: 'Week', exact: true }).click();
     await f.page.getByRole('button', { name: 'Next period', exact: true }).click();
     await f.page.getByText('Oct 19 – Oct 25', { exact: true }).waitFor();
     await f.page.locator('.calendar-meta').waitFor();
@@ -110,14 +112,14 @@ test('website shares auth refreshes, clears a revoked hint, and keeps unfinished
   const f = await fixture({ frame: false, width: 390, height: 844 });
   try {
     await f.open();
-    await f.page.getByRole('link', { name: 'Setup', exact: true }).click();
+    await f.page.getByRole('link', { name: 'Settings', exact: true }).click();
+    await f.page.locator('.settings-row[data-action="settings-section"][data-id="family"]').click();
     await f.page.getByLabel('Household name', { exact: true }).waitFor();
-    await f.page.getByRole('button', { name: 'Disconnect Apple Calendar', exact: true }).waitFor();
     assert.equal(f.state.requests.filter(path => path === '/api/auth/get-session').length, 1);
     assert.equal(f.state.requests.filter(path => path === '/api/auth/token').length, 1);
     await f.page.getByLabel('Household name', { exact: true }).fill('Unfinished fixture name');
     await f.page.getByLabel('Timezone', { exact: true }).fill('UTC');
-    await f.page.getByRole('heading', { name: 'Setup', exact: true }).click();
+    await f.page.getByRole('heading', { name: 'Settings', exact: true }).click();
     f.state.chores[0].title = 'A changed fixture chore';
     await f.page.clock.runFor(20_001);
     assert.equal(await f.page.getByLabel('Household name', { exact: true }).inputValue(), 'Unfinished fixture name');

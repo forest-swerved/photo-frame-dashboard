@@ -8,26 +8,50 @@ struct PersonOccurrencesCard: View {
     @State private var adding = false
     @State private var newSection = "tasks"
     var body: some View {
-        FrameCard(accent: person.map { Color(hex: $0.color) } ?? Brand.lime) {
-            HStack {
-                Text(person?.name ?? "Family tasks").font(.title2.bold()).accessibilityAddTraits(.isHeader)
-                Spacer()
-                let required = occurrences.filter { $0.required && !$0.isSkipped && model.isCurrentSchoolSchedule($0) }
-                Text("\(required.filter(\.isDone).count)/\(required.count) required").font(.subheadline.weight(.semibold)).monospacedDigit()
-                    .padding(.horizontal, 12).padding(.vertical, 6).background(Brand.lime, in: Capsule())
+        let current = occurrences.filter { model.isCurrentSchoolSchedule($0) && !$0.isSkipped }
+        let completed = current.filter(\.isDone)
+        let submitted = current.filter(\.isSubmitted)
+        let earlier = occurrences.filter { !model.isCurrentSchoolSchedule($0) || $0.isSkipped }
+        let required = current.filter(\.required)
+        FrameCard(accent: person.map { Color(hex: $0.color) } ?? Brand.mint) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline) { personTitle; Spacer(); progress(required) }
+                VStack(alignment: .leading, spacing: 8) { personTitle; progress(required) }
             }
-            if occurrences.isEmpty && !showEmptySections { Text("Nothing scheduled today.").foregroundStyle(Brand.muted) }
-            ForEach(TaskSections.groups(occurrences, schoolDay: model.isSchoolDay, showEmpty: showEmptySections)) { group in
-                Text(group.title).font(.headline).foregroundStyle(Brand.cyanInk).accessibilityAddTraits(.isHeader).padding(.top, 6)
-                if group.items.isEmpty {
-                    Text("No tasks scheduled.").font(.subheadline).foregroundStyle(Brand.muted)
-                    if model.canManageChores { Button("Add task") { newSection = group.id; adding = true }.font(.subheadline.weight(.semibold)).frame(minHeight: 44).disabled(!model.canChange).accessibilityLabel("Add \(group.title.lowercased()) task for \(person?.name ?? "the family")") }
+            let optional = current.filter { !$0.required }
+            if !optional.isEmpty { Text("\(optional.filter(\.isDone).count) of \(optional.count) optional tasks done").font(.caption).foregroundStyle(Brand.muted) }
+            if current.isEmpty && !showEmptySections { Text("No current tasks scheduled.").foregroundStyle(Brand.muted) }
+            ForEach(TaskSections.groups(current, schoolDay: model.isSchoolDay, showEmpty: showEmptySections)) { group in
+                let todo = group.items.filter { !$0.isDone && !$0.isSubmitted }.sorted { $0.required && !$1.required }
+                if !todo.isEmpty || showEmptySections && group.items.isEmpty {
+                    Text(group.title).font(.headline).foregroundStyle(Brand.blueInk).accessibilityAddTraits(.isHeader).padding(.top, 4)
+                    if todo.isEmpty {
+                        Text(group.items.isEmpty ? "No tasks scheduled." : "No unfinished tasks in this section.").font(.subheadline).foregroundStyle(Brand.muted)
+                        if group.items.isEmpty && model.canManageChores {
+                            Button("Add task") { newSection = group.id; adding = true }.font(.subheadline.weight(.semibold)).frame(minHeight: 44).disabled(!model.canChange).accessibilityLabel("Add \(group.title.lowercased()) task for \(person?.name ?? "the family")")
+                        }
+                    }
+                    ForEach(todo) { OccurrenceRow(occurrence: $0) }
                 }
-                ForEach(group.items) { occurrence in OccurrenceRow(occurrence: occurrence) }
+            }
+            if !submitted.isEmpty && !model.canManageChores {
+                DisclosureGroup("Waiting for approval · \(submitted.count)") { ForEach(submitted) { OccurrenceRow(occurrence: $0) } }.font(.subheadline.weight(.semibold))
+            }
+            if !completed.isEmpty { DisclosureGroup("Completed · \(completed.count)") { ForEach(completed) { OccurrenceRow(occurrence: $0) } }.font(.subheadline) }
+            if !earlier.isEmpty {
+                DisclosureGroup("Earlier schedule and excused work · \(earlier.count)") {
+                    Text("Kept for history; these tasks do not count toward today’s required work.").font(.caption).foregroundStyle(Brand.muted)
+                    ForEach(earlier) { OccurrenceRow(occurrence: $0) }
+                }.font(.subheadline)
             }
         }.sheet(isPresented: $adding) {
             ChoreEditor(routine: nil, assignedPersonID: person?.id, initialSchoolDayFilter: model.isSchoolDay ? "school_day" : model.snapshot?.schoolDay?.type == "non_school_day" ? "non_school_day" : "any", initialTaskSection: newSection)
         }
+    }
+    private var personTitle: some View { Text(person?.name ?? "Family tasks").font(.title2.bold()).accessibilityAddTraits(.isHeader) }
+    private func progress(_ required: [ChoreOccurrence]) -> some View {
+        Text(required.isEmpty ? "No required tasks" : "\(required.filter(\.isDone).count)/\(required.count) required")
+            .font(.subheadline.weight(.semibold)).monospacedDigit().padding(.horizontal, 12).padding(.vertical, 6).background(Brand.mint, in: Capsule()).foregroundStyle(Brand.ink)
     }
 }
 
@@ -43,7 +67,7 @@ struct OccurrenceRow: View {
                 Group {
                     if pending { ProgressView() }
                     else { Image(systemName: current.isSubmitted ? "clock.fill" : current.isSkipped ? "minus.circle" : current.isDone ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 28)).foregroundStyle(current.isSubmitted ? Brand.magentaInk : current.isDone ? Color(hex: "15803d") : Brand.muted) }
+                        .font(.system(size: 28)).foregroundStyle(current.isSubmitted ? Brand.magentaInk : current.isDone ? Brand.successInk : Brand.muted) }
                 }.frame(width: 44, height: 44)
             }.buttonStyle(.plain).disabled(!model.canChangeOccurrence(current) || pending || !current.canComplete || (current.isSubmitted && model.canManageChores))
                 .accessibilityLabel(current.isSubmitted ? "Withdraw submission for \(current.title)" : current.isDone ? "Reopen \(current.title)" : "Mark \(current.title) done")
@@ -53,12 +77,11 @@ struct OccurrenceRow: View {
                     Text(current.title).font(.body.weight(.medium)).strikethrough(current.isDone || current.isSkipped).foregroundStyle(Brand.ink)
                     HStack(spacing: 8) {
                         Text(current.required ? "Required" : "Optional").font(.caption.weight(.semibold))
-                        if current.status != "pending" { Text(current.statusLabel).font(.caption.weight(.semibold)).foregroundStyle(current.isSubmitted ? Brand.magentaInk : Brand.muted) }
+                        if current.status != "pending" { Text(current.isDone ? (current.requiresApproval ? "Approved" : "Done") : current.statusLabel).font(.caption.weight(.semibold)).foregroundStyle(current.isSubmitted ? Brand.magentaInk : Brand.muted) }
                     }.foregroundStyle(Brand.cyanInk)
-                    if !current.instructions.isEmpty { Text(current.instructions).font(.subheadline).foregroundStyle(Brand.muted).lineLimit(2) }
                     if !model.isCurrentSchoolSchedule(current) { Text("Earlier school schedule").font(.caption.weight(.semibold)).foregroundStyle(Brand.muted) }
                     if !current.subtasks.isEmpty { Text("\(current.subtasks.filter { $0.completed == true }.count) of \(current.subtasks.count) steps").font(.caption).foregroundStyle(Brand.muted) }
-                    if current.status == "pending" {
+                    if current.status == "pending" && model.isCurrentSchoolSchedule(current) {
                         TimelineView(.periodic(from: .now, by: 60)) { context in
                             if let deadline = ChoreDeadline(chore: current.legacy, day: current.date, zone: model.zone, now: context.date) {
                                 Text(deadline.text).font(.subheadline).foregroundStyle(deadline.urgency == .overdue ? Brand.red : deadline.urgency == .dueSoon ? Brand.cyanInk : Brand.muted)
@@ -76,8 +99,9 @@ struct OccurrenceRow: View {
 
 struct ApprovalQueue: View {
     @EnvironmentObject var model: AppModel
+    var personID: String? = nil
     var body: some View {
-        let waiting = model.visibleOccurrences.filter { $0.isSubmitted && model.isCurrentSchoolSchedule($0) }
+        let waiting = model.visibleOccurrences.filter { $0.isSubmitted && model.isCurrentSchoolSchedule($0) && (personID == nil || $0.personId == personID) }
         if model.canManageChores && !waiting.isEmpty {
             FrameCard(accent: Brand.magenta) {
                 Text("Waiting for approval · \(waiting.count)").font(.title2.bold()).accessibilityAddTraits(.isHeader)

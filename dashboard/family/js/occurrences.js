@@ -55,7 +55,7 @@ export function taskAppliesToSchoolDay(item, schoolDay) {
 }
 
 export function taskProgress(items, schoolDay) {
-  const current = items.filter(item => item.status !== 'skipped' && taskAppliesToSchoolDay(item, schoolDay));
+  const current = items.filter(item => item.required !== false && item.status !== 'skipped' && taskAppliesToSchoolDay(item, schoolDay));
   const completed = current.filter(item => item.status ? item.status === 'completed' : item.completion?.completed === true).length;
   return { total: current.length, completed, remaining: current.length - completed };
 }

@@ -59,6 +59,9 @@ private struct ChoreBreakEditor: View {
     @State private var reason = ""
     @State private var saving = false
     @State private var saveBlocked = false
+    @State private var originalDraft: String?
+    private var draftSignature: String { draftFingerprint([Dates.day(from, in: model.zone), Dates.day(through, in: model.zone), personID, choreID, reason]) }
+    private var hasUnsavedChanges: Bool { originalDraft.map { $0 != draftSignature } ?? false }
     var body: some View {
         NavigationStack {
             Form {
@@ -73,11 +76,14 @@ private struct ChoreBreakEditor: View {
                 }
                 Section("Reason") { TextField("School holiday, vacation…", text: $reason, axis: .vertical).lineLimit(2...5) }
                 if saveBlocked { Section { Text("Close this form and review the break list before creating another break.").foregroundStyle(Brand.red) } }
-                Section { Text("Dates use your household timezone. The last day is included. Only pending tasks are excused; submitted and completed work is kept.").font(.footnote).foregroundStyle(Brand.muted) }
+                Section("Before you save") {
+                    Text("Pause \(choreID.isEmpty ? "unfinished tasks" : model.routines.first(where: { $0.id == choreID })?.title ?? "this routine") for \(personID.isEmpty ? "everyone" : model.snapshot?.people.first(where: { $0.id == personID })?.name ?? "this person"), from \(Dates.dayLabel(Dates.day(from, in: model.zone))) through \(Dates.dayLabel(Dates.day(through, in: model.zone))), inclusive.").font(.subheadline)
+                    Text("Dates use your household timezone. The last day is included. Only pending tasks are excused; submitted and completed work is kept.").font(.footnote).foregroundStyle(Brand.muted) }
             }.navigationTitle("Add a task break").navigationBarTitleDisplayMode(.inline)
+            .onAppear { if originalDraft == nil { originalDraft = draftSignature } }
                 .onChange(of: personID) { _, _ in choreID = "" }
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(saving) }
+                    ToolbarItem(placement: .cancellationAction) { DraftCancelButton(dirty: hasUnsavedChanges, saving: saving) { dismiss() } }
                     ToolbarItem(placement: .confirmationAction) {
                         Button { Task {
                             saving = true
@@ -86,7 +92,7 @@ private struct ChoreBreakEditor: View {
                         } } label: { if saving { ProgressView() } else { Text("Save").bold() } }.disabled(saving || saveBlocked || !model.canChange || !validDates || reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || reason.count > 500)
                     }
                 }
-        }.interactiveDismissDisabled(saving)
+        }.interactiveDismissDisabled(saving || hasUnsavedChanges)
     }
     private var validDates: Bool {
         guard let start = Dates.dayDate(Dates.day(from, in: model.zone)), let end = Dates.dayDate(Dates.day(through, in: model.zone)) else { return false }
@@ -101,17 +107,18 @@ struct SchoolDayCard: View {
         return day
     }
     var body: some View {
-        FrameCard(accent: status?.type == "non_school_day" ? Brand.lime : Brand.cyan) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: status?.type == "non_school_day" ? "sun.max.fill" : "calendar").foregroundStyle(Brand.cyanInk)
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(status?.label ?? "School calendar not confirmed").font(.headline)
-                    Text(status?.reason ?? "Open the school calendar to review the household schedule.").font(.subheadline).foregroundStyle(Brand.muted)
+        NavigationLink { SchoolCalendarScreen() } label: {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: status?.type == "non_school_day" ? "sun.max.fill" : "calendar").foregroundStyle(Brand.blueInk).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(status?.label ?? "School calendar not confirmed").font(.subheadline.weight(.semibold)).foregroundStyle(Brand.ink)
+                    if status == nil || status?.type != "school_day" { Text(status?.reason ?? "Open the school calendar to review the schedule.").font(.caption).foregroundStyle(Brand.muted) }
                 }
                 Spacer(minLength: 0)
-            }
-            NavigationLink("View school calendar") { SchoolCalendarScreen() }.font(.subheadline.weight(.semibold)).frame(minHeight: 44)
-        }
+                Image(systemName: "chevron.right").font(.caption).foregroundStyle(Brand.muted).accessibilityHidden(true)
+            }.frame(minHeight: 44).padding(.horizontal, 16).padding(.vertical, 8).background(.white, in: RoundedRectangle(cornerRadius: 12))
+                .overlay { RoundedRectangle(cornerRadius: 12).stroke(Brand.line, lineWidth: 1) }
+        }.buttonStyle(.plain).accessibilityHint("View school calendar and date changes")
     }
 }
 
@@ -215,6 +222,9 @@ private struct SchoolDayOverrideEditor: View {
         self.date = date; self.calendar = calendar
         _type = State(initialValue: calendar.overrides.first { $0.date == date }?.type ?? (status?.type == "school_day" ? "school_day" : "non_school_day"))
     }
+    @State private var originalDraft: String?
+    private var draftSignature: String { draftFingerprint([type, reason]) }
+    private var hasUnsavedChanges: Bool { originalDraft.map { $0 != draftSignature } ?? false }
     var body: some View {
         NavigationStack {
             Form {
@@ -225,7 +235,7 @@ private struct SchoolDayOverrideEditor: View {
                     }
                     TextField("Reason, such as snow day or makeup day", text: $reason, axis: .vertical).lineLimit(2...5)
                 }
-                Section { Text("Applies to both kids. Pending tasks switch to the matching routine set. Completed and submitted work remains, and a separate task break can still excuse work.").font(.footnote).foregroundStyle(Brand.muted) }
+                Section { Text("Applies to household task routines on " + Dates.dayLabel(date) + ". Pending tasks switch to the matching routine set. Completed and submitted work stays in history. Task breaks are separate.").font(.footnote).foregroundStyle(Brand.muted) }
                 if let existing {
                     Section {
                         Text("Current change: " + existing.reason).font(.subheadline)
@@ -234,13 +244,14 @@ private struct SchoolDayOverrideEditor: View {
                 }
                 if let error { Section { Text(error).font(.subheadline).foregroundStyle(Brand.red) } }
             }.navigationTitle("Change school date").navigationBarTitleDisplayMode(.inline)
+            .onAppear { if originalDraft == nil { originalDraft = draftSignature } }
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(saving) }
+                    ToolbarItem(placement: .cancellationAction) { DraftCancelButton(dirty: hasUnsavedChanges, saving: saving) { dismiss() } }
                     ToolbarItem(placement: .confirmationAction) {
                         Button { Task { await save(removing: false) } } label: { if saving { ProgressView() } else { Text("Save").bold() } }.disabled(saving || saveBlocked || !model.canEditSchoolDate(date) || !validReason)
                     }
                 }
-        }.interactiveDismissDisabled(saving)
+        }.interactiveDismissDisabled(saving || hasUnsavedChanges)
     }
     private var validReason: Bool { !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && reason.count <= 500 }
     private func save(removing: Bool) async {

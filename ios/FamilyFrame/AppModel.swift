@@ -55,6 +55,7 @@ final class AppModel: ObservableObject {
     var canChange: Bool { session != nil && !isStale && snapshot?.date == today }
     var zone: TimeZone { session?.household.timeZone ?? TimeZone(secondsFromGMT: 0)! }
     var today: String { Dates.day(now(), in: zone) }
+    var presentationNow: Date { now() }
     var visibleChores: [Chore] { snapshot?.todaysChores ?? [] }
     var visibleOccurrences: [ChoreOccurrence] {
         (snapshot?.occurrences ?? []).filter { $0.date == snapshot?.date && (session?.isChild != true || $0.personId == session?.personId) }

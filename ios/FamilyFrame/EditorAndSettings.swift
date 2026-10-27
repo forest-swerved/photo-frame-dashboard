@@ -33,6 +33,9 @@ struct ChoreEditor: View {
         _schoolDayFilter = State(initialValue: routine?.schoolDayFilter ?? initialSchoolDayFilter ?? "any")
         _taskSection = State(initialValue: routine?.taskSection ?? initialTaskSection ?? "before_school")
     }
+    @State private var originalDraft: String?
+    private var draftSignature: String { draftFingerprint([title, personID, String(describing: days.sorted()), String(hasDeadline), Dates.wallTimeString(dueDate, in: model.zone), String(reminder), String(required), String(requiresApproval), instructions, draftFingerprint(subtasks), scheduleType, schoolDayFilter, taskSection, Dates.day(scheduledDate, in: model.zone)]) }
+    private var hasUnsavedChanges: Bool { originalDraft.map { $0 != draftSignature } ?? false }
     var body: some View {
         NavigationStack {
             Form {
@@ -43,6 +46,7 @@ struct ChoreEditor: View {
                     }
                     Toggle("Required task", isOn: $required)
                     Toggle("Parent approval required", isOn: $requiresApproval)
+                    if routine != nil { Text("Routine edits apply to future days. Today’s saved tasks stay intact.").font(.caption).foregroundStyle(Brand.muted) }
                 }
                 Section("Schedule") {
                     Picker("Frequency", selection: $scheduleType) { Text("Repeating weekdays").tag("weekly"); Text("One time").tag("one_off") }
@@ -79,8 +83,9 @@ struct ChoreEditor: View {
                         Stepper("Remind \(reminder) minutes before", value: $reminder, in: 0...1440, step: 5)
                     }
                 } header: { Text("Timing") } footer: { Text("Dates and deadlines follow \(model.session?.household.timezone ?? "the household timezone"), even when a phone travels.") }
-                Section("Instructions") { TextField("Explain what a good job looks like", text: $instructions, axis: .vertical).lineLimit(3...8) }
                 Section {
+                    DisclosureGroup("Instructions & checklist") {
+                    TextField("Explain what a good job looks like", text: $instructions, axis: .vertical).lineLimit(3...8)
                     ForEach($subtasks) { $step in
                         HStack {
                             TextField("Step", text: $step.title)
@@ -88,18 +93,20 @@ struct ChoreEditor: View {
                         }
                     }
                     Button("Add a step") { subtasks.append(ChoreStep(title: "")) }.disabled(subtasks.count >= 20)
-                } header: { Text("Checklist") } footer: { Text("Up to 20 steps, each at most 160 characters.") }
+                    }
+                } footer: { Text("Up to 20 steps, each at most 160 characters.") }
                 Section { Text("Changes apply to newly generated days. Today's saved tasks keep their instructions, assignment, and approval rules.").font(.footnote).foregroundStyle(Brand.muted) }
                 if let saveMessage { Section { Text(saveMessage).font(.subheadline).foregroundStyle(Brand.red) } }
                 if routine != nil { Section { Button("Delete routine", role: .destructive) { confirmDelete = true }.disabled(saving || !model.canChange) } }
             }.navigationTitle(routine == nil ? "Add a task" : "Edit routine").navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(saving) }
+                    ToolbarItem(placement: .cancellationAction) { DraftCancelButton(dirty: hasUnsavedChanges, saving: saving) { dismiss() } }
                     ToolbarItem(placement: .confirmationAction) { Button { Task { await save() } } label: { if saving { ProgressView() } else { Text("Save").bold() } }.disabled(!valid || saving || saveBlocked || !model.canChange) }
                 }
                 .task {
                     dueDate = Dates.wallTime(routine?.dueTime ?? "18:00", on: model.today, in: model.zone) ?? Date()
                     scheduledDate = Dates.wallTime("12:00", on: routine?.scheduledDate ?? model.today, in: model.zone) ?? Date()
+                    if originalDraft == nil { originalDraft = draftSignature }
                 }
                 .onChange(of: scheduleType) { _, value in if value == "one_off" { schoolDayFilter = "any"; taskSection = "tasks" } }
                 .onChange(of: schoolDayFilter) { _, value in
@@ -110,7 +117,7 @@ struct ChoreEditor: View {
                     Button("Delete routine", role: .destructive) { Task { saving = true; if let routine, await model.deleteRoutine(routine) { dismiss() }; saving = false } }
                     Button("Cancel", role: .cancel) { }
                 } message: { Text("Saved daily tasks and history remain. No new days will be generated from this routine.") }
-        }.interactiveDismissDisabled(saving)
+        }.interactiveDismissDisabled(saving || hasUnsavedChanges)
     }
     private var valid: Bool {
         !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && title.count <= 100 && instructions.count <= 3000 && (scheduleType == "one_off" || !days.isEmpty) && subtasks.allSatisfy { !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.title.count <= 160 }
@@ -154,13 +161,15 @@ struct SettingsScreen: View {
                 }
                 if let prefs = model.preferences { NavigationLink("Choose notifications and quiet hours") { NotificationPreferencesScreen(initial: prefs) } }
                 else { Button("Load notification preferences") { Task { await model.refresh(includePreferences: true, includeStatus: true) } }.disabled(model.isLoading) }
+                DisclosureGroup("Delivery status") {
                 if let server = model.deliveryStatus {
                     Label(server.pushConfigured ? "Apple push service configured" : "Push delivery awaits Apple developer configuration", systemImage: server.pushConfigured ? "checkmark.shield" : "clock").font(.caption).foregroundStyle(server.pushConfigured ? Brand.cyanInk : Brand.muted)
                     if !server.schedulingConfigured { Text("Scheduled reminders await server scheduling configuration.").font(.caption).foregroundStyle(Brand.muted) }
                 } else { Text("Push service readiness has not been verified. Refresh while online.").font(.caption).foregroundStyle(Brand.muted) }
                 if let status = notifications.registrationMessage { Text(status).font(.caption).foregroundStyle(Brand.muted) }
+                }
             } header: { Text("Notifications") } footer: {
-                Text("Push notifications use private lock-screen messages. Open the app to see details. iOS notification settings, Focus, network access, and quiet hours can affect when alerts appear.")
+                Text("Choose whether alerts show family details in Notification preferences. iOS notification settings, Focus, network access, and quiet hours can affect when alerts appear.")
             }
             if model.isAdmin {
                 Section("Family access") {
@@ -168,7 +177,8 @@ struct SettingsScreen: View {
                     NavigationLink("Caregiver permissions") { CaregiverAccessScreen() }
                     NavigationLink("Transfer household ownership") { OwnershipTransferScreen() }
                     NavigationLink("Signed-in phones and tablets") { MobileDevicesScreen() }
-                    Link("Parent invitations and frame setup", destination: APIClient.configuredURL)
+                    Link("Parent invitations and frame setup", destination: Brand.webSettings("frames"))
+                    Text("Opens web Settings. You may need to sign in there separately.").font(.caption).foregroundStyle(Brand.muted)
                 }
             }
             if model.canManageChores { Section("Task routines") { NavigationLink("Holidays and task breaks") { ChoreBreaksScreen() } } }
@@ -213,6 +223,9 @@ struct NotificationPreferencesScreen: View {
         _start = State(initialValue: Dates.wallTime(initial.quietStart ?? "21:00", on: day, in: zone) ?? Date())
         _end = State(initialValue: Dates.wallTime(initial.quietEnd ?? "07:00", on: day, in: zone) ?? Date())
     }
+    @State private var originalDraft: String?
+    private var draftSignature: String { draftFingerprint(value) + draftFingerprint([String(quiet), Dates.wallTimeString(start, in: model.zone), Dates.wallTimeString(end, in: model.zone)]) }
+    private var hasUnsavedChanges: Bool { originalDraft.map { $0 != draftSignature } ?? false }
     var body: some View {
         Form {
             Section {
@@ -250,6 +263,9 @@ struct NotificationPreferencesScreen: View {
                 }
             } header: { Text("Quiet hours") } footer: { Text("Quiet hours use \(value.timezone). Your Activity inbox remains available.") }
         }.navigationTitle("Notifications").navigationBarTitleDisplayMode(.inline)
+            .onAppear { if originalDraft == nil { originalDraft = draftSignature } }
+            .navigationBarBackButtonHidden(hasUnsavedChanges).interactiveDismissDisabled(saving || hasUnsavedChanges)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { if hasUnsavedChanges { DraftCancelButton(dirty: true, saving: saving) { dismiss() } } } }
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button { Task { saving = true; value.quietStart = quiet ? Dates.wallTimeString(start, in: model.zone) : nil; value.quietEnd = quiet ? Dates.wallTimeString(end, in: model.zone) : nil; if await model.savePreferences(value) { dismiss() }; saving = false } } label: { if saving { ProgressView() } else { Text("Save").bold() } }.disabled(!valid || saving || model.isStale) } }
     }
     private var valid: Bool { !quiet || Dates.wallTimeString(start, in: model.zone) != Dates.wallTimeString(end, in: model.zone) }

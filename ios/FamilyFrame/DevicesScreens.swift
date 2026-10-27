@@ -4,13 +4,14 @@ import SwiftUI
 // a long list. This observes the reward store independently of household reads.
 struct RewardAwareScroll<Content: View>: View {
     @ObservedObject var network: InternetModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ViewBuilder let content: Content
     var body: some View {
         ScrollViewReader { reader in
             ScrollView { content }
                 .onChange(of: network.earnedReward?.id) { _, id in
                     guard id != nil else { return }
-                    Task { @MainActor in await Task.yield(); withAnimation { reader.scrollTo("earned-reward", anchor: .top) } }
+                    Task { @MainActor in await Task.yield(); withAnimation(reduceMotion ? nil : .default) { reader.scrollTo("earned-reward", anchor: .top) } }
                 }
         }
     }
@@ -28,7 +29,7 @@ struct InternetHomeSessions: View {
         if !network.liveSessions.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
                 HStack { Text("Internet time").font(.title2.bold()).accessibilityAddTraits(.isHeader); Spacer(); Button("Devices") { model.selectedTab = 3 }.frame(minHeight: 44) }
-                ForEach(network.liveSessions) { InternetSessionCard(network: network, original: $0) }
+                ForEach(network.liveSessions) { HomeInternetSession(network: network, original: $0) }
                 if network.isStale { Text("Last known status · refresh Devices to confirm current access.").font(.caption).foregroundStyle(Brand.red) }
             }
         }
@@ -49,13 +50,6 @@ private struct DevicesContent: View {
                 NetworkStatusCard(network: network)
                 if !network.accessRequests.isEmpty { accessRequests }
                 RewardHomeCard(network: network)
-                if !network.liveSessions.isEmpty {
-                    VStack(alignment: .leading, spacing: 14) {
-                        Text("Current sessions").font(.title2.bold()).accessibilityAddTraits(.isHeader)
-                        ForEach(network.liveSessions) { InternetSessionCard(network: network, original: $0) }
-                    }
-                }
-                if network.isChild { rewards }
                 VStack(alignment: .leading, spacing: 14) {
                     HStack { Text("Devices").font(.title2.bold()).accessibilityAddTraits(.isHeader); Spacer(); if network.canManage { Button { adding = true } label: { Label("Add device", systemImage: "plus").frame(minHeight: 44) }.disabled(!network.canChange) } }
                     if network.devices.isEmpty && network.snapshot != nil {
@@ -68,13 +62,16 @@ private struct DevicesContent: View {
                                     Image(systemName: device.symbol).font(.title2).frame(width: 32).foregroundStyle(Brand.cyanInk)
                                     VStack(alignment: .leading, spacing: 6) {
                                         Text(device.name).font(.headline).foregroundStyle(Brand.ink)
-                                        Text(device.defaultAccess == "allowed" ? "Free to use · parent control only" : "Blocked by default · earned-time pool").font(.caption).foregroundStyle(Brand.cyanInk)
+
                                         Text(network.internetIsOn(device) && device.observedAccess != "allowed" && device.accessPending != true ? "Internet time in progress" : device.controlLabel).font(.subheadline).foregroundStyle(Brand.muted)
                                         Text(device.personIds.map(personName).joined(separator: " · ")).font(.caption).foregroundStyle(Brand.cyanInk)
                                         if let online = device.online { Text(online ? "Connected to the home network" : "Not currently seen on the home network").font(.caption).foregroundStyle(Brand.muted) }
                                     }; Spacer(minLength: 0); Image(systemName: "chevron.right").font(.caption).foregroundStyle(Brand.muted)
                                 }.frame(minHeight: 44)
                             }.buttonStyle(.plain)
+                            ForEach(network.liveSessions.filter { $0.deviceId == device.id }) { session in
+                                EmbeddedInternetSession(network: network, original: session)
+                            }
                             if network.isChild {
                                 Button("Request device time") { requestDevice = device }.font(.headline).frame(minHeight: 44)
                                     .disabled(!network.canChange || network.accessRequests.contains { $0.deviceId == device.id && network.requestIsPending($0) })
@@ -84,10 +81,14 @@ private struct DevicesContent: View {
                                     .font(.headline).frame(minHeight: 44).disabled(!network.canChange || !network.integrationReady || !device.isReady || device.accessPending == true && device.desiredAccess != "allowed")
                                 Button("Allow Internet time") { grantDevice = device }.font(.headline).frame(minHeight: 44)
                                     .disabled(!network.canChange || !network.integrationReady || !device.isReady || !device.isBlocked || network.liveSessions.contains { $0.deviceId == device.id })
+                                Text("The on/off switch stays set until you change it. A timed allowance ends automatically.").font(.caption).foregroundStyle(Brand.muted)
                             }
                         }
                     }
                 }
+                if network.isChild { rewards }
+                let orphanSessions = network.liveSessions.filter { session in !network.devices.contains { $0.id == session.deviceId } }
+                ForEach(orphanSessions) { InternetSessionCard(network: network, original: $0) }
                 if network.canManage { parentPolicies }
                 NavigationLink { InternetHistoryScreen(network: network) } label: { Label("Internet activity and history", systemImage: "clock.arrow.circlepath").font(.headline).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading) }
             }.padding(20).frame(maxWidth: 1000).frame(maxWidth: .infinity)
@@ -138,7 +139,10 @@ private struct DevicesContent: View {
                     Text("\(credit.minutes) minutes").font(.title2.bold())
                     Text(credit.statusLabel).font(.headline).foregroundStyle(Brand.cyanInk)
                     Text("Earned \(Dates.dayLabel(credit.earnedDate)) · expires \(Dates.relative(credit.expiresAt))").font(.caption).foregroundStyle(Brand.muted)
-                    if credit.status == "available" { Button("Use now") { pickedCredit = credit }.font(.headline).frame(minHeight: 44).disabled(!network.canChange || !network.integrationReady || !network.availableCredits.contains(where: { $0.id == credit.id })) }
+                    if credit.status == "available" {
+                        Button("Use now") { pickedCredit = credit }.font(.headline).frame(minHeight: 44).disabled(!network.canChange || !network.integrationReady || !network.availableCredits.contains(where: { $0.id == credit.id }) || !network.rewardDevices(for: credit.personId).contains { network.deviceAvailable($0, for: credit.personId) })
+                        RewardAvailabilityNote(network: network, credit: credit)
+                    }
                     if credit.status == "review" { Text("A parent will review this reward because the network could not confirm whether access started. It will not be charged or restored automatically.").font(.subheadline).foregroundStyle(Brand.muted) }
                 }
             }
@@ -171,14 +175,18 @@ struct NetworkStatusCard: View {
     @ObservedObject var network: InternetModel
     var body: some View {
         if let snapshot = network.snapshot {
+            if snapshot.integration.isReady && !network.isStale && network.message == nil && snapshot.integration.error == nil {
+                DisclosureGroup("Home network connected") { Text("Controls apply to enrolled devices on your home network. Each device shows its confirmed access state.").font(.caption).foregroundStyle(Brand.muted) }.font(.subheadline).padding(16).background(.white, in: RoundedRectangle(cornerRadius: 12))
+            } else {
             FrameCard(accent: snapshot.integration.isReady ? Brand.cyan : Brand.magenta) {
                 Label(snapshot.integration.title, systemImage: snapshot.integration.isReady ? "network" : "network.slash").font(.headline)
-                if !snapshot.integration.isReady { Text(snapshot.integration.detail).font(.subheadline).foregroundStyle(Brand.muted); Link("Open Family Frame network setup", destination: APIClient.configuredURL).font(.subheadline.weight(.semibold)).frame(minHeight: 44) }
+                if !snapshot.integration.isReady { Text(snapshot.integration.detail).font(.subheadline).foregroundStyle(Brand.muted); Link("Open Family Frame network setup", destination: Brand.webSettings("frames")).font(.subheadline.weight(.semibold)).frame(minHeight: 44) }
                 if let message = network.message { Text(message).font(.subheadline).foregroundStyle(Brand.red) }
                 if let error = snapshot.integration.error { Text(error).font(.caption).foregroundStyle(Brand.red) }
                 if network.isStale { Text("Last known status · controls paused").font(.subheadline.weight(.semibold)).foregroundStyle(Brand.red) }
                 if network.isStale || network.message != nil { Button("Refresh network status") { Task { await network.refresh() } }.frame(minHeight: 44).disabled(network.isLoading) }
                 if network.isChanging { ProgressView("Requesting change…") }
+            }
             }
         } else if network.isLoading { ProgressView("Loading Internet status…").frame(maxWidth: .infinity).padding() }
         else { FrameCard(accent: Brand.magenta) { Text(network.message ?? "Internet status is not available yet.").font(.subheadline); Button("Load network status") { Task { await network.refresh() } }.frame(minHeight: 44) } }
@@ -195,7 +203,8 @@ struct RewardHomeCard: View {
                 Label("Great job!", systemImage: "star.circle.fill").font(.title2.bold()).foregroundStyle(Brand.ink)
                 Text("Your required tasks earned \(reward.minutes) minutes of Internet time.").font(.headline)
                 Text("Choose one of your devices now, or save this reward for later.").font(.subheadline).foregroundStyle(Brand.muted)
-                Button("Use now") { selected = reward }.buttonStyle(PrimaryButton()).disabled(!network.canChange || !network.integrationReady)
+                Button("Use now") { selected = reward }.buttonStyle(PrimaryButton()).disabled(!network.canChange || !network.integrationReady || !network.rewardDevices(for: reward.personId).contains { network.deviceAvailable($0, for: reward.personId) })
+                RewardAvailabilityNote(network: network, credit: reward)
                 Button("Save for later") { network.earnedReward = nil }.font(.headline).frame(maxWidth: .infinity, minHeight: 44)
                 if !network.integrationReady { Text("A parent needs to finish network setup before you can use this reward.").font(.caption).foregroundStyle(Brand.muted) }
             }.sheet(item: $selected) { RewardDevicePicker(network: network, credit: $0) }
@@ -239,7 +248,7 @@ struct InternetSessionCard: View {
         if item.state == "active" { Button("Pause") { Task { _ = await network.act(item, action: "pause") } }.frame(minHeight: 44).disabled(!network.canChange) }
         if item.state == "paused" { Button("Resume") { Task { _ = await network.act(item, action: "resume") } }.frame(minHeight: 44).disabled(!network.canChange || item.remaining(at: network.serverNow) <= 0) }
         if item.isStable { Button("Add 15 min") { Task { _ = await network.act(item, action: "adjust", deltaMinutes: 15) } }.frame(minHeight: 44).disabled(!network.canChange) }
-        Button("End", role: .destructive) { Task { _ = await network.act(item, action: "end") } }.frame(minHeight: 44).disabled(!network.canChange)
+        Button("More controls") { details = true }.frame(minHeight: 44).disabled(!network.canChange)
     }
     private func personName(_ id: String) -> String { model.snapshot?.people.first(where: { $0.id == id })?.name ?? "Family member" }
     private func deviceName(_ id: String) -> String { network.devices.first(where: { $0.id == id })?.name ?? "Managed device" }
@@ -304,12 +313,24 @@ struct InternetHistoryScreen: View {
     @State private var items: [InternetHistoryItem] = []
     @State private var loading = false
     @State private var error: String?
+    @State private var personID = ""
+    @State private var period = 0
+    private var filtered: [InternetHistoryItem] {
+        items.filter { item in
+            let date = Dates.instant(item.createdAt).map { Dates.day($0, in: model.zone) }
+            return (personID.isEmpty || item.personId == personID) && (period == 0 || date.map { $0 >= Dates.shiftedDay(model.today, by: -period + 1) } == true)
+        }
+    }
     var body: some View {
         List {
+            Section {
+                Picker("Period", selection: $period) { Text("All recorded").tag(0); Text("7 days").tag(7); Text("30 days").tag(30); Text("90 days").tag(90) }
+                if !network.isChild { Picker("Person", selection: $personID) { Text("Everyone").tag(""); ForEach(model.snapshot?.people ?? []) { Text($0.name).tag($0.id) } } }
+            }
             if loading { ProgressView("Loading Internet history…") }
             if let error { Text(error).foregroundStyle(Brand.red) }
-            if !loading && items.isEmpty && error == nil { Text("No Internet activity recorded yet.").foregroundStyle(Brand.muted) }
-            ForEach(items) { item in
+            if !loading && filtered.isEmpty && error == nil { Text("No Internet activity in this selection.").foregroundStyle(Brand.muted) }
+            ForEach(filtered) { item in
                 VStack(alignment: .leading, spacing: 6) {
                     Text(item.title).font(.headline)
                     if let person = item.personId.flatMap({ id in model.snapshot?.people.first(where: { $0.id == id })?.name }) { Text(person).foregroundStyle(Brand.cyanInk) }
@@ -319,7 +340,7 @@ struct InternetHistoryScreen: View {
                     if let sessionID = item.sessionId, let session = network.sessions.first(where: { $0.id == sessionID }) { NavigationLink("Session details") { InternetSessionDetail(network: network, original: session) } }
                 }.padding(.vertical, 6)
             }
-            Section { Text("The latest 100 events are shown. Requested changes and confirmed network results are recorded separately.").font(.footnote).foregroundStyle(Brand.muted) }
+            Section { Text("Filters apply to the latest 100 recorded events. Requested changes and confirmed network results are recorded separately.").font(.footnote).foregroundStyle(Brand.muted) }
         }.navigationTitle("Internet history").navigationBarTitleDisplayMode(.inline).task { await load() }.refreshable { await load() }
     }
     private func load() async {
@@ -336,6 +357,9 @@ struct DeviceAccessRequestEditor: View {
     let device: ManagedInternetDevice
     @State private var minutes = 60
     @State private var reason = ""
+    @State private var originalDraft: String?
+    private var draftSignature: String { draftFingerprint([String(minutes), reason]) }
+    private var hasUnsavedChanges: Bool { originalDraft.map { $0 != draftSignature } ?? false }
     var body: some View {
         NavigationStack {
             Form {
@@ -352,7 +376,94 @@ struct DeviceAccessRequestEditor: View {
                     if network.isChanging { ProgressView("Sending request…") }
                 }
             }.navigationTitle("Request device time").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(network.isChanging) } }
-        }.interactiveDismissDisabled(network.isChanging)
+            .onAppear { if originalDraft == nil { originalDraft = draftSignature } }
+                .toolbar { ToolbarItem(placement: .cancellationAction) { DraftCancelButton(dirty: hasUnsavedChanges, saving: network.isChanging) { dismiss() } } }
+        }.interactiveDismissDisabled(network.isChanging || hasUnsavedChanges)
+    }
+}
+
+struct HomeInternetSession: View {
+    @EnvironmentObject var model: AppModel
+    @ObservedObject var network: InternetModel
+    let original: InternetSession
+    @State private var details = false
+    var body: some View {
+        let item = network.currentSession(original)
+        Button { details = true } label: {
+            FrameCard(accent: Brand.blue) {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .center, spacing: 14) { description(item); Spacer(minLength: 8); timer(item) }
+                    VStack(alignment: .leading, spacing: 10) { description(item); timer(item) }
+                }
+            }
+        }.buttonStyle(.plain).accessibilityHint("View this session and its controls")
+            .sheet(isPresented: $details) { NavigationStack { InternetSessionDetail(network: network, original: item) }.environmentObject(model) }
+    }
+    private func description(_ item: InternetSession) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(network.devices.first(where: { $0.id == item.deviceId })?.name ?? "Internet time").font(.headline).foregroundStyle(Brand.ink)
+            Text(item.statusLabel(at: network.serverNow)).font(.caption).foregroundStyle(Brand.blueInk)
+            if network.isStale { Text("Last known status · refresh to confirm").font(.caption).foregroundStyle(Brand.attentionInk) }
+        }
+    }
+    private func timer(_ item: InternetSession) -> some View {
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            Text(InternetSession.durationLabel(item.remaining(at: network.serverNow))).font(.title2.bold()).monospacedDigit().foregroundStyle(Brand.blueInk)
+        }
+    }
+}
+struct HomeRewardBalance: View {
+    @EnvironmentObject var model: AppModel
+    @ObservedObject var network: InternetModel
+    var body: some View {
+        if network.isChild && network.earnedReward == nil && !network.availableCredits.isEmpty {
+            Button { model.selectedTab = 3 } label: {
+                HStack { Label("\(network.availableCredits.reduce(0) { $0 + $1.minutes }) minutes saved", systemImage: "star.circle").font(.subheadline.weight(.semibold)); Spacer(); Text("Rewards").font(.subheadline) }
+                    .foregroundStyle(Brand.primary).frame(minHeight: 44).padding(.horizontal, 16).padding(.vertical, 8).background(Brand.primaryTint, in: RoundedRectangle(cornerRadius: 12))
+            }.buttonStyle(.plain)
+        }
+    }
+}
+struct RewardAvailabilityNote: View {
+    @ObservedObject var network: InternetModel
+    let credit: RewardCredit
+    var body: some View {
+        if let session = network.liveSessions.first(where: { $0.personId == credit.personId }) {
+            Text(session.endsAt.flatMap(Dates.instant).map { "Internet time is already in use until \(Dates.time($0, in: TimeZone(identifier: network.snapshot?.timezone ?? "UTC") ?? .gmt)). Your reward stays saved." } ?? "Another session is being checked. Your reward stays saved.").font(.caption).foregroundStyle(Brand.muted)
+        } else if network.integrationReady && !network.rewardDevices(for: credit.personId).contains(where: { network.deviceAvailable($0, for: credit.personId) }) {
+            Text("No earned-time device is currently available. Your reward stays saved.").font(.caption).foregroundStyle(Brand.muted)
+        }
+    }
+}
+
+struct EmbeddedInternetSession: View {
+    @EnvironmentObject var model: AppModel
+    @ObservedObject var network: InternetModel
+    let original: InternetSession
+    @State private var details = false
+    var body: some View {
+        let item = network.currentSession(original)
+        VStack(alignment: .leading, spacing: 10) {
+            Divider()
+            ViewThatFits(in: .horizontal) {
+                HStack { state(item); Spacer(); timer(item) }
+                VStack(alignment: .leading) { state(item); timer(item) }
+            }
+            if item.hasPendingWindow { Text("Reserved time · access is not confirmed yet").font(.caption).foregroundStyle(Brand.muted) }
+            if network.canManage && !item.isTerminal {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 20) { controls(item) }
+                    VStack(alignment: .leading, spacing: 8) { controls(item) }
+                }
+            } else { Button("Session details") { details = true }.frame(minHeight: 44) }
+        }.sheet(isPresented: $details) { NavigationStack { InternetSessionDetail(network: network, original: item) }.environmentObject(model) }
+    }
+    private func state(_ item: InternetSession) -> some View { Text(item.statusLabel(at: network.serverNow)).font(.subheadline.weight(.semibold)).foregroundStyle(item.hasVerifiedAccess ? Brand.blueInk : Brand.attentionInk) }
+    private func timer(_ item: InternetSession) -> some View { TimelineView(.periodic(from: .now, by: 1)) { _ in Text(InternetSession.durationLabel(item.remaining(at: network.serverNow))).font(.title2.bold()).monospacedDigit().foregroundStyle(Brand.blueInk) } }
+    @ViewBuilder private func controls(_ item: InternetSession) -> some View {
+        if item.state == "active" { Button("Pause") { Task { _ = await network.act(item, action: "pause") } }.frame(minHeight: 44).disabled(!network.canChange) }
+        if item.state == "paused" { Button("Resume") { Task { _ = await network.act(item, action: "resume") } }.frame(minHeight: 44).disabled(!network.canChange || item.remaining(at: network.serverNow) <= 0) }
+        if item.isStable { Button("Add 15 min") { Task { _ = await network.act(item, action: "adjust", deltaMinutes: 15) } }.frame(minHeight: 44).disabled(!network.canChange) }
+        Button("More controls") { details = true }.frame(minHeight: 44)
     }
 }
