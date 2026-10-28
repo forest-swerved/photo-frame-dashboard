@@ -90,6 +90,10 @@ struct ManagedInternetDevice: Decodable, Identifiable, Equatable {
         switch kind { case "console": return "gamecontroller.fill"; case "tablet": return "ipad"; case "phone": return "iphone"; case "computer": return "laptopcomputer"; case "tv": return "tv"; default: return "desktopcomputer" }
     }
     var controlLabel: String {
+        if accessError != nil {
+            return ["policy_review_required", "management_policy_changed", "session_policy_changed", "network_scope_changed"].contains(accessError ?? "")
+                ? "Network rules need parent review · access not confirmed" : "Internet change could not be confirmed · retrying"
+        }
         switch controlState { case "unenrolled": return "Awaiting network setup"; case "ready": return isReady ? (accessPending == true ? "Changing Internet access…" : observedAccess == "allowed" ? "Internet on · allowed by parent" : isBlocked ? "Internet off · blocking confirmed" : "Internet access unconfirmed") : "Management access not verified"; default: return "Needs network attention" }
     }
 }

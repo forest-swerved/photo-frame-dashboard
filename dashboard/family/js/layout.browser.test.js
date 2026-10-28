@@ -21,6 +21,7 @@ for (const [role,width,height] of [['frame',1280,800],['admin',390,844],['child'
       const session={id:'layout-session',personId:people[0].id,deviceId:'layout-device',source:'parent',state:'active',version:1,desiredState:'allowed',observedState:'allowed',startedAt:'2026-10-26T18:00:00Z',endsAt:'2026-10-26T18:35:00Z',remainingSeconds:2100};
       const errors=[],writes=[]; page.on('pageerror',error=>errors.push(error.message));
       await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/live-status') { await route.fulfill({contentType:'application/json',body:JSON.stringify({data:{}})});return; }
         const request=route.request(),path=new URL(request.url()).pathname;
         if(request.method()!=='GET') writes.push(path);
         let data;
@@ -38,9 +39,9 @@ for (const [role,width,height] of [['frame',1280,800],['admin',390,844],['child'
         await route.fulfill({contentType:'application/json',body:JSON.stringify(path.startsWith('/api/auth/')?data:{data})});
       });
       await page.goto(new URL(`/family.html${role==='frame'?'?display=frame':''}#today`,origin).href);
-      await page.locator('.home-internet-strip').waitFor();
+      await page.locator(role==='frame'?'.frame-device-time':'.home-internet-strip').first().waitFor();
       const layout=await page.evaluate(()=>({width:innerWidth,document:document.documentElement.scrollWidth,mainHeight:document.querySelector('.main-content').scrollHeight,
-        stripBottom:document.querySelector('.home-internet-strip').getBoundingClientRect().bottom,
+        stripBottom:document.querySelector('.frame-device-time,.home-internet-strip').getBoundingClientRect().bottom,
         primary:getComputedStyle(document.documentElement).getPropertyValue('--primary').trim(),
         list:document.querySelector('.frame-person-tasks,.home-task-list').getBoundingClientRect().top}));
       assert.equal(layout.document,width,JSON.stringify(layout)); assert.equal(layout.primary,'#8a00c4');

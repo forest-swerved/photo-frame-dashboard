@@ -21,15 +21,18 @@ async function fixture({ off = false, extra = 0, empty = false, paired = true, m
   const names = ['Get dressed','Eat breakfast','Brush teeth','Backpack ready','Put backpack away','Dirty laundry in bin','Read for 30 minutes','Homework','Load dishes','Unload dishes','Finish today’s work'];
   const tasks = empty ? [] : people.flatMap((p, n) => Array.from({length:(n ? 11 : 9) + (n ? extra : 0)}, (_,i) => ({id:`${p.id}-${i}`,choreId:`routine-${p.id}-${i}`,title:names[i] || `Extra task ${i + 1}`,personId:p.id,personName:p.name,
     date:'2026-10-27',originalDate:'2026-10-27',definitionSource:'routine',schoolDayFilter:'any',taskSection:i<4?'before_school':'after_school',required:true,status:'pending',requiresApproval:false,version:1,subtasks:[],completion:{date:'2026-10-27',completed:false,version:0}})));
-  const home={id:'frame-fixture-home',title:'Synthetic family',timezone:'America/Denver'}, state={people,tasks,writes:[],errors:[],conflict:null,internet:{devices:[],sessions:[],credits:[]}};
+  const home={id:'frame-fixture-home',title:'Synthetic family',timezone:'America/Denver'}, state={people,tasks,writes:[],errors:[],reads:[],conflict:null,internet:{devices:[],sessions:[],credits:[]}};
   page.on('pageerror',e=>state.errors.push(e.message));
   await page.route('**/api/**',async route=>{
-    const req=route.request(),path=new URL(req.url()).pathname; let data;
+    const req=route.request(),path=new URL(req.url()).pathname;state.reads.push(path);
+    if(path==='/api/household'&&state.holdHousehold) await new Promise(resolve=>{state.releaseHousehold=resolve;});
+    let data;
     if(path==='/api/session') data={authenticated:true,authType:paired?'frame':'user',role:paired?(manager?'caregiver':'frame'):'member',household:home,user:{id:'frame-device',name:'Synthetic frame'}};
     else if(path==='/api/auth/get-session') data={session:{expiresAt:'2099-01-01T00:00:00Z'},user:{id:'frame-user',name:'Synthetic user',email:'fixture@example.invalid'}};
     else if(path==='/api/auth/token') data={token:'fixture.transient.token'};
     else if(path==='/api/household') data={household:home,role:paired?(manager?'caregiver':'frame'):'member',date:'2026-10-27',people:state.people,routines:[],chores:[],occurrences:state.tasks.filter(t=>state.people.some(p=>p.id===t.personId)),schoolDay:{type:off?'non_school_day':'school_day',label:off?'No school':'School day'},capabilities:{manageChores:manager,manageInternet:false}};
     else if(path==='/api/calendar') data=state.calendar || {status:'ready',events:[{id:'frame-calendar-event',calendarId:'frame-cal',title:'Family dinner',allDay:false,startAt:'2026-10-27T23:30:00Z',endAt:'2026-10-28T00:30:00Z'}],calendars:[],coverage:{startDate:'2026-10-27',endDateExclusive:'2026-11-04',complete:true,truncated:false},lastSuccessfulSyncAt:'2026-10-27T18:00:00Z'};
+    else if(path==='/api/live-status') data=state.revisions||{};
     else if(path==='/api/internet') data={serverTime:req.headers()['x-fixture-clock'],timezone:home.timezone,role:'frame',integration:{state:'ready'},policies:[],progress:[],...state.internet};
     else if(path.startsWith('/api/chore-occurrences/')&&path.endsWith('/completion')) {
       const body=req.postDataJSON(),task=state.tasks.find(t=>path.includes(t.id));state.writes.push({id:task.id,body});
@@ -76,6 +79,49 @@ test('each child completes independently and frame home ignores the Tasks profil
     await f.page.getByRole('link',{name:'View all tasks for Andre',exact:true}).click();await f.page.getByRole('heading',{name:'Tasks',level:1,exact:true}).waitFor();
     await f.page.getByRole('link',{name:'Today',exact:true}).click();await f.page.locator('.frame-person-card').first().waitFor();assert.equal(await f.page.locator('.frame-person-card').count(),2);
     assert.deepEqual(f.state.errors,[]);
+  }finally{await f.browser.close();}
+});
+test('remote Internet confirmation and errors reach the frame within two seconds at the same device version', {skip:!base},async()=>{
+  const f=await fixture();try{
+    const device={id:'live-ipad',name:'Stevie’s iPad',kind:'tablet',personIds:['frame-stevie'],version:3,controlState:'ready',defaultAccess:'blocked',desiredAccess:'allowed',observedAccess:'unknown',accessPending:true};
+    f.state.internet.devices=[device];f.state.revisions={household:'h1',internet:'i1',calendar:'c1'};
+    await f.page.getByRole('link',{name:'Devices',exact:true}).click();
+    await f.page.getByText('Changing Internet access · waiting for confirmation',{exact:true}).waitFor();
+    await f.page.clock.runFor(2000);
+    Object.assign(device,{observedAccess:'allowed',accessPending:false,accessVerifiedAt:'2026-10-27T18:00:08Z'});f.state.revisions.internet='i2';
+    await f.page.clock.runFor(2000);await f.page.getByText('Internet on · allowed by parent',{exact:true}).waitFor();
+    assert.equal(device.version,3);
+    Object.assign(device,{observedAccess:'unknown',accessPending:true,accessError:'policy_review_required'});f.state.revisions.internet='i3';
+    await f.page.clock.runFor(2000);await f.page.getByText('Network rules need parent review · access not confirmed',{exact:true}).waitFor();
+    assert.equal(await f.page.getByText('Changing Internet access · waiting for confirmation',{exact:true}).count(),0);
+    assert.deepEqual(f.state.writes,[]);assert.deepEqual(f.state.errors,[]);
+  }finally{await f.browser.close();}
+});
+test('a slow household request cannot delay remote device confirmation', {skip:!base},async()=>{
+  const f=await fixture();try{
+    const device={id:'slow-ipad',name:'Stevie’s iPad',kind:'tablet',personIds:['frame-stevie'],version:3,controlState:'ready',desiredAccess:'allowed',observedAccess:'unknown',accessPending:true};
+    f.state.internet.devices=[device];await f.page.getByRole('link',{name:'Devices',exact:true}).click();
+    await f.page.getByText('Changing Internet access · waiting for confirmation',{exact:true}).waitFor();
+    f.state.holdHousehold=true;f.state.revisions={household:'h1',internet:'i1',calendar:'c1'};
+    await f.page.clock.runFor(2000);
+    Object.assign(device,{observedAccess:'allowed',accessPending:false});f.state.revisions.internet='i2';
+    await f.page.clock.runFor(2000);await f.page.getByText('Internet on · allowed by parent',{exact:true}).waitFor();
+    assert.ok(f.state.releaseHousehold,'The unrelated household read is still in flight.');
+    f.state.holdHousehold=false;f.state.releaseHousehold();
+    assert.deepEqual(f.state.errors,[]);
+  }finally{f.state.releaseHousehold?.();await f.browser.close();}
+});
+test('remote task reads continue behind an open parent draft and appear when it closes', {skip:!base},async()=>{
+  const f=await fixture({manager:true});try{
+    f.state.revisions={household:'h1',internet:'i1',calendar:'c1'};await f.page.clock.runFor(2000);
+    await f.page.getByRole('link',{name:'Tasks',exact:true}).click();await f.page.getByRole('button',{name:'+ Add a task',exact:true}).click();
+    await f.page.getByLabel('Task',{exact:true}).fill('Keep this parent draft');
+    Object.assign(f.state.tasks[0],{status:'completed',version:2});f.state.revisions.household='h2';
+    await f.page.clock.runFor(2000);assert.equal(await f.page.getByLabel('Task',{exact:true}).inputValue(),'Keep this parent draft');
+    await f.page.getByRole('button',{name:'Close dialog',exact:true}).click();await f.page.getByRole('button',{name:'Discard changes',exact:true}).click();
+    await f.page.getByRole('link',{name:'Today',exact:true}).click();
+    await f.page.waitForFunction(()=>document.querySelector('[data-person-id="frame-stevie"] .frame-person-count strong')?.textContent==='1 / 9');
+    assert.deepEqual(f.state.writes,[]);assert.deepEqual(f.state.errors,[]);
   }finally{await f.browser.close();}
 });
 test('each child has a pinned device countdown and preparation rolls into full usage once', {skip:!base},async()=>{

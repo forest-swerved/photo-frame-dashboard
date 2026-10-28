@@ -3,6 +3,11 @@ import { deviceArtworkImage } from './device-art.js';
 import { escapeHtml as h, mutationId, dateFormatter, dateInZone, addDays, dateLabel } from './model.js';
 
 export const liveSession = session => !['ended', 'failed'].includes(session.state);
+export function deviceAccessProblem(device) {
+  if(!device.accessError) return '';
+  return ['policy_review_required','management_policy_changed','session_policy_changed','network_scope_changed'].includes(device.accessError)
+    ? 'Network rules need parent review · access not confirmed' : 'Internet change could not be confirmed · retrying';
+}
 export function remainingTime(session, now) {
   if (!liveSession(session)) return null;
   const end = Date.parse(session.endsAt);
@@ -73,13 +78,13 @@ export function createInternetUI(ctx) {
   const midnight = () => `Midnight at the start of ${dateLabel(addDays(dateInZone(new Date(now()), state.data?.timezone || ctx.zone()), 1))} · ${state.data?.timezone || ctx.zone()}`;
   function reset() { state = freshState(); }
   async function load() {
-    if (state.busy) { state.reloadRequested = true; return; }
+    if (state.busy) { state.reloadRequested = true; return false; }
     const started = epoch(), revision = state.revision, scope = readScope(); state.busy = true;
     try {
       const data = await request('/api/internet');
-      if (started !== epoch()) return;
-      if (scope !== readScope()) { state.reloadRequested = true; return; }
-      if (revision !== state.revision) { state.reloadRequested = true; return; }
+      if (started !== epoch()) return false;
+      if (scope !== readScope()) { state.reloadRequested = true; return false; }
+      if (revision !== state.revision) { state.reloadRequested = true; return false; }
       // The first read establishes saved rewards. Later accepted reads may
       // announce only genuinely new credits, never replay an old carryover.
       for (const credit of data.credits) {
@@ -103,7 +108,8 @@ export function createInternetUI(ctx) {
         if (credit && !ctx.dialog.open && (data.role === 'child' || ctx.frame())) { state.newRewards.delete(credit.id); celebrate(credit); }
         else if (credit && manager()) { state.newRewards.delete(credit.id); ctx.toast(`${personName(credit.personId)} earned ${credit.minutes} minutes. Their reward is saved in Devices.`); }
       }
-    } catch (error) { if (started === epoch()) { state.error = error.message; ctx.render(); } }
+      return true;
+    } catch (error) { if (started === epoch()) { state.error = error.message; ctx.render(); } return false; }
     finally {
       if (started === epoch()) {
         state.busy = false; tick();
@@ -193,7 +199,7 @@ export function createInternetUI(ctx) {
   function deviceCard(device) {
     const sessions = state.data.sessions.filter(session=>liveSession(session)&&session.deviceId===device.id);
     const on = device.desiredAccess === 'allowed' || device.observedAccess === 'allowed' || sessions.some(session=>session.desiredState==='allowed');
-    const status = device.controlState==='unenrolled' ? 'Not enrolled · Internet blocking not configured' : device.controlState==='attention' ? 'Needs attention · access unconfirmed' : device.accessPending ? 'Changing Internet access · waiting for confirmation' : device.accessError || device.observedAccess==='unknown' ? 'Internet access unconfirmed' : device.observedAccess==='allowed' ? 'Internet on · allowed by parent' : sessions.some(session=>session.desiredState==='allowed') ? 'Internet time in progress' : 'Internet off · blocking confirmed';
+    const status = device.controlState==='unenrolled' ? 'Not enrolled · Internet blocking not configured' : device.controlState==='attention' ? 'Needs attention · access unconfirmed' : deviceAccessProblem(device) ? deviceAccessProblem(device) : device.accessPending ? 'Changing Internet access · waiting for confirmation' : device.observedAccess==='unknown' ? 'Internet access unconfirmed' : device.observedAccess==='allowed' ? 'Internet on · allowed by parent' : sessions.some(session=>session.desiredState==='allowed') ? 'Internet time in progress' : 'Internet off · blocking confirmed';
     return `<article class="panel managed-device" data-key="managed-device-${h(device.id)}"><div class="device-card-heading">${deviceArtworkImage(device)}<div class="device-card-labels"><p class="eyebrow">${h(kinds[device.kind] || 'Device')}</p><h3>${h(device.name)}</h3><span class="soft-label">${h(device.personIds.map(personName).join(', '))}</span></div></div><p class="device-status">${h(status)}</p><p class="field-help">${device.online===true ? 'Connected to the home network' : device.online===false ? 'Not currently seen on the home network' : 'Connection state unknown'}</p><div class="device-session">${sessions.map(session=>sessionCard(session)).join('')}</div>${manager() ? `<div class="occurrence-controls">${ctx.button(on?'Turn Internet off':'Turn Internet on','device-access','button button-small',`data-id="${h(device.id)}" ${!ready()||device.controlState!=='ready'||device.accessPending&&device.desiredAccess!=='allowed'||state.writing.has(device.id)?'disabled':''}`)}${ctx.button('Grant Internet time','device-grant','text-button',`data-id="${h(device.id)}" ${!ready()||device.controlState!=='ready'||device.observedAccess!=='blocked'||device.accessPending||sessions.length?'disabled':''}`)}${device.controlState==='unenrolled'?ctx.button('Edit device','device-edit','text-button',`data-id="${h(device.id)}"`):''}</div><p class="field-help">The on/off switch stays set until you change it. A timed allowance ends automatically.</p>` : ''}<details class="device-explanation"><summary>Device details & access rules</summary><p>${device.defaultAccess==='allowed'?'Free to use · Parent control only':'Blocked by default · Earned-time pool'}</p>${device.lastSeenAt?`<p>Last seen ${h(stamp(device.lastSeenAt))}</p>`:''}${device.allowApplePush?'<p>Apple push transport stays available.</p>':''}${device.controlState!=='unenrolled'&&manager()?'<p>Enrollment must be reviewed before identity or assignment changes.</p>':''}</details></article>`;
   }
   function view() {

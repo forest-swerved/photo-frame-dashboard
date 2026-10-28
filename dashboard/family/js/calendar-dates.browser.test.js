@@ -36,6 +36,7 @@ for (const { frame, width, height } of [
       page.on('pageerror', error => errors.push(error.message));
       page.on('request', request => { if (new URL(request.url()).origin !== origin.origin) external.push(request.url()); });
       await page.route('**/api/**', async route => {
+    if(new URL(route.request().url()).pathname==='/api/live-status') { await route.fulfill({contentType:'application/json',body:JSON.stringify({data:{}})});return; }
         const req = route.request(), url = new URL(req.url());
         if (req.method() !== 'GET') writes.push({ method: req.method(), path: url.pathname });
         const role = frame ? 'frame' : 'admin';
