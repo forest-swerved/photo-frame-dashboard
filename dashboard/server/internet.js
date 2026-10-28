@@ -13,6 +13,16 @@ const day = value => value instanceof Date ? value.toISOString().slice(0, 10) : 
 const terminal = new Set(['ended', 'failed']);
 const notFound = () => new ApiError(404, 'not_found', 'That item does not exist in your family.');
 const timeField = value => value === null || typeof value === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+export const preparationBufferSeconds = 5 * 60;
+// Persisted in the existing server-only session snapshot. Old sessions have no buffer.
+export function preparationRemaining(row, now = new Date()) {
+  if (row.all_day || terminal.has(row.state)) return 0;
+  const prep = row.policy_snapshot?.preparation;
+  if (!prep || !Number.isFinite(prep.remainingSeconds)) return 0;
+  if (row.state === 'paused' || !row.ends_at) return Math.max(0, prep.remainingSeconds);
+  const end = Date.parse(prep.endsAt);
+  return Number.isFinite(end) ? Math.max(0, Math.ceil((end - now) / 1000)) : 0;
+}
 export const defaultRewardPolicy = personId => ({ personId, version: 0, enabled: true, rewardMinutes: 60, carryoverDays: 7, dailyLimitMinutes: 180, bedtime: null, warningMinutes: 5 });
 export const policyDto = row => row ? ({ personId: row.person_id, version: row.version, enabled: row.enabled, rewardMinutes: row.reward_minutes,
   carryoverDays: row.carryover_days, dailyLimitMinutes: row.daily_limit_minutes, bedtime: row.bedtime?.slice(0, 5) || null, warningMinutes: row.warning_minutes }) : null;
@@ -21,7 +31,10 @@ export const creditDto = row => ({ id: row.id, personId: row.person_id, earnedDa
 export const sessionDto = row => ({ id: row.id, personId: row.person_id, deviceId: row.device_id, creditId: row.credit_id, source: row.source,
   state: row.state, version: row.version, desiredState: row.desired_state, observedState: row.observed_state, requestedAt: iso(row.requested_at),
   startedAt: iso(row.started_at), endsAt: iso(row.ends_at), remainingSeconds: row.remaining_seconds, verifiedAt: iso(row.verified_at),
-  endedAt: iso(row.ended_at), reason: row.reason, lastError: row.last_error, allDay: row.all_day });
+  endedAt: iso(row.ended_at), reason: row.reason, lastError: row.last_error, allDay: row.all_day,
+  preparationRemainingSeconds: row.all_day ? 0 : row.policy_snapshot?.preparation?.remainingSeconds || 0,
+  preparationEndsAt: row.all_day ? null : row.policy_snapshot?.preparation?.endsAt || null,
+  grantedSeconds: row.allocated_seconds });
 export const deviceDto = (row, parent = false) => ({ id: row.id, name: row.name, kind: row.kind, personIds: row.person_ids, version: row.version,
   defaultAccess: row.default_access || 'blocked', rewardAvailable: row.reward_available === true,
   desiredAccess: row.desired_access || 'blocked', observedAccess: row.observed_access || 'unknown',
@@ -46,18 +59,20 @@ export function validateTimedWindow(startAt, endsAt, timezone, { allDay = false 
     throw new ApiError(422, 'dst_window_unrepresentable', 'This timed window crosses an ambiguous clock change. Choose All day or start after the clock change.');
   }
 }
-export function sessionDeadline(now, timezone, seconds, { allDay = false, bedtime = null } = {}) {
+export function sessionDeadline(now, timezone, seconds, { allDay = false, bedtime = null, roundUp = false } = {}) {
   now = new Date(now);
   const today = householdDate(timezone, now);
   const midnight = nextDayStart(today, timezone);
   let end = allDay ? midnight : new Date(now.getTime() + seconds * 1000);
-  // The provider's schedule precision is one minute. Never round upward into
-  // extra access. All-day is an explicit household-midnight deadline.
+  let cutoff = null;
   if (!allDay && bedtime) {
-    const cutoff = new Date(Temporal.PlainDate.from(today).toPlainDateTime(bedtime).toZonedDateTime(timezone, { disambiguation: 'earlier' }).epochMilliseconds);
+    cutoff = new Date(Temporal.PlainDate.from(today).toPlainDateTime(bedtime).toZonedDateTime(timezone, { disambiguation: 'earlier' }).epochMilliseconds);
     requireValue(cutoff > now && end <= cutoff, 409, 'bedtime_limit', 'This reward does not fit before bedtime. Ask a parent to adjust the limit.');
   }
-  end = new Date(Math.floor(end.getTime() / 60_000) * 60_000);
+  // Gateway schedules have minute precision. A free preparation phase absorbs
+  // upward rounding so the child's granted usage time is never shortened.
+  end = new Date((roundUp && !allDay ? Math.ceil : Math.floor)(end.getTime() / 60_000) * 60_000);
+  if (cutoff) requireValue(end <= cutoff, 409, 'bedtime_limit', 'This reward does not fit before bedtime. Ask a parent to adjust the limit.');
   requireValue(end - now >= 30_000 && (allDay ? end - now <= 90000_000 : end - now < 86400_000),
     422, 'invalid_duration', 'Choose a window shorter than 24 hours, or All day until household midnight.');
   validateTimedWindow(now, end, timezone, { allDay });
@@ -101,12 +116,12 @@ async function notificationActor(client, principal) {
 }
 
 export async function internetNotification(client, { householdId, personId, type, key, sessionId, creditId, deviceId, actorName, excludeUserId, payload = {}, now = new Date() }) {
-  const context = await one(client, `SELECT p.name AS person_name,d.name AS device_name,s.source,s.remaining_seconds,s.all_day
+  const context = await one(client, `SELECT p.name AS person_name,d.name AS device_name,s.source,s.remaining_seconds,s.allocated_seconds,s.all_day
     FROM family_people p LEFT JOIN family_internet_sessions s ON s.household_id=p.household_id AND s.id=$3
     LEFT JOIN family_managed_devices d ON d.household_id=p.household_id AND d.id=coalesce($4::uuid,s.device_id)
     WHERE p.household_id=$1 AND p.id=$2`, [householdId, personId, sessionId || null, deviceId || null]);
   payload = { personName: context?.person_name, deviceName: context?.device_name, source: context?.source,
-    minutes: context?.remaining_seconds / 60, allDay: context?.all_day, actorName, excludeUserId, ...payload };
+    minutes: context?.allocated_seconds / 60, allDay: context?.all_day, actorName, excludeUserId, ...payload };
   await client.query(`INSERT INTO family_notification_events(id,household_id,event_key,type,person_id,payload,occurred_at,expires_at)
     VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,$8) ON CONFLICT(household_id,event_key) DO NOTHING`,
   [randomUUID(), householdId, key, type, personId, JSON.stringify({ ...payload, ...(sessionId ? { sessionId } : {}), ...(creditId ? { creditId } : {}) }), now, new Date(now.getTime() + 86400_000)]);
@@ -371,7 +386,9 @@ async function createInternetSession(client, principal, body, { reward = false, 
   requireValue(body.allDay === undefined || typeof body.allDay === 'boolean', 422, 'invalid_duration', 'All day must be true or false.');
   const minutes = reward ? credit.minutes : body.minutes ?? 60;
   requireValue(Number.isInteger(minutes) && minutes >= 1 && minutes <= 1439, 422, 'invalid_duration', 'Choose 1–1439 minutes, or All day.');
-  const candidateEnd = sessionDeadline(now, principal.household.timezone, minutes * 60, { allDay, bedtime: reward ? policy.bedtime : null });
+  requireValue(allDay || minutes <= 1434, 422, 'invalid_duration', 'Choose 1–1434 usage minutes plus the free five-minute buffer, or All day.');
+  const buffer = allDay ? 0 : preparationBufferSeconds;
+  const candidateEnd = sessionDeadline(now, principal.household.timezone, minutes * 60 + buffer, { allDay, roundUp: !!buffer, bedtime: reward ? policy.bedtime : null });
   requireScheduleSupport(integration, principal.household.timezone, now, candidateEnd, { allDay });
   // Validate now, but plan a normal window only when the worker first owns
   // activation. Waiting in the durable queue cannot consume reserved time.
@@ -385,8 +402,9 @@ async function createInternetSession(client, principal, body, { reward = false, 
   }
   const id = randomUUID();
   const row = await one(client, `INSERT INTO family_internet_sessions(id,household_id,person_id,device_id,credit_id,source,state,desired_state,requested_at,ends_at,remaining_seconds,allocated_seconds,reason,all_day,policy_snapshot,created_by,pending_action)
-    VALUES($1,$2,$3,$4,$5,$6,'starting','allowed',$7,$8,$9,$9,$10,$11,$12::jsonb,$13,'start') RETURNING *`,
-  [id, householdId, personId, device.id, credit?.id || null, reward ? 'reward' : 'parent', now, endsAt, seconds, body.reason ? textField(body.reason, 'Reason', 500) : null, allDay, JSON.stringify(policy), principal.actor]);
+    VALUES($1,$2,$3,$4,$5,$6,'starting','allowed',$7,$8,$9,$14,$10,$11,$12::jsonb,$13,'start') RETURNING *`,
+  [id, householdId, personId, device.id, credit?.id || null, reward ? 'reward' : 'parent', now, endsAt, seconds + buffer, body.reason ? textField(body.reason, 'Reason', 500) : null, allDay,
+    JSON.stringify({ ...policy, ...(!allDay ? { preparation: { remainingSeconds: buffer, endsAt: null } } : {}) }), principal.actor, seconds]);
   if (credit) await client.query("UPDATE family_reward_credits SET status='reserved',reserved_by=$2 WHERE id=$1", [credit.id, id]);
   await queueInternetCommand(client, row, now);
   await internetEvent(client, { householdId, personId, deviceId: device.id, sessionId: id, type: 'session_requested', actor: principal.actor, reason: row.reason, details: { endsAt: iso(endsAt), source: row.source }, now });
@@ -408,23 +426,33 @@ export async function changeInternetSession(db, principal, id, body, { now = new
     // issue another allow while a previous provider outcome is unresolved.
     requireValue(['active', 'paused'].includes(row.state) || body.action === 'end', 409, 'session_checking', 'The network is confirming this session. You may end it or wait.');
     let state, desired, endsAt = row.ends_at, remaining = row.remaining_seconds, allDay = row.all_day;
-    const liveRemaining = row.state === 'paused' ? remaining : Math.max(0, Math.floor((new Date(endsAt) - now) / 1000));
+    let snapshot = row.policy_snapshot, buffer = preparationRemaining(row, now);
+    const liveRemaining = row.state === 'paused' ? remaining : Math.max(0, Math.ceil((new Date(endsAt) - now) / 1000));
+    const usageRemaining = Math.max(0, liveRemaining - buffer);
+    let allocationDelta = 0;
     if (body.action === 'end') { state = 'ending'; desired = 'blocked'; }
     else if (body.action === 'pause') { requireValue(row.state === 'active', 409, 'invalid_state', 'Only an active session can pause.'); state = 'pausing'; desired = 'blocked'; }
     else if (body.action === 'resume') {
       requireValue(row.state === 'paused' && remaining > 0, 409, 'invalid_state', 'There is no paused time to resume.'); state = 'resuming'; desired = 'allowed';
       if (row.all_day) { requireValue(endsAt && new Date(endsAt) - now >= 30_000, 409, 'session_ended', 'The all-day window has ended.'); }
-      else { sessionDeadline(now, principal.household.timezone, remaining); endsAt = null; }
+      else { sessionDeadline(now, principal.household.timezone, remaining, { roundUp: buffer > 0 }); endsAt = null; }
     }
     else {
       if (body.action === 'adjust') {
         requireValue(Number.isInteger(body.deltaMinutes) && body.deltaMinutes !== 0 && Math.abs(body.deltaMinutes) <= 1440, 422, 'invalid_duration', 'Add or remove 1–1440 minutes.');
-        remaining = Math.max(0, liveRemaining + body.deltaMinutes * 60); allDay = false;
-      } else { endsAt = sessionDeadline(now, principal.household.timezone, 0, { allDay: true }); remaining = Math.floor((endsAt - now) / 1000); allDay = true; }
+        const usage = Math.max(0, usageRemaining + body.deltaMinutes * 60);
+        remaining = usage > 0 ? usage + buffer : 0; allDay = false;
+        allocationDelta = usage - usageRemaining;
+      } else { endsAt = sessionDeadline(now, principal.household.timezone, 0, { allDay: true }); remaining = Math.floor((endsAt - now) / 1000); allDay = true; allocationDelta = remaining - usageRemaining; buffer = 0; }
+      if (snapshot.preparation) snapshot = { ...snapshot, preparation: { remainingSeconds: buffer, endsAt: allDay ? null : snapshot.preparation.endsAt } };
       requireValue(allDay ? remaining <= 90000 : remaining < 86400, 422, 'invalid_duration', 'A timed session must be shorter than 24 hours.');
       if (!remaining) { state = 'ending'; desired = 'blocked'; }
       else if (row.state === 'paused') { state = 'paused'; desired = 'blocked'; if (!allDay) endsAt = null; }
-      else { state = 'adjusting'; desired = 'allowed'; if (!allDay) endsAt = sessionDeadline(now, principal.household.timezone, remaining); }
+      else {
+        state = 'adjusting'; desired = 'allowed';
+        if (!allDay) endsAt = sessionDeadline(now, principal.household.timezone,
+          (new Date(row.ends_at).getTime() + body.deltaMinutes * 60_000 - now.getTime()) / 1000);
+      }
     }
     if (desired === 'allowed') {
       const device = await one(client, 'SELECT * FROM family_managed_devices WHERE household_id=$1 AND id=$2', [householdId, row.device_id]);
@@ -439,16 +467,16 @@ export async function changeInternetSession(db, principal, id, body, { now = new
     }
     const changed = await one(client, `UPDATE family_internet_sessions SET state=$3,desired_state=$4,ends_at=$5,remaining_seconds=$6,all_day=$7,version=version+1,last_error=NULL,pending_action=$9,
       activation_planned_at=CASE WHEN $9='resume' THEN NULL ELSE activation_planned_at END,
-      allocated_seconds=greatest(0,allocated_seconds+$8) WHERE household_id=$1 AND id=$2 RETURNING *`,
-    [householdId, id, state, desired, endsAt, remaining, allDay, ['adjust', 'all_day'].includes(body.action) ? remaining - liveRemaining : 0,
-      state === 'paused' ? null : body.action === 'all_day' ? 'adjust' : body.action]);
+      allocated_seconds=greatest(0,allocated_seconds+$8),policy_snapshot=$10::jsonb WHERE household_id=$1 AND id=$2 RETURNING *`,
+    [householdId, id, state, desired, endsAt, remaining, allDay, allocationDelta,
+      state === 'paused' ? null : body.action === 'all_day' ? 'adjust' : body.action, JSON.stringify(snapshot)]);
     if (state !== 'paused') await queueInternetCommand(client, changed, now);
     await internetEvent(client, { householdId, personId: row.person_id, sessionId: id, deviceId: row.device_id, type: `session_${body.action}_requested`, actor: principal.actor,
       reason: body.reason ? textField(body.reason, 'Reason', 500) : null, details: { version: changed.version, remainingSeconds: remaining, endsAt: iso(endsAt) }, now });
     if (['all_day','resume'].includes(body.action) || body.action === 'adjust' && body.deltaMinutes > 0) await internetNotification(client, {
       householdId, personId: row.person_id, sessionId: id, type: 'access_granted', key: `grant-adjust:${id}:${changed.version}`,
       ...await notificationActor(client, principal),
-      payload: { minutes: body.action === 'resume' ? remaining / 60 : body.deltaMinutes, allDay: body.action === 'all_day' || body.action === 'resume' && row.all_day, additional: body.action === 'adjust' }, now });
+      payload: { minutes: body.action === 'resume' ? Math.max(0, remaining - buffer) / 60 : body.deltaMinutes, allDay: body.action === 'all_day' || body.action === 'resume' && row.all_day, additional: body.action === 'adjust' }, now });
     if (state === 'paused') await internetNotification(client, { householdId, personId: row.person_id, sessionId: id, type: 'session_adjusted', key: `session-adjusted:${id}:${changed.version}`, now });
     return sessionDto(changed);
   });

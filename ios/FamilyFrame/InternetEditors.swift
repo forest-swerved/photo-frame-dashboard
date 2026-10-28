@@ -10,7 +10,7 @@ struct RewardDevicePicker: View {
     var body: some View {
         NavigationStack {
             List {
-                Section { Text("Choose one device for your \(credit.minutes)-minute reward.").font(.headline); Text("Your other devices keep their default Internet block.").font(.subheadline).foregroundStyle(Brand.muted) }
+                Section { Text("Choose one device for your \(credit.minutes)-minute reward.").font(.headline); Text("Internet turns on with a free five-minute get-ready countdown, then your full \(credit.minutes) minutes begin. Your other devices keep their default Internet block.").font(.subheadline).foregroundStyle(Brand.muted) }
                 if !network.integrationReady { Section { Text(network.snapshot?.integration.detail ?? "Network setup is not complete.").foregroundStyle(Brand.muted) } }
                 ForEach(network.rewardDevices(for: credit.personId)) { device in
                     let available = network.deviceAvailable(device, for: credit.personId)
@@ -66,7 +66,7 @@ struct InternetGrantEditor: View {
                     }
                 }
                 Section { TextField("Optional reason", text: $reason, axis: .vertical).lineLimit(2...5) }
-                Section { Text(allDay ? "This allowance ends at the next midnight in \(model.session?.household.timezone ?? "your household timezone"). It does not use a task reward." : "A parent allowance does not spend a task reward. It can be paused, ended or adjusted after the network confirms it.").font(.footnote).foregroundStyle(Brand.muted) }
+                Section { Text(allDay ? "This allowance ends at the next midnight in \(model.session?.household.timezone ?? "your household timezone"). It does not use a task reward." : "Includes a free five-minute get-ready buffer before usage time. A parent allowance does not spend a task reward. It can be paused, ended or adjusted after the network confirms it.").font(.footnote).foregroundStyle(Brand.muted) }
                 if let message = network.message { Text(message).foregroundStyle(Brand.red) }
                 if review { Text("Close and refresh Devices to review the outcome before making another allowance.").foregroundStyle(Brand.red) }
             }.navigationTitle("Allow Internet time").navigationBarTitleDisplayMode(.inline)

@@ -11,6 +11,19 @@ export function remainingTime(session, now) {
   const remaining = Math.max(0, Math.ceil((end - now) / 1000));
   return session.state === 'paused' ? Math.min(session.remainingSeconds || 0, remaining) : remaining;
 }
+export function sessionCountdown(session, now) {
+  const total = remainingTime(session, now);
+  const frozen = Math.max(0, session.preparationRemainingSeconds || 0), end = Date.parse(session.preparationEndsAt);
+  const preparation = session.allDay || !liveSession(session) ? 0 : session.state === 'paused' || !session.endsAt
+    ? frozen : Number.isFinite(end) ? Math.max(0, Math.ceil((end - now) / 1000)) : 0;
+  const pending = !session.endsAt && ['starting','resuming','checking'].includes(session.state);
+  return { phase: preparation > 0 ? 'preparation' : 'usage', preparation,
+    remaining: preparation > 0 ? preparation : total,
+    usage: total === null ? null : Math.max(0, total - preparation),
+    label: session.state === 'paused' ? preparation > 0 ? 'Get ready · paused' : 'Usage time · paused'
+      : pending ? 'Waiting for network' : preparation > 0 ? 'Get ready' : session.allDay ? 'All-day access' : 'Time remaining',
+    progress: frozen > 0 ? Math.min(1, preparation / frozen) : 0 };
+}
 export function remainingLabel(seconds) {
   if (seconds === null) return 'Checking time';
   if (seconds === 0) return '0:00 · checking cutoff';
@@ -42,7 +55,7 @@ const kinds = { console: 'Game console', tablet: 'Tablet', phone: 'Phone', compu
 const check = (label, name, enabled) => `<label class="checkbox-label"><input type="checkbox" name="${name}" ${enabled ? 'checked' : ''}><span>${h(label)}</span></label>`;
 
 export function createInternetUI(ctx) {
-  const freshState = () => ({ data: null, busy: false, error: '', serverMs: null, monoMs: 0, receivedAt: null, pendingCreditId: null, knownCredits: new Set(), newRewards: new Set(), rewardDialog: null, writing: new Set(), revision: 0, reloadRequested: false });
+  const freshState = () => ({ data: null, busy: false, error: '', serverMs: null, monoMs: 0, receivedAt: null, pendingCreditId: null, knownCredits: new Set(), newRewards: new Set(), rewardDialog: null, writing: new Set(), revision: 0, reloadRequested: false, phases: new Map(), rolloverUntil: new Map() });
   let state = freshState();
   const allDayAvailable = () => state.data?.integration.scheduleSupport?.allDay !== false;
   const epoch = () => ctx.epoch();
@@ -135,9 +148,23 @@ export function createInternetUI(ctx) {
     return `<div class="occurrence-controls session-controls">${session.state === 'active' ? actionButton('Pause','pause') : session.state === 'paused' ? actionButton('Resume','resume') : ''}${['active','paused'].includes(session.state) ? actionButton('+15 min','add') : ''}<details class="session-more" data-key="session-more-${h(session.id)}"><summary>More controls</summary><div class="occurrence-controls">${['active','paused'].includes(session.state) ? actionButton('−15 min','remove')+actionButton('Custom time','adjust')+(allDayAvailable() ? actionButton('All day','all_day') : '') : ''}${actionButton('End now','end')}</div></details></div>`;
   }
 
+  function clock(session) {
+    const value = sessionCountdown(session, now());
+    return `<div class="session-clock session-countdown" data-session-clock="${h(session.id)}" data-phase="${value.phase}"><svg class="preparation-ring" viewBox="0 0 64 64" aria-hidden="true"><circle class="ring-track" cx="32" cy="32" r="28"/><circle class="ring-progress" cx="32" cy="32" r="28" pathLength="1" style="stroke-dashoffset:${1-value.progress}"/></svg><div><small data-session-phase="${h(session.id)}">${h(value.label)}</small><strong class="session-timer" data-session-remaining="${h(session.id)}">${h(remainingLabel(value.remaining))}</strong><small class="session-rollover-message">Let’s go! Your time starts now.</small></div></div>`;
+  }
+
+  function personSummary(personId) {
+    const session = state.data?.sessions.find(item => liveSession(item) && item.personId === personId);
+    const credits = state.data?.credits.filter(item=>item.personId===personId && item.status==='available') || [];
+    const saved = credits.reduce((sum,item)=>sum+item.minutes,0);
+    const status = state.error ? 'Last known status · refresh needed' : !state.data ? 'Checking device time…' : 'No device time running';
+    const device = session && state.data.devices.find(item=>item.id===session.deviceId);
+    return `<section class="frame-device-time ${session ? 'has-session' : ''}" data-key="frame-device-${h(personId)}" aria-label="${h(personName(personId))}’s device time">${session ? `${device ? deviceArtworkImage(device) : ''}<div class="frame-device-name"><strong>${h(deviceName(session.deviceId))}</strong><span>${h(state.error ? 'Last known status · refresh needed' : states[session.state] || 'Checking session')}</span>${saved ? `<small>${saved} minutes saved</small>` : ''}</div>${clock(session)}` : `<div class="frame-device-name"><strong>Device time</strong><span>${h(status)}</span>${saved ? `<small>${saved} minutes saved</small>` : ''}</div><a href="#devices" class="text-button">${saved ? 'Use saved time' : 'View devices'} ↗</a>`}</section>`;
+  }
+
   function sessionCard(session, compact = false) {
     const observed = session.observedState === 'allowed' ? 'Internet last confirmed allowed' : session.observedState === 'blocked' ? 'Internet last confirmed blocked' : 'Internet access not confirmed';
-    return `<article class="panel session-card" data-key="session-${h(session.id)}"><div class="section-heading"><div><p class="eyebrow">${h(personName(session.personId))} · ${session.source === 'reward' ? 'Earned reward' : 'Parent grant'}</p><h3>${h(deviceName(session.deviceId))}</h3></div>${liveSession(session) ? `<div class="session-clock">${!session.endsAt && ['starting', 'resuming'].includes(session.state) ? '<small>Reserved time</small>' : ''}<strong class="session-timer" data-session-remaining="${h(session.id)}">${h(remainingLabel(remainingTime(session, now())))}</strong></div>` : ''}</div><p class="session-state">${h(states[session.state] || 'Checking session')}${session.allDay ? ' · All day' : ''}</p><p class="supporting">${h(observed)}${session.verifiedAt ? ` · ${h(stamp(session.verifiedAt))}` : ''}</p>${!compact ? `<dl class="session-facts"><div><dt>Started</dt><dd>${h(stamp(session.startedAt))}</dd></div><div><dt>${session.state === 'paused' && !session.allDay ? 'Scheduled end' : 'Ends'}</dt><dd>${session.state === 'paused' && !session.allDay ? 'Recalculated when resumed' : h(stamp(session.endsAt))}</dd></div></dl>${session.lastError ? `<p class="form-error">${h(session.lastError)}</p>` : ''}${session.reason ? `<p class="field-help">${h(session.reason)}</p>` : ''}` : ''}${controls(session)}</article>`;
+    return `<article class="panel session-card" data-key="session-${h(session.id)}"><div class="section-heading"><div><p class="eyebrow">${h(personName(session.personId))} · ${session.source === 'reward' ? 'Earned reward' : 'Parent grant'}</p><h3>${h(deviceName(session.deviceId))}</h3></div>${liveSession(session) ? clock(session) : ''}</div><p class="session-state">${h(states[session.state] || 'Checking session')}${session.allDay ? ' · All day' : ''}</p><p class="supporting">${h(observed)}${session.verifiedAt ? ` · ${h(stamp(session.verifiedAt))}` : ''}</p>${!compact ? `<dl class="session-facts"><div><dt>Started</dt><dd>${h(stamp(session.startedAt))}</dd></div><div><dt>${session.state === 'paused' && !session.allDay ? 'Scheduled end' : 'Ends'}</dt><dd>${session.state === 'paused' && !session.allDay ? 'Recalculated when resumed' : h(stamp(session.endsAt))}</dd></div></dl>${session.lastError ? `<p class="form-error">${h(session.lastError)}</p>` : ''}${session.reason ? `<p class="field-help">${h(session.reason)}</p>` : ''}` : ''}${controls(session)}</article>`;
   }
 
   function rewardAvailability(credit) {
@@ -159,7 +186,7 @@ export function createInternetUI(ctx) {
     if (!sessions.length && !credits.length) return '';
     if (compact) {
       const session = sessions[0];
-      return `<section class="home-internet-strip" data-key="internet-summary" aria-label="Family Internet time">${session ? `<div class="home-session"><div><strong>${h(deviceName(session.deviceId))} · Internet time</strong><p>${h(states[session.state] || 'Checking session')} · ${state.error ? 'Last known status' : session.observedState === 'allowed' ? 'Internet last confirmed allowed' : session.observedState === 'blocked' ? 'Internet last confirmed blocked' : 'Access unconfirmed'}${sessions.length>1 ? ` · ${sessions.length} current sessions` : ''}</p></div><strong class="session-timer" data-session-remaining="${h(session.id)}">${h(remainingLabel(remainingTime(session,now())))}</strong></div>` : `<div class="home-session"><div><strong>${credits.reduce((sum,c)=>sum+c.minutes,0)} minutes saved</strong><p>Earned rewards · choose a device when you are ready</p></div></div>`}${ctx.frame() ? ctx.button('Unlock controls','frame-unlock','text-button') : state.data.role==='child' && credits.length && !session ? rewardAction(credits[0],true) : '<a class="text-button" href="#devices">View devices ↗</a>'}</section>`;
+      return `<section class="home-internet-strip" data-key="internet-summary" aria-label="Family Internet time">${session ? `<div class="home-session"><div><strong>${h(deviceName(session.deviceId))} · Internet time</strong><p>${h(states[session.state] || 'Checking session')} · ${state.error ? 'Last known status' : session.observedState === 'allowed' ? 'Internet last confirmed allowed' : session.observedState === 'blocked' ? 'Internet last confirmed blocked' : 'Access unconfirmed'}${sessions.length>1 ? ` · ${sessions.length} current sessions` : ''}</p></div>${clock(session)}</div>` : `<div class="home-session"><div><strong>${credits.reduce((sum,c)=>sum+c.minutes,0)} minutes saved</strong><p>Earned rewards · choose a device when you are ready</p></div></div>`}${ctx.frame() ? ctx.button('Unlock controls','frame-unlock','text-button') : state.data.role==='child' && credits.length && !session ? rewardAction(credits[0],true) : '<a class="text-button" href="#devices">View devices ↗</a>'}</section>`;
     }
     return `<section class="internet-summary" data-key="internet-summary"><div class="section-heading"><h2>Family Internet time</h2><a class="text-button" href="#devices">View devices ↗</a></div><div class="session-grid">${sessions.map(session=>sessionCard(session,true)).join('')}</div>${credits.length ? `<div class="available-rewards">${credits.map(credit=>`<div data-key="summary-credit-${h(credit.id)}"><strong>${h(personName(credit.personId))}: ${credit.minutes} minutes saved</strong>${rewardAction(credit,true)}</div>`).join('')}</div>` : ''}</section>`;
   }
@@ -189,12 +216,12 @@ export function createInternetUI(ctx) {
     }
     const devices = rewardDevices(state.data, credit.personId);
     const operationId = mutationId();
-    ctx.openDialog(`Choose one device · ${credit.minutes} minutes`, `<p class="supporting">Your full time stays reserved while access is being scheduled. Access begins only after network confirmation. Once the window starts, time elapses even while the device is asleep.</p>${!ready() ? '<p class="status-note status-warning">Internet controls are not ready. Your reward stays saved until the parent completes setup.</p>' : ''}<div class="device-picker">${devices.map(device => {
+    ctx.openDialog(`Choose one device · ${credit.minutes} minutes`, `<p class="supporting">Your ${credit.minutes} minutes stay reserved while access is scheduled. Internet turns on with a free five-minute get-ready countdown, then your full usage time begins. Time continues while the device is asleep.</p>${!ready() ? '<p class="status-note status-warning">Internet controls are not ready. Your reward stays saved until the parent completes setup.</p>' : ''}<div class="device-picker">${devices.map(device => {
       const busy = state.data.sessions.some(session => liveSession(session) && (session.deviceId === device.id || session.personId === credit.personId));
       return `<label class="device-option"><input type="radio" name="deviceId" value="${h(device.id)}" required ${!ready() || device.controlState !== 'ready' || busy ? 'disabled' : ''}>${deviceArtworkImage(device)}<span><strong>${h(device.name)}</strong><small>${busy ? 'Session already reserved' : device.controlState !== 'ready' ? 'Awaiting enrollment' : device.online === false ? 'Offline · access time still elapses' : 'Available'}</small></span></label>`;
     }).join('') || '<p>No earned-time devices are currently blocked and available. Your reward stays saved; try again when a device is free.</p>'}</div><div class="dialog-actions">${ctx.button('Save for later', 'reward-later', 'text-button')}<button class="button" type="submit" ${!ready() || !devices.some(device => device.controlState === 'ready' && !state.data.sessions.some(session => liveSession(session) && (session.deviceId === device.id || session.personId === credit.personId))) ? 'disabled' : ''}>Start reward</button></div>`, async (form, element) => {
       const result = await write('/api/internet/redeem', { method: 'POST', body: { creditId: credit.id, deviceId: form.get('deviceId'), mutationId: operationId } }, element);
-      if (!result) return; ctx.dialog.close(); ctx.toast('Session requested. Waiting for the network to confirm access.'); location.hash = 'devices'; await load();
+      if (!result) return; ctx.dialog.close(); ctx.toast(`${credit.minutes} minutes redeemed. Your free get-ready countdown starts when Internet access is confirmed.`); location.hash = ctx.frame() ? 'today' : 'devices'; await load();
     });
   }
   function editDevice(device = null) {
@@ -210,7 +237,7 @@ export function createInternetUI(ctx) {
   }
   function grant(device) {
     const operationId = mutationId(), choices = people().filter(person => device.personIds.includes(person.id));
-    ctx.openDialog(`Grant time · ${device.name}`, `<div class="form-stack"><label class="field"><span>Child</span><select name="personId" aria-label="Child">${choices.map(person => `<option value="${h(person.id)}">${h(person.name)}</option>`).join('')}</select></label>${ctx.field('Minutes', 'minutes', '60', { type: 'number', extra: 'min="1" max="1439" step="1"' })}${allDayAvailable() ? check('All day', 'allDay', false)+`<p class="field-help">All day ends at ${h(midnight())}. This is separate from earned rewards.</p>` : '<p class="field-help">Choose minutes. All-day access is not available yet.</p>'}${ctx.field('Reason (optional)', 'reason', '', { required: false, max: 500 })}<button class="button" type="submit">Request access window</button></div>`, async (form, element) => {
+    ctx.openDialog(`Grant time · ${device.name}`, `<div class="form-stack"><label class="field"><span>Child</span><select name="personId" aria-label="Child">${choices.map(person => `<option value="${h(person.id)}">${h(person.name)}</option>`).join('')}</select></label>${ctx.field('Minutes', 'minutes', '60', { type: 'number', extra: 'min="1" max="1439" step="1"' })}${allDayAvailable() ? check('All day', 'allDay', false)+`<p class="field-help">All day ends at ${h(midnight())}. This is separate from earned rewards.</p>` : '<p class="field-help">Choose minutes. All-day access is not available yet.</p>'}<p class="field-help">Timed sessions include a free five-minute get-ready buffer before usage time. Adding time to an existing session extends its countdown.</p>${ctx.field('Reason (optional)', 'reason', '', { required: false, max: 500 })}<button class="button" type="submit">Request access window</button></div>`, async (form, element) => {
       const allDay = form.has('allDay');
       const result = await write('/api/internet/grants', { method: 'POST', body: { personId: form.get('personId'), deviceId: device.id, ...(allDay ? { allDay: true } : { minutes: Number(form.get('minutes')) }), reason: form.get('reason').trim() || undefined, mutationId: operationId } }, element);
       if (!result) return; ctx.dialog.close(); ctx.toast('Access requested. Network confirmation is pending.'); await load();
@@ -299,9 +326,23 @@ export function createInternetUI(ctx) {
     for (const element of document.querySelectorAll('[data-session-remaining]')) {
       const session = state.data?.sessions.find(item => item.id === element.dataset.sessionRemaining);
       if (!session) continue;
-      const value = remainingLabel(remainingTime(session, now()));
+      const value = remainingLabel(sessionCountdown(session, now()).remaining);
       if (element.textContent !== value) element.textContent = value;
     }
+    for (const element of document.querySelectorAll('[data-session-clock]')) {
+      const session = state.data?.sessions.find(item => item.id === element.dataset.sessionClock);
+      if (!session) continue;
+      const value = sessionCountdown(session, now()), previous = state.phases.get(session.id);
+      const sincePreparation = now() - Date.parse(session.preparationEndsAt);
+      if (previous === 'preparation' && value.phase === 'usage' && session.state === 'active' && !state.error && value.remaining > 0 && sincePreparation >= 0 && sincePreparation < 4500)
+        state.rolloverUntil.set(session.id, performance.now() + 4500);
+      state.phases.set(session.id, value.phase);
+      element.dataset.phase = value.phase;
+      element.classList.toggle('just-started', (state.rolloverUntil.get(session.id) || 0) > performance.now());
+      const label = element.querySelector('[data-session-phase]');
+      if (label && label.textContent !== value.label) label.textContent = value.label;
+      element.querySelector('.ring-progress')?.style.setProperty('stroke-dashoffset', String(1-value.progress));
+    }
   }
-  return { load, view, action, summary, tick, reset, loaded: () => !!state.data, writing: () => state.writing.size > 0 };
+  return { load, view, action, summary, personSummary, tick, reset, loaded: () => !!state.data, writing: () => state.writing.size > 0 };
 }

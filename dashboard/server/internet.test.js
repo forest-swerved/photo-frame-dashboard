@@ -1,10 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultRewardPolicy, deviceFields, requireScheduleSupport, scheduleSupport, sessionDeadline, validateRewardPolicy } from './internet.js';
+import { defaultRewardPolicy, deviceFields, preparationRemaining, preparationBufferSeconds, requireScheduleSupport, scheduleSupport, sessionDeadline, validateRewardPolicy } from './internet.js';
 import { sameManagedPolicy, scheduledSessionPolicy, sessionOrdering } from './internet-worker.js';
 import { managedPolicyPlan } from './unifi.js';
 const buckets = (beforeSystemDefined = [], afterSystemDefined = []) => ({ beforeSystemDefined, afterSystemDefined });
 const ids = Array.from({ length: 6 }, (_, n) => `00000000-0000-4000-8000-${String(n + 1).padStart(12, '0')}`);
+test('buffered windows preserve five free minutes plus full usage and still honor bedtime', () => {
+  const now=new Date('2026-10-28T18:00:45Z');
+  assert.equal(preparationBufferSeconds,300);
+  assert.equal(sessionDeadline(now,'America/Denver',3900,{roundUp:true}).toISOString(),'2026-10-28T19:06:00.000Z');
+  assert.throws(()=>sessionDeadline(now,'America/Denver',3900,{roundUp:true,bedtime:'13:05'}),e=>e.code==='bedtime_limit');
+  const row={state:'active',ends_at:'2026-10-28T19:06:00Z',policy_snapshot:{preparation:{remainingSeconds:315,endsAt:'2026-10-28T18:06:00Z'}}};
+  assert.equal(preparationRemaining(row,now),315);
+  assert.equal(preparationRemaining(row,new Date('2026-10-28T18:06:00Z')),0);
+  assert.equal(preparationRemaining({...row,state:'paused',ends_at:null},new Date('2026-10-28T20:00:00Z')),315);
+  assert.equal(preparationRemaining({...row,all_day:true},now),0);
+  assert.equal(preparationRemaining({state:'active',policy_snapshot:{}},now),0);
+});
 test('ordinary windows do not require overnight proofs, while unverified extended windows are rejected', () => {
   const day = new Date('2026-10-27T18:00:00Z'), late = new Date('2026-10-28T05:30:00Z');
   const basic = { pilot_checks: {} }, midnight = { pilot_checks: { midnight: true } };

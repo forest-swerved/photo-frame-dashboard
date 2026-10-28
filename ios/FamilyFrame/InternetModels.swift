@@ -122,6 +122,9 @@ struct InternetSession: Decodable, Identifiable, Equatable {
     let reason: String?
     let lastError: String?
     let allDay: Bool
+    var preparationRemainingSeconds: Int? = nil
+    var preparationEndsAt: String? = nil
+    var grantedSeconds: Int? = nil
     var isTerminal: Bool { ["ended", "failed"].contains(state) }
     var isStable: Bool { ["active", "paused"].contains(state) }
     var hasVerifiedAccess: Bool { state == "active" && observedState == "allowed" && verifiedAt.flatMap(Dates.instant) != nil }
@@ -133,9 +136,24 @@ struct InternetSession: Decodable, Identifiable, Equatable {
         guard let end = endsAt.flatMap(Dates.instant) else { return 0 }
         return max(0, Int(ceil(end.timeIntervalSince(serverNow))))
     }
+    func preparation(at serverNow: Date) -> Int {
+        guard !allDay, !isTerminal else { return 0 }
+        if state == "paused" || endsAt == nil { return max(0, preparationRemainingSeconds ?? 0) }
+        guard let end = preparationEndsAt.flatMap(Dates.instant) else { return 0 }
+        return max(0, Int(ceil(end.timeIntervalSince(serverNow))))
+    }
+    func displayRemaining(at serverNow: Date) -> Int {
+        let preparation = preparation(at: serverNow)
+        return preparation > 0 ? preparation : remaining(at: serverNow)
+    }
+    func countdownLabel(at serverNow: Date) -> String {
+        if hasPendingWindow { return "Waiting for network confirmation" }
+        let label = preparation(at: serverNow) > 0 ? "Get ready · free buffer" : allDay ? "All-day access" : "Usage time remaining"
+        return state == "paused" ? "\(label) · paused" : label
+    }
     func statusLabel(at serverNow: Date) -> String {
         switch state {
-        case "active": return hasVerifiedAccess && remaining(at: serverNow) > 0 ? "Internet access active" : remaining(at: serverNow) == 0 ? "Time is up · confirming block" : "Confirming network access"
+        case "active": return hasVerifiedAccess && remaining(at: serverNow) > 0 ? preparation(at: serverNow) > 0 ? "Internet is on · get ready!" : "Internet access active" : remaining(at: serverNow) == 0 ? "Time is up · confirming block" : "Confirming network access"
         case "paused": return observedState == "blocked" && verifiedAt.flatMap(Dates.instant) != nil ? "Paused · Internet blocked" : "Pause needs confirmation"
         case "starting": return "Starting · waiting for network"
         case "pausing": return "Pausing · confirming block"
