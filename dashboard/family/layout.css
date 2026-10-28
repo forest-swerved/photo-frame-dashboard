@@ -274,3 +274,18 @@ dialog > form { display:flex; flex-direction:column; max-height:calc(100vh - 32p
 @media (prefers-reduced-motion: reduce) {
   .frame-event-notice, .frame-event-orbit { animation: none; }
 }
+.wizard-progress { color: var(--muted); font-size: .85rem; font-weight: 750; margin: 0 0 1.25rem; }
+.task-wizard section { display: grid; gap: 1rem; }
+.task-wizard section[hidden], .task-wizard [hidden] { display: none; }
+.task-wizard h3 { margin: 0; font-size: 1.35rem; }
+.wizard-children { display: flex; flex-wrap: wrap; gap: .7rem; border: 0; padding: 0; margin: 0; }
+.wizard-children legend { padding: 0; margin-bottom: .65rem; font-weight: 700; }
+.wizard-choice { display: flex; align-items: center; gap: .65rem; min-height: 52px; flex: 1 1 130px; padding: .8rem 1rem; background: #fff; border: 2px solid var(--line); border-radius: 16px; cursor: pointer; font-weight: 750; }
+.wizard-choice.selected { border-color: var(--primary); background: #f5e8fc; }
+.wizard-choice input { width: 20px; height: 20px; accent-color: var(--primary); }
+.wizard-presets { display: flex; flex-wrap: wrap; gap: .4rem; }
+.wizard-review { padding: 1.2rem; border-radius: 18px; background: #f5e8fc; border: 1px solid var(--line); }
+.wizard-review strong { font-size: 1.2rem; }
+.wizard-review p { margin: .55rem 0 0; line-height: 1.5; }
+
+[data-wizard-next][hidden], [data-wizard-save][hidden], [data-wizard-back][hidden] { display: none; }

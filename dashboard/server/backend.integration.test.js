@@ -4,9 +4,9 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createPool } from './database.js';
 import { authenticate } from './auth.js';
-import { handleRequest } from './app.js';
+import { handleRequest, dispatch } from './app.js';
 import { digest, encryptCredentials } from './credentials.js';
-import { claimHousehold, createChore, createFramePair, createInvite, createPerson, changePerson, joinHousehold, redeemFramePair, setCompletion } from './household.js';
+import { claimHousehold, createChore, createChoreBatch, createFramePair, createInvite, createPerson, changePerson, joinHousehold, redeemFramePair, setCompletion } from './household.js';
 import { calendarSnapshot, connectCalendar, removeCalendar, selectCalendars } from './calendar-service.js';
 import { enforcePairRateLimit } from './pair-rate-limit.js';
 import { verifySchema } from './verify-schema.js';
@@ -43,7 +43,7 @@ test('isolated Postgres authorization and concurrency boundaries', { skip: !enab
     assert.match(schema, /^family_test_[a-f0-9]{32}$/);
     await pool.query(`CREATE SCHEMA ${schema}`);
     created = true;
-    for (const name of ['schema.sql','mobile-schema.sql','notifications-schema.sql','child-accounts-schema.sql','calendar-sync-schema.sql','chore-schema.sql','school-schema.sql','account-notifications-schema.sql','internet-schema.sql','family-notifications-schema.sql','account-deletion-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
+    for (const name of ['schema.sql','mobile-schema.sql','notifications-schema.sql','child-accounts-schema.sql','calendar-sync-schema.sql','chore-schema.sql','school-schema.sql', 'daily-task-sections-schema.sql','account-notifications-schema.sql','internet-schema.sql','family-notifications-schema.sql','account-deletion-schema.sql']) await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
 
     await t.test('all server-only tables have RLS, owner access, and no PUBLIC policies', async () => {
       assert.equal(await verifySchema(db, schema, 37), 37);
@@ -131,6 +131,27 @@ test('isolated Postgres authorization and concurrency boundaries', { skip: !enab
       assert.equal((await db.query('SELECT version FROM family_completions')).rows[0].version, 2);
     });
 
+    await t.test('guided task creation is atomic, idempotent, parent-scoped and independent for each child', async () => {
+      const a = await createPerson(db, admin, { name: 'Synthetic first child' }), b = await createPerson(db, admin, { name: 'Synthetic second child' });
+      const body = { title: 'Synthetic daily morning task', personIds: [b.id, a.id], mutationId: randomUUID(), weekdays: [0,1,2,3,4,5,6], schoolDayFilter: 'any', taskSection: 'before_school', scheduleType: 'weekly' };
+      const before = (await db.query('SELECT count(*)::int AS n FROM family_chores')).rows[0].n;
+      await assert.rejects(createChoreBatch(db, admin, { ...body, personIds: [a.id, a.id.toUpperCase()] }), e => e.code === 'invalid_assignment');
+      await assert.rejects(createChoreBatch(db, admin, { ...body, personIds: [a.id, randomUUID()] }), e => e.status === 404);
+      assert.equal((await db.query('SELECT count(*)::int AS n FROM family_chores')).rows[0].n, before);
+      for (const role of ['child', 'frame']) await assert.rejects(createChoreBatch(db, { ...admin, role, authType: role === 'frame' ? 'frame' : 'mobile' }, body), e => e.status === 403);
+      const results = await Promise.all([createChoreBatch(db, admin, body), createChoreBatch(db, admin, { ...body, personIds: body.personIds.map(id => id.toUpperCase()), mutationId: body.mutationId.toUpperCase() })]);
+      assert.deepEqual(results[0], results[1]); assert.equal(results[0].routines.length, 2);
+      assert.equal((await db.query('SELECT count(*)::int AS n FROM family_chores')).rows[0].n, before + 2);
+      assert.ok(results[0].routines.every(r => r.taskSection === 'before_school' && r.schoolDayFilter === 'any'));
+      await assert.rejects(createChoreBatch(db, admin, { ...body, title: 'Changed payload' }), e => e.code === 'mutation_reused');
+      const response = await dispatch(request('chores/batch', 'POST', body), db, admin, 'chores/batch', { env });
+      assert.equal(response.status, 201); assert.deepEqual((await response.json()).data, results[0]);
+      const [first, second] = results[0].routines;
+      await setCompletion(db, admin, first.id, '2026-10-15', { completed: true, expectedVersion: 0, mutationId: randomUUID(), reason: 'Synthetic independent completion' });
+      assert.equal((await db.query('SELECT completed FROM family_completions WHERE chore_id=$1', [first.id])).rows[0].completed, true);
+      assert.equal((await db.query('SELECT * FROM family_completions WHERE chore_id=$1', [second.id])).rowCount, 0);
+      assert.equal((await db.query('SELECT status FROM family_chore_occurrences WHERE chore_id=$1', [second.id])).rows[0].status, 'pending');
+    });
     await t.test('foreign household IDs cannot edit or complete existing objects', async () => {
       const person = await createPerson(db, admin, { name: 'Child' });
       const chore = await createChore(db, admin, { title: 'Clean room', personId: person.id });

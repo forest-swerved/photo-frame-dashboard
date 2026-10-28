@@ -245,13 +245,47 @@ async function checkedPerson(client, householdId, personId) {
   return personId;
 }
 
+async function insertChore(client, principal, body, personId) {
+  const details = routineDetails(body);
+  return choreDto(await one(client, `INSERT INTO family_chores(id,household_id,title,person_id,weekdays,due_time,reminder_minutes,
+    required,instructions,subtasks,schedule_type,scheduled_date,requires_approval,school_day_filter,task_section) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12::date,$13,$14,$15) RETURNING *`,
+    [randomUUID(), principal.household.id, textField(body.title, 'Task', 100), personId, weekdaysField(body.weekdays), dueTimeField(body.dueTime ?? null), reminderMinutesField(body.reminderMinutes ?? 15),
+      details.required, details.instructions, JSON.stringify(details.subtasks), details.scheduleType, details.scheduledDate, details.requiresApproval, details.schoolDayFilter, details.taskSection]));
+}
+
 export async function createChore(db, principal, body) {
   requireChoreManager(principal);
-  const details = routineDetails(body);
-  return transaction(db, async client => choreDto(await one(client, `INSERT INTO family_chores(id,household_id,title,person_id,weekdays,due_time,reminder_minutes,
-    required,instructions,subtasks,schedule_type,scheduled_date,requires_approval,school_day_filter,task_section) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12::date,$13,$14,$15) RETURNING *`,
-    [randomUUID(), principal.household.id, textField(body.title, 'Task', 100), await checkedPerson(client, principal.household.id, body.personId), weekdaysField(body.weekdays), dueTimeField(body.dueTime ?? null), reminderMinutesField(body.reminderMinutes ?? 15),
-      details.required, details.instructions, JSON.stringify(details.subtasks), details.scheduleType, details.scheduledDate, details.requiresApproval, details.schoolDayFilter, details.taskSection])));
+  return transaction(db, async client => insertChore(client, principal, body, await checkedPerson(client, principal.household.id, body.personId)));
+}
+
+export async function createChoreBatch(db, principal, body) {
+  requireChoreManager(principal);
+  const mutationId = uuidField(body.mutationId, 'Mutation ID').toLowerCase();
+  requireValue(Array.isArray(body.personIds) && body.personIds.length > 0 && body.personIds.length <= 30,
+    422, 'invalid_assignment', 'Choose at least one child.');
+  const personIds = body.personIds.map(id => uuidField(id, 'Child profile').toLowerCase()).sort();
+  requireValue(new Set(personIds).size === personIds.length, 422, 'invalid_assignment', 'Choose each child once.');
+  const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
+    ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+  const requestHash = digest(JSON.stringify({ operation: 'create-task-batch', body: canonical({ ...body, personIds, mutationId }) }));
+  return transaction(db, async client => {
+    const householdId = principal.household.id;
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`mutation:${householdId}:${principal.actor}:${mutationId}`]);
+    const replay = await one(client, 'SELECT request_hash,response FROM family_mutations WHERE household_id=$1 AND actor=$2 AND mutation_id=$3', [householdId, principal.actor, mutationId]);
+    if (replay) {
+      requireValue(replay.request_hash === requestHash, 409, 'mutation_reused', 'Use a new mutation ID for a different task.');
+      return replay.response;
+    }
+    // Lock/check every assignment before inserting any task. Both children get
+    // independent occurrences, while retries return the same original receipt.
+    for (const id of personIds) await checkedPerson(client, householdId, id);
+    const routines = [];
+    for (const id of personIds) routines.push(await insertChore(client, principal, body, id));
+    const response = { routines };
+    await client.query('INSERT INTO family_mutations(household_id,actor,mutation_id,request_hash,response) VALUES($1,$2,$3,$4,$5::jsonb)',
+      [householdId, principal.actor, mutationId, requestHash, JSON.stringify(response)]);
+    return response;
+  });
 }
 
 export async function changeChore(db, principal, id, body, remove = false) {

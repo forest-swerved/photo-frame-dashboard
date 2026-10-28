@@ -41,6 +41,7 @@ protocol FamilyAPI: AnyObject {
     func calendar(from: String, to: String) async throws -> CalendarSnapshot
     func setCompletion(_ chore: Chore, date: String, completed: Bool, mutationID: String) async throws -> CompletionResult
     func saveChore(_ draft: ChoreDraft, id: String?) async throws
+    func createTasks(_ draft: ChoreDraft, personIDs: [String], mutationID: String) async throws
     func deleteChore(_ chore: Chore) async throws
     func createChildInvitation(personID: String, email: String) async throws -> ChildInvitation
     func devices() async throws -> [MobileDevice]
@@ -206,6 +207,9 @@ final class APIClient: FamilyAPI {
     }
     func saveChore(_ draft: ChoreDraft, id: String?) async throws {
         let _: Acknowledgement = try await send(id.map { "/api/chores/\($0)" } ?? "/api/chores", method: id == nil ? "POST" : "PATCH", body: encoded(draft))
+    }
+    func createTasks(_ draft: ChoreDraft, personIDs: [String], mutationID: String) async throws {
+        let _: Acknowledgement = try await send("/api/chores/batch", method: "POST", body: encoded(TaskCreationRequest(draft: draft, personIds: personIDs, mutationId: mutationID)))
     }
     func deleteChore(_ chore: Chore) async throws {
         let _: Acknowledgement = try await send("/api/chores/\(chore.id)?expectedVersion=\(chore.version)", method: "DELETE")

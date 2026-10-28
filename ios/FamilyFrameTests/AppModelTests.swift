@@ -82,6 +82,7 @@ final class DashboardAPI: FamilyAPI {
     }
     func signOut() async throws { }
     func saveChore(_ draft: ChoreDraft, id: String?) async throws { }
+    func createTasks(_ draft: ChoreDraft, personIDs: [String], mutationID: String) async throws { }
     func deleteChore(_ chore: Chore) async throws { }
     func markRead(id: String) async throws { markReadCalls += 1; try await markReadHandler?() }
     func registerPush(token: String, environment: String, installationID: String) async throws { }

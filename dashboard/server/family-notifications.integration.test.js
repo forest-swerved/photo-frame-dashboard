@@ -34,7 +34,7 @@ test('family reminder, approval and recipient workflows against isolated Postgre
   const deviceId = randomUUID(); let request;
   await pool.query(`CREATE SCHEMA ${schema}`);
   try {
-    for (const file of ['schema.sql','mobile-schema.sql','notifications-schema.sql','child-accounts-schema.sql','chore-schema.sql','school-schema.sql','account-notifications-schema.sql','internet-schema.sql','family-notifications-schema.sql']) await db.query(await readFile(new URL(file,import.meta.url),'utf8'));
+    for (const file of ['schema.sql','mobile-schema.sql','notifications-schema.sql','child-accounts-schema.sql','chore-schema.sql','school-schema.sql', 'daily-task-sections-schema.sql','account-notifications-schema.sql','internet-schema.sql','family-notifications-schema.sql']) await db.query(await readFile(new URL(file,import.meta.url),'utf8'));
     await db.query('CREATE TABLE fixture_auth_sessions(id uuid PRIMARY KEY,user_id uuid NOT NULL,not_after timestamptz)');
     await db.query('INSERT INTO family_households(id,title,timezone) VALUES($1,$2,$3)', [household.id,household.title,household.timezone]);
     for (const [index, p] of Object.values(accounts).entries()) {

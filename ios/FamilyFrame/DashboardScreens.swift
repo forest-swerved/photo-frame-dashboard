@@ -169,7 +169,7 @@ struct ChoresScreen: View {
         }.background(Brand.background).navigationTitle(model.session?.isChild == true ? "My tasks" : "Tasks")
             .refreshable { await model.refresh() }
             .toolbar { if model.canManageChores { ToolbarItem(placement: .topBarTrailing) { Button { adding = true } label: { Label("Add task", systemImage: "plus") }.disabled(!model.canChange) } } }
-            .sheet(isPresented: $adding) { ChoreEditor(routine: nil) }
+            .sheet(isPresented: $adding) { ChoreEditor(routine: nil, assignedPersonID: selectedPerson) }
             .sheet(item: $editing) { ChoreEditor(routine: $0) }
     }
     private var routinesList: some View {

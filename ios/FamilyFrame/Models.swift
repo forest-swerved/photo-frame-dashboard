@@ -127,9 +127,22 @@ struct ChoreDraft: Encodable {
         try c.encode(subtasks, forKey: .subtasks); try c.encode(scheduleType, forKey: .scheduleType)
         try c.encode(scheduledDate, forKey: .scheduledDate); try c.encode(requiresApproval, forKey: .requiresApproval)
         try c.encode(scheduleType == "one_off" ? "any" : schoolDayFilter, forKey: .schoolDayFilter)
-        try c.encode(scheduleType == "weekly" && schoolDayFilter == "school_day" ? taskSection : "tasks", forKey: .taskSection)
+        try c.encode(scheduleType == "weekly" && schoolDayFilter != "non_school_day" ? taskSection : "tasks", forKey: .taskSection)
     }
     enum CodingKeys: String, CodingKey { case title, personId, weekdays, dueTime, reminderMinutes, expectedVersion, required, instructions, subtasks, scheduleType, scheduledDate, requiresApproval, schoolDayFilter, taskSection }
+}
+
+struct TaskCreationRequest: Encodable {
+    let draft: ChoreDraft
+    let personIds: [String]
+    let mutationId: String
+    enum CodingKeys: String, CodingKey { case personIds, mutationId }
+    func encode(to encoder: Encoder) throws {
+        try draft.encode(to: encoder)
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(personIds.sorted(), forKey: .personIds)
+        try c.encode(mutationId, forKey: .mutationId)
+    }
 }
 
 struct CalendarEvent: Codable, Identifiable, Equatable {

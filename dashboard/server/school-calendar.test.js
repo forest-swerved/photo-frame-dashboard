@@ -51,7 +51,7 @@ test('school-day task sections remain independent of weekdays and normalize for 
   assert.equal(routineDetails({ schoolDayFilter: 'school_day', taskSection: 'after_school' }).taskSection, 'after_school');
   assert.equal(routineDetails({ schoolDayFilter: 'school_day' }).taskSection, 'tasks', 'Older clients keep an unclassified task section.');
   assert.equal(routineDetails({ schoolDayFilter: 'non_school_day', taskSection: 'before_school' }).taskSection, 'tasks');
-  assert.equal(routineDetails({ schoolDayFilter: 'any' }, { task_section: 'after_school' }).taskSection, 'tasks');
+  assert.equal(routineDetails({ schoolDayFilter: 'any' }, { task_section: 'after_school' }).taskSection, 'after_school');
   assert.equal(routineDetails({ scheduleType: 'one_off', scheduledDate: '2026-10-20', taskSection: 'after_school' }).taskSection, 'tasks');
   assert.throws(() => routineDetails({ taskSection: 'lunch' }), error => error.status === 422);
   assert.throws(() => routineDetails({ taskSection: null }), error => error.status === 422);

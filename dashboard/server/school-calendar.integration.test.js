@@ -42,7 +42,7 @@ test('isolated TLS PostgreSQL school scheduling, overrides and earned-credit saf
     assert.equal((await pool.query('SELECT current_database() AS name')).rows[0].name, 'family_frame_tests');
     assert.equal((await pool.query('SELECT ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid()')).rows[0].ssl, true);
     await pool.query(`CREATE SCHEMA ${schema}`); created = true;
-    for (const name of ['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql', 'chore-schema.sql', 'school-schema.sql', 'account-notifications-schema.sql', 'internet-schema.sql','family-notifications-schema.sql'])
+    for (const name of ['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql', 'chore-schema.sql', 'school-schema.sql', 'daily-task-sections-schema.sql', 'account-notifications-schema.sql', 'internet-schema.sql','family-notifications-schema.sql'])
       await db.query(await readFile(new URL(name, import.meta.url), 'utf8'));
     await db.query(await readFile(new URL('school-schema.sql', import.meta.url), 'utf8'));
     await db.query('INSERT INTO family_households(id,title,timezone) VALUES($1,$2,$3)', [household.id, household.title, household.timezone]);
@@ -136,12 +136,12 @@ test('isolated TLS PostgreSQL school scheduling, overrides and earned-credit saf
       assert.ok(original.id);
     });
 
-    await t.test('before/after school sections are immutable daily facts and other schedules normalize to Tasks', async () => {
+    await t.test('daily routines retain school-day placement while school-specific definitions stay immutable', async () => {
       await reset();
       const before = await chore('school_day', { taskSection: 'before_school' });
       const after = await chore('school_day', { taskSection: 'after_school' });
       const generic = await chore('any', { taskSection: 'after_school' });
-      assert.equal(generic.taskSection, 'tasks');
+      assert.equal(generic.taskSection, 'after_school');
       let state = await snapshot();
       assert.equal(state.occurrences.find(o => o.choreId === before.id).taskSection, 'before_school');
       assert.equal(state.chores.find(o => o.id === after.id).taskSection, 'after_school');
@@ -152,6 +152,9 @@ test('isolated TLS PostgreSQL school scheduling, overrides and earned-credit saf
       await assert.rejects(db.query("UPDATE family_chore_occurrences SET task_section='tasks' WHERE id=$1", [state.occurrences.find(o => o.choreId === before.id).id]), error => error.code === '23514');
       const next = await householdSnapshot(db, parent, '2026-10-21', { now: new Date('2026-10-21T18:00:00Z') });
       assert.equal(next.occurrences.find(o => o.choreId === before.id).taskSection, 'after_school');
+      const off = await householdSnapshot(db, parent, '2026-10-24', { now: new Date('2026-10-24T18:00:00Z') });
+      assert.equal(off.schoolDay.type, 'non_school_day');
+      assert.deepEqual(off.occurrences.map(o => o.choreId), [generic.id]);
     });
 
     await t.test('an explicit same-day deadline edit and a move back to the original date stay exempt from automatic day filtering', async () => {

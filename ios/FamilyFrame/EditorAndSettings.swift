@@ -1,6 +1,156 @@
 import SwiftUI
 import UserNotifications
 
+struct TaskCreationWizard: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var titleFocused: Bool
+    @State private var step = 0
+    @State private var title = ""
+    @State private var personIDs: Set<String>
+    @State private var scheduleType = "weekly"
+    @State private var schoolDayFilter: String
+    @State private var taskSection: String
+    @State private var days = Set(0...6)
+    @State private var scheduledDate = Date()
+    @State private var hasDeadline = false
+    @State private var dueDate = Date()
+    @State private var reminder = 15
+    @State private var required = true
+    @State private var requiresApproval = false
+    @State private var instructions = ""
+    @State private var checklist = ""
+    @State private var saving = false
+    @State private var saveBlocked = false
+    @State private var message: String?
+    @State private var originalDraft: String?
+    @State private var operationID = UUID().uuidString
+    init(assignedPersonID: String = "", initialSchoolDayFilter: String = "any", initialTaskSection: String = "tasks") {
+        _personIDs = State(initialValue: assignedPersonID.isEmpty ? [] : [assignedPersonID])
+        _schoolDayFilter = State(initialValue: initialSchoolDayFilter)
+        _taskSection = State(initialValue: initialTaskSection)
+    }
+    private var people: [Person] { model.snapshot?.people ?? [] }
+    private var draftSignature: String { draftFingerprint([title, personIDs.sorted().joined(separator: ","), scheduleType, schoolDayFilter, taskSection, days.sorted().description, Dates.day(scheduledDate, in: model.zone), String(hasDeadline), Dates.wallTimeString(dueDate, in: model.zone), String(reminder), String(required), String(requiresApproval), instructions, checklist]) }
+    private var dirty: Bool { originalDraft.map { $0 != draftSignature } ?? false }
+    private var lines: [String] { checklist.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty } }
+    private var validTask: Bool { !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && title.count <= 100 && !personIDs.isEmpty }
+    private var validSchedule: Bool { scheduleType == "one_off" || !days.isEmpty }
+    private var validDetails: Bool { instructions.count <= 3000 && lines.count <= 20 && lines.allSatisfy { $0.count <= 160 } }
+    private var scheduleSummary: String {
+        if scheduleType == "one_off" { return "One time · \(Dates.dayLabel(Dates.day(scheduledDate, in: model.zone)))" }
+        let weekdayText = days.count == 7 ? "Every day" : days == Set(1...5) ? "Monday–Friday" : days.sorted().map { ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][$0] }.joined(separator: ", ")
+        let filter = schoolDayFilter == "school_day" ? "School days only" : schoolDayFilter == "non_school_day" ? "Days off only" : "School days and days off"
+        let section = schoolDayFilter == "non_school_day" || taskSection == "tasks" ? "Any time" : (taskSection == "before_school" ? "Before school" : "After school") + (schoolDayFilter == "any" ? " on school days; Tasks on days off" : "")
+        return "\(weekdayText) · \(schoolDayFilter == "any" && taskSection != "tasks" ? "" : filter + " · ")\(section)"
+    }
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Step \(step + 1) of 3 · \(["Task & children", "Schedule", "Review"][step])").font(.subheadline.weight(.semibold)).foregroundStyle(Brand.muted)
+                    ProgressView(value: Double(step + 1), total: 3).tint(Brand.primary)
+                }.padding(.horizontal, 20).padding(.vertical, 12).accessibilityElement(children: .combine)
+                Form {
+                    if step == 0 { taskFields }
+                    else if step == 1 { scheduleFields }
+                    else { reviewFields }
+                    if let message { Section { Text(message).foregroundStyle(Brand.red).accessibilityAddTraits(.updatesFrequently) } }
+                }.scrollDismissesKeyboard(.interactively)
+            }.background(Brand.background)
+                .safeAreaInset(edge: .bottom) {
+                    HStack(spacing: 16) {
+                        if step > 0 { Button("Back") { message = nil; step -= 1 }.frame(minWidth: 60, minHeight: 44).disabled(saving) }
+                        Button {
+                            titleFocused = false
+                            if step < 2 { message = nil; step += 1 }
+                            else { Task { await save() } }
+                        } label: { HStack { if saving { ProgressView() }; Text(step == 2 ? (personIDs.count > 1 ? "Add tasks" : "Add task") : "Continue").bold() }.frame(maxWidth: .infinity, minHeight: 44) }
+                            .buttonStyle(PrimaryButton()).disabled(saving || saveBlocked || !model.canChange || !validTask || (step > 0 && !validSchedule) || (step == 2 && !validDetails))
+                    }.padding(.horizontal, 20).padding(.vertical, 12).background(.ultraThinMaterial)
+                }
+                .navigationTitle("Add a task").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { DraftCancelButton(dirty: dirty, saving: saving) { dismiss() } } }
+                .task {
+                    scheduledDate = Dates.wallTime("12:00", on: model.today, in: model.zone) ?? Date()
+                    dueDate = Dates.wallTime("18:00", on: model.today, in: model.zone) ?? Date()
+                    if originalDraft == nil { originalDraft = draftSignature }
+                }
+        }.interactiveDismissDisabled(saving || dirty)
+    }
+    private var taskFields: some View {
+        Group {
+            Section("What needs doing?") { TextField("Task name", text: $title).focused($titleFocused).textInputAutocapitalization(.sentences).accessibilityLabel("Task title") }
+            Section {
+                ForEach(people) { person in
+                    Button { if personIDs.contains(person.id) { personIDs.remove(person.id) } else { personIDs.insert(person.id) } } label: {
+                        HStack { Text(person.name).foregroundStyle(Brand.ink); Spacer(); Image(systemName: personIDs.contains(person.id) ? "checkmark.circle.fill" : "circle").foregroundStyle(personIDs.contains(person.id) ? Brand.primary : Brand.muted) }.frame(minHeight: 44)
+                    }.accessibilityAddTraits(personIDs.contains(person.id) ? .isSelected : [])
+                }
+                if people.count > 1 { Button("Select all children") { personIDs = Set(people.map(\.id)) }.frame(minHeight: 44) }
+            } header: { Text("Who is it for?") } footer: { Text("Each selected child gets their own task to check off.") }
+        }
+    }
+    private var scheduleFields: some View {
+        Group {
+            Section("When should it happen?") {
+                Picker("Schedule", selection: $scheduleType) { Text("Recurring").tag("weekly"); Text("One time").tag("one_off") }.pickerStyle(.segmented)
+                if scheduleType == "one_off" { DatePicker("On", selection: $scheduledDate, displayedComponents: .date).environment(\.timeZone, model.zone) }
+                else {
+                    Picker("Day type", selection: $schoolDayFilter) { Text("School days and days off").tag("any"); Text("School days only").tag("school_day"); Text("Days off only").tag("non_school_day") }
+                    if schoolDayFilter != "non_school_day" {
+                        Picker("On school days", selection: $taskSection) { Text("Any time").tag("tasks"); Text("Before school").tag("before_school"); Text("After school").tag("after_school") }
+                    }
+                }
+            }
+            if scheduleType == "weekly" {
+                Section {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 64))], spacing: 12) {
+                        ForEach(0..<7) { day in
+                            Button { if days.contains(day) { days.remove(day) } else { days.insert(day) } } label: { Text(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][day]).font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity, minHeight: 44).background(days.contains(day) ? Brand.lime : Brand.background, in: RoundedRectangle(cornerRadius: 10)).foregroundStyle(Brand.ink) }.buttonStyle(.plain).accessibilityAddTraits(days.contains(day) ? .isSelected : [])
+                        }
+                    }
+                    HStack { Button("Every day") { days = Set(0...6) }; Spacer(); Button("Weekdays") { days = Set(1...5) }; Spacer(); Button("Weekends") { days = [0, 6] } }.font(.subheadline).frame(minHeight: 44)
+                    if days.isEmpty { Text("Choose at least one repeat day.").foregroundStyle(Brand.red) }
+                } header: { Text("Repeat days") } footer: { Text("The school calendar checks the repeat days you choose. Days off always show tasks in one Tasks list.") }
+            }
+        }
+    }
+    private var reviewFields: some View {
+        Group {
+            Section("Ready to add?") {
+                Text(title).font(.title3.bold())
+                Label(people.filter { personIDs.contains($0.id) }.map(\.name).joined(separator: " & "), systemImage: "person.2")
+                Label(scheduleSummary, systemImage: "calendar").fixedSize(horizontal: false, vertical: true)
+                Toggle("Required before earned device time", isOn: $required)
+                Toggle("A parent must approve completion", isOn: $requiresApproval)
+            }
+            Section {
+                DisclosureGroup("Instructions & checklist") {
+                    TextField("Instructions", text: $instructions, axis: .vertical).lineLimit(3...8)
+                    TextField("Steps · one per line", text: $checklist, axis: .vertical).lineLimit(3...10)
+                    if !validDetails { Text("Use at most 3,000 instruction characters and 20 steps of up to 160 characters.").font(.caption).foregroundStyle(Brand.red) }
+                }
+                DisclosureGroup("Deadline & reminders") {
+                    Toggle("Set a deadline", isOn: $hasDeadline)
+                    if hasDeadline { DatePicker("Due by", selection: $dueDate, displayedComponents: .hourAndMinute).environment(\.timeZone, model.zone); Stepper("Remind \(reminder) minutes before", value: $reminder, in: 0...1440, step: 5) }
+                    Text("Dates and deadlines follow \(model.session?.household.timezone ?? "your home timezone").").font(.caption).foregroundStyle(Brand.muted)
+                }
+            }
+        }
+    }
+    private func save() async {
+        guard validTask, validSchedule, validDetails else { return }
+        saving = true; defer { saving = false }
+        var draft = ChoreDraft(title: title.trimmingCharacters(in: .whitespacesAndNewlines), personId: nil, weekdays: scheduleType == "one_off" ? Array(0...6) : days.sorted(), dueTime: hasDeadline ? Dates.wallTimeString(dueDate, in: model.zone) : nil, reminderMinutes: reminder)
+        draft.scheduleType = scheduleType; draft.scheduledDate = scheduleType == "one_off" ? Dates.day(scheduledDate, in: model.zone) : nil
+        draft.schoolDayFilter = schoolDayFilter; draft.taskSection = taskSection; draft.required = required; draft.requiresApproval = requiresApproval
+        draft.instructions = instructions; draft.subtasks = lines.map { ChoreStep(title: $0) }
+        if await model.createTasks(draft, personIDs: personIDs.sorted(), mutationID: operationID) { dismiss() }
+        else { saveBlocked = model.lastMutationNeedsReview; message = model.message }
+    }
+}
+
 struct ChoreEditor: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -31,12 +181,17 @@ struct ChoreEditor: View {
         _requiresApproval = State(initialValue: routine?.requiresApproval ?? false); _instructions = State(initialValue: routine?.instructions ?? "")
         _subtasks = State(initialValue: routine?.subtasks ?? []); _scheduleType = State(initialValue: routine?.scheduleType ?? "weekly")
         _schoolDayFilter = State(initialValue: routine?.schoolDayFilter ?? initialSchoolDayFilter ?? "any")
-        _taskSection = State(initialValue: routine?.taskSection ?? initialTaskSection ?? "before_school")
+        _taskSection = State(initialValue: routine?.taskSection ?? initialTaskSection ?? "tasks")
     }
     @State private var originalDraft: String?
     private var draftSignature: String { draftFingerprint([title, personID, String(describing: days.sorted()), String(hasDeadline), Dates.wallTimeString(dueDate, in: model.zone), String(reminder), String(required), String(requiresApproval), instructions, draftFingerprint(subtasks), scheduleType, schoolDayFilter, taskSection, Dates.day(scheduledDate, in: model.zone)]) }
     private var hasUnsavedChanges: Bool { originalDraft.map { $0 != draftSignature } ?? false }
     var body: some View {
+        if routine == nil {
+            TaskCreationWizard(assignedPersonID: personID, initialSchoolDayFilter: schoolDayFilter, initialTaskSection: taskSection)
+        } else { editorBody }
+    }
+    private var editorBody: some View {
         NavigationStack {
             Form {
                 Section("The task") {
@@ -58,7 +213,7 @@ struct ChoreEditor: View {
                             Text("School days only").tag("school_day")
                             Text("Non-school days only").tag("non_school_day")
                         }
-                        if schoolDayFilter == "school_day" {
+                        if schoolDayFilter != "non_school_day" {
                             Picker("School-day section", selection: $taskSection) {
                                 Text("Before school").tag("before_school")
                                 Text("After school").tag("after_school")
@@ -110,7 +265,7 @@ struct ChoreEditor: View {
                 }
                 .onChange(of: scheduleType) { _, value in if value == "one_off" { schoolDayFilter = "any"; taskSection = "tasks" } }
                 .onChange(of: schoolDayFilter) { _, value in
-                    if value != "school_day" { taskSection = "tasks" }
+                    if value == "non_school_day" { taskSection = "tasks" }
                     else if routine == nil && taskSection == "tasks" { taskSection = "before_school" }
                 }
                 .confirmationDialog("Delete this routine?", isPresented: $confirmDelete, titleVisibility: .visible) {
@@ -128,7 +283,7 @@ struct ChoreEditor: View {
         draft.required = required; draft.requiresApproval = requiresApproval; draft.instructions = instructions
         draft.subtasks = subtasks; draft.scheduleType = scheduleType; draft.scheduledDate = scheduleType == "one_off" ? Dates.day(scheduledDate, in: model.zone) : nil
         draft.schoolDayFilter = scheduleType == "one_off" ? "any" : schoolDayFilter
-        draft.taskSection = draft.scheduleType == "weekly" && draft.schoolDayFilter == "school_day" ? taskSection : "tasks"
+        draft.taskSection = draft.scheduleType == "weekly" && draft.schoolDayFilter != "non_school_day" ? taskSection : "tasks"
         if await model.saveChore(draft, id: routine?.id) { dismiss() }
         else { saveBlocked = model.lastMutationNeedsReview; saveMessage = model.message }
     }
