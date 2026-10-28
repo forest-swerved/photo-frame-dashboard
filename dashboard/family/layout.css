@@ -289,3 +289,77 @@ dialog > form { display:flex; flex-direction:column; max-height:calc(100vh - 32p
 .wizard-review p { margin: .55rem 0 0; line-height: 1.5; }
 
 [data-wizard-next][hidden], [data-wizard-save][hidden], [data-wizard-back][hidden] { display: none; }
+
+/* The frame's home is a persistent task board, with one lane per child. */
+.frame-home { display:flex; flex-direction:column; gap:10px; min-height:0; }
+.frame-task-board { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; min-height:0; }
+.frame-person-card { background:var(--surface); border:1px solid var(--line); border-top:5px solid var(--person); border-radius:18px; padding:10px 16px; min-width:0; min-height:0; display:flex; flex-direction:column; }
+.frame-person-card:only-child { grid-column:1/-1; }
+.frame-person-heading { display:flex; align-items:center; gap:12px; flex-shrink:0; }
+.frame-person-heading > div { flex:1; min-width:0; }
+.frame-person-heading h2 { font-size:30px; line-height:1.1; margin:0; overflow-wrap:anywhere; }
+.frame-person-heading p { color:var(--muted); font-size:14px; line-height:1.25; margin:4px 0 0; }
+.frame-person-heading p:empty { display:none; }
+.frame-person-heading .avatar { width:46px; height:46px; flex-shrink:0; font-size:20px; }
+.frame-person-count { color:var(--ink); text-align:right; text-decoration:none; flex-shrink:0; min-height:44px; }
+.frame-person-count strong { display:block; font-size:27px; line-height:1.15; }
+.frame-person-count strong span { font-size:22px; color:var(--muted); }
+.frame-person-count small { display:block; color:var(--muted); font-size:12px; line-height:1; margin-top:2px; }
+.frame-person-progress { height:5px; background:var(--surface-soft); margin:6px 0 2px; flex-shrink:0; }
+.frame-person-progress i { background:var(--person); }
+.frame-person-tasks { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; scrollbar-width:thin; }
+.frame-person-tasks:focus-visible { outline:2px solid var(--primary); outline-offset:3px; }
+.frame-person-card .task-section-heading { margin:6px 0 2px; padding:2px 0; border-bottom:1px solid var(--line); color:var(--action-ink); font-size:14px; line-height:18px; letter-spacing:.07em; text-transform:uppercase; font-weight:750; }
+.frame-person-card .task-section { margin:0; }
+.frame-person-card .task-section + .task-section { margin-top:0; }
+.frame-person-empty { display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; min-height:180px; height:100%; padding:24px; }
+.frame-person-empty > span { color:var(--primary); font-size:56px; line-height:1; margin-bottom:14px; }
+.frame-person-empty strong { font-size:24px; }
+.frame-person-empty p { color:var(--muted); font-size:17px; }
+.frame-person-card.all-done { border-top-color:var(--green); }
+.frame-home-bottom { display:flex; align-items:center; gap:16px; border:1px solid var(--line); border-radius:14px; padding:6px 14px; background:var(--surface); flex-shrink:0; min-width:0; }
+.frame-home-calendar { display:flex; align-items:center; gap:14px; flex:1; min-width:0; }
+.frame-calendar-link { color:var(--action-ink); font-size:14px; font-weight:750; text-decoration:none; min-height:36px; display:flex; align-items:center; flex-shrink:0; }
+.frame-home-calendar > div { min-width:0; flex:1; }
+.frame-next-event { display:block; width:100%; padding:0; text-align:left; border:0; background:none; color:var(--ink); min-height:36px; }
+.frame-next-event strong,.frame-next-event span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.frame-next-event strong { font-size:16px; line-height:20px; font-weight:650; }
+.frame-next-event span { font-size:12px; line-height:16px; color:var(--muted); }
+.frame-home-calendar .status-note { font-size:12px; padding:6px 8px; margin:0 0 4px; }
+.frame-calendar-empty { color:var(--muted); font-size:14px; line-height:1.35; margin:0; }
+.frame-home-tools { display:flex; gap:10px; flex-shrink:0; }
+.frame-home-tools:empty { display:none; }
+.frame-home-network { flex:1; min-width:0; padding-left:16px; border-left:1px solid var(--line); }
+.frame-home-bottom .home-internet-strip { margin:0; padding:0; border:0; border-radius:0; box-shadow:none; min-height:0; background:none; gap:10px; }
+.frame-home-bottom .home-session { min-width:0; gap:10px; }
+.frame-home-bottom .home-session > div { min-width:0; }
+.frame-home-bottom .home-session strong { font-size:14px; }
+.frame-home-bottom .home-session p { font-size:11px; line-height:1.3; margin:3px 0 0; }
+.frame-home-bottom .home-session .session-timer { font-size:24px; }
+.frame-home-bottom .text-button { font-size:13px; min-height:36px; padding:4px 0; }
+@media (min-width:1000px) {
+  .frame-display .frame-home-content { height:100vh; min-height:0; overflow:hidden; padding:12px 20px; gap:10px; }
+  .frame-display .frame-home-content > .page-heading { margin:0; flex-shrink:0; }
+  .frame-home-content > .page-heading .eyebrow { display:none; }
+  .frame-home-content > .page-heading h1 { font-size:27px; line-height:1.1; margin:0; }
+  .frame-home-content > .page-heading .header-clock { display:flex; flex-direction:row; align-items:center; gap:12px; }
+  .frame-home-content .frame-day-type { display:inline-block; font-size:12px; vertical-align:middle; margin-left:12px; padding:5px 10px; line-height:1.2; border-radius:20px; background:var(--cyan-tint); color:var(--cyan-ink); }
+  .frame-home-content > .page-heading .live-time { font-size:28px; }
+  .frame-home-content > .page-heading .live-date { font-size:13px; }
+  .frame-home-content > .frame-home { flex:1; }
+  .frame-task-board { flex:1; grid-auto-rows:minmax(0,1fr); }
+  .frame-display .frame-person-card .compact-task { padding:0; min-height:44px; gap:8px; }
+  .frame-display .frame-person-card .compact-task .chore-toggle { min-height:44px; width:40px; flex-basis:40px; }
+  .frame-display .frame-person-card .chore-open { min-height:44px; padding:0; }
+  .frame-display .frame-person-card .chore-open strong { font-size:20px; line-height:1.2; }
+  .frame-display .frame-person-card .chore-open small { font-size:12px; line-height:1.25; margin-top:1px; }
+  .frame-display .frame-person-card .compact-task .text-button { min-height:44px; font-size:13px; }
+  .frame-display .frame-person-card .task-section-heading { font-size:14px; }
+}
+@media (max-width:700px) {
+  .frame-task-board { grid-template-columns:minmax(0,1fr); }
+  .frame-person-card { min-height:240px; }
+  .frame-home-bottom { flex-wrap:wrap; }
+  .frame-home-calendar,.frame-home-network { flex-basis:100%; }
+  .frame-home-network { border-left:0; padding-left:0; }
+}
