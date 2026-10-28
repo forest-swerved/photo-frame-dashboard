@@ -5,7 +5,7 @@ import { decryptCredentials, digest } from './credentials.js';
 import { one, transaction } from './database.js';
 import { householdDate, requireValue } from './errors.js';
 
-export const CALENDAR_FRESH_MS = 300_000;
+export const CALENDAR_FRESH_MS = 60_000;
 const LEASE_MS = 60_000;
 const KNOWN_ERRORS = new Set(['CALENDAR_AUTH_FAILED', 'CALENDAR_TIMEOUT', 'CALENDAR_PROVIDER_ERROR',
   'CALENDAR_UNSAFE_URL', 'CALENDAR_REQUEST_LIMIT', 'CALENDAR_RESPONSE_LIMIT', 'CALENDAR_EVENT_LIMIT',
@@ -61,6 +61,8 @@ export async function enqueueCalendarSync(db, householdId, connection, from, to,
   [householdId, from, to, timezone, connection.version, generation]);
   const start = covering?.from_date || from;
   const end = covering?.to_date || to;
+  // Measure cadence from the attempt start: timing from its later success can
+  // otherwise make a minute scheduler skip every second healthy refresh.
   return one(db, `INSERT INTO family_calendar_sync_jobs(household_id,start_date,end_date,timezone,connection_version,credential_generation,requested_at,next_attempt_at)
     SELECT $1,$2::date,$3::date,$4,$5,$6,$7,$7 FROM family_calendar_connections
     WHERE household_id=$1 AND version=$5 AND credentials=$8::jsonb
@@ -68,7 +70,8 @@ export async function enqueueCalendarSync(db, householdId, connection, from, to,
       connection_version=EXCLUDED.connection_version,credential_generation=EXCLUDED.credential_generation,
       next_attempt_at=CASE
         WHEN family_calendar_sync_jobs.connection_version<>EXCLUDED.connection_version OR family_calendar_sync_jobs.credential_generation<>EXCLUDED.credential_generation THEN EXCLUDED.next_attempt_at
-        WHEN family_calendar_sync_jobs.last_error_code IS NULL AND family_calendar_sync_jobs.last_successful_at <= $7::timestamptz-interval '5 minutes' THEN EXCLUDED.next_attempt_at
+        WHEN family_calendar_sync_jobs.last_error_code IS NULL AND family_calendar_sync_jobs.lease_id IS NULL
+          AND family_calendar_sync_jobs.last_attempt_at <= $7::timestamptz-($10::integer * interval '1 millisecond') THEN EXCLUDED.next_attempt_at
         WHEN $9 AND family_calendar_sync_jobs.lease_id IS NULL
           AND (family_calendar_sync_jobs.last_error_code IS NULL OR family_calendar_sync_jobs.last_attempt_at IS NULL OR family_calendar_sync_jobs.last_attempt_at < $7::timestamptz-interval '30 seconds') THEN EXCLUDED.next_attempt_at
         ELSE family_calendar_sync_jobs.next_attempt_at END,
@@ -77,7 +80,7 @@ export async function enqueueCalendarSync(db, householdId, connection, from, to,
       attempts=CASE WHEN family_calendar_sync_jobs.credential_generation<>EXCLUDED.credential_generation OR family_calendar_sync_jobs.connection_version<>EXCLUDED.connection_version THEN 0 ELSE family_calendar_sync_jobs.attempts END,
       last_error_code=CASE WHEN family_calendar_sync_jobs.credential_generation<>EXCLUDED.credential_generation OR family_calendar_sync_jobs.connection_version<>EXCLUDED.connection_version THEN NULL ELSE family_calendar_sync_jobs.last_error_code END
     RETURNING *,start_date::text AS from_date,end_date::text AS to_date`,
-  [householdId, start, end, timezone, connection.version, generation, now, JSON.stringify(connection.credentials), force]);
+  [householdId, start, end, timezone, connection.version, generation, now, JSON.stringify(connection.credentials), force, CALENDAR_FRESH_MS]);
 }
 
 export async function runCalendarSyncJob(db, job, { env = process.env, sync = syncIcloudCalendar, now = new Date() } = {}) {

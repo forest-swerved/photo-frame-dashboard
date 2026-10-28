@@ -63,7 +63,7 @@ async function fixture({ frame = true, width = 1280, height = 800 } = {}) {
   return { browser, page, state, origin, async open(view = 'today') {
     await page.goto(new URL(`/family.html${frame ? '?display=frame' : ''}#${view}`, origin).href);
     await page.getByRole('heading', { name: view === 'setup' ? 'Settings' : view === 'chores' ? 'Tasks' : view[0].toUpperCase() + view.slice(1), exact: true, level: 1 }).waitFor();
-    if (view === 'today' || view === 'calendar') await page.locator('.calendar-meta').waitFor();
+    if (view === 'today' || view === 'calendar') await page.locator(frame && view === 'today' ? '.frame-next-event' : '.calendar-meta').waitFor();
   } };
 }
 
@@ -182,12 +182,11 @@ test('a queued calendar background update retains events without reporting a pro
   const f = await fixture();
   try {
     await f.open();
-    f.state.calendarStatus = 'stale'; f.state.syncState = 'scheduled';
+    f.state.calendarStatus = 'stale'; f.state.syncState = 'scheduled'; f.state.changed = true;
     await f.page.clock.runFor(20_001);
-    await f.page.getByText('Calendar update in progress.', { exact: true }).waitFor();
-    assert.ok(await f.page.getByText('Fixture event 0', { exact: true }).count() > 0);
-    const message = await f.page.locator('.status-note').innerText();
-    assert.equal(/failed|could not refresh|unavailable/i.test(message), false);
+    await f.page.getByText('Updated event 0', { exact: true }).waitFor();
+    assert.equal(await f.page.getByText('Calendar update in progress.', { exact: true }).count(), 0);
+    assert.equal(await f.page.locator('.status-warning').count(), 0);
     assert.deepEqual(f.state.errors, []);
   } finally { await f.browser.close(); }
 });

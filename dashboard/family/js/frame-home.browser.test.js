@@ -17,7 +17,7 @@ async function fixture({ off = false, extra = 0, empty = false } = {}) {
     const req=route.request(),path=new URL(req.url()).pathname; let data;
     if(path==='/api/session') data={authenticated:true,authType:'frame',role:'frame',household:home,user:{id:'frame-device',name:'Synthetic frame'}};
     else if(path==='/api/household') data={household:home,role:'frame',date:'2026-10-27',people:state.people,routines:[],chores:[],occurrences:state.tasks.filter(t=>state.people.some(p=>p.id===t.personId)),schoolDay:{type:off?'non_school_day':'school_day',label:off?'No school':'School day'},capabilities:{manageChores:false,manageInternet:false}};
-    else if(path==='/api/calendar') data={status:'ready',events:[{id:'frame-calendar-event',calendarId:'frame-cal',title:'Family dinner',allDay:false,startAt:'2026-10-27T23:30:00Z',endAt:'2026-10-28T00:30:00Z'}],calendars:[],coverage:{startDate:'2026-10-27',endDateExclusive:'2026-11-04',complete:true,truncated:false},lastSuccessfulSyncAt:'2026-10-27T18:00:00Z'};
+    else if(path==='/api/calendar') data=state.calendar || {status:'ready',events:[{id:'frame-calendar-event',calendarId:'frame-cal',title:'Family dinner',allDay:false,startAt:'2026-10-27T23:30:00Z',endAt:'2026-10-28T00:30:00Z'}],calendars:[],coverage:{startDate:'2026-10-27',endDateExclusive:'2026-11-04',complete:true,truncated:false},lastSuccessfulSyncAt:'2026-10-27T18:00:00Z'};
     else if(path==='/api/internet') data={serverTime:'2026-10-27T18:00:00Z',timezone:home.timezone,role:'frame',integration:{state:'ready'},devices:[],sessions:[],credits:[],policies:[],progress:[]};
     else if(path.startsWith('/api/chore-occurrences/')&&path.endsWith('/completion')) {
       const body=req.postDataJSON(),task=state.tasks.find(t=>path.includes(t.id));state.writes.push({id:task.id,body});
@@ -74,6 +74,31 @@ test('long child lists scroll independently and scoped or empty profiles never d
     f.state.people=[f.state.people[0]];await f.page.reload();await f.page.locator('.frame-person-card').first().waitFor();
     assert.equal(await f.page.getByRole('heading',{name:'Andre',exact:true}).count(),0);assert.equal(await f.page.locator('.frame-person-card').count(),1);
     f.state.tasks=[];await f.page.reload();await f.page.getByText('No tasks scheduled for today.',{exact:true}).waitFor();assert.equal(await f.page.getByRole('heading',{name:'Stevie',exact:true}).count(),1);
+    assert.deepEqual(f.state.errors,[]);
+  }finally{await f.browser.close();}
+});
+
+test('calendar background updates stay quiet on frame Home and Calendar while failures remain visible', {skip:!base},async()=>{
+  const f=await fixture();try{
+    const saved={status:'stale',sync:{state:'scheduled'},events:[{id:'saved-event',calendarId:'frame-cal',title:'Saved appointment',allDay:false,startAt:'2026-10-27T23:00:00Z',endAt:'2026-10-28T00:00:00Z'}],calendars:[],coverage:{startDate:'2026-10-27',endDateExclusive:'2026-10-28',complete:true,truncated:false},lastSuccessfulSyncAt:'2026-10-27T17:59:00Z'};
+    for(const state of ['scheduled','syncing']){
+      f.state.calendar={...saved,sync:{state}};await f.page.reload();
+      await f.page.getByRole('button',{name:'Details for Saved appointment',exact:true}).waitFor();
+      assert.equal(await f.page.locator('.frame-home-calendar .status-warning').count(),0);
+      assert.equal(await f.page.getByText('Calendar update in progress.',{exact:false}).count(),0);
+    }
+    await f.page.getByRole('link',{name:'Calendar',exact:true}).click();
+    await f.page.locator('.calendar-meta').waitFor();
+    assert.equal(await f.page.locator('.calendar-panel .status-warning').count(),0);
+    assert.equal(await f.page.getByText('No events on this day.',{exact:true}).count(),0);
+    const problems=[{...saved,sync:{state:'retrying'},error:{message:'Could not update the calendar.'}},
+      {...saved,coverage:{...saved.coverage,complete:false}},
+      {...saved,lastSuccessfulSyncAt:'2026-10-27T17:40:00Z'}];
+    for(const calendar of problems){
+      f.state.calendar=calendar;await f.page.reload();
+      await f.page.locator('.calendar-panel .status-warning').waitFor();
+      assert.equal(await f.page.getByRole('button',{name:'Details for Saved appointment',exact:true}).count(),1);
+    }
     assert.deepEqual(f.state.errors,[]);
   }finally{await f.browser.close();}
 });

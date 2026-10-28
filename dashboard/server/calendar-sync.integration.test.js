@@ -142,16 +142,19 @@ test('durable calendar sync uses isolated local TLS Postgres', { skip: !enabled,
       assert.equal((await db.query('SELECT * FROM family_calendar_sync_jobs WHERE next_attempt_at IS NOT NULL')).rowCount, 0);
     });
 
-    await t.test('cron alone creates and refreshes the calendar without an open app or frame', async () => {
+    await t.test('cron refreshes once per minute despite provider duration, without an open app or frame', async () => {
       await reset();
-      const result = await processCalendarSyncJobs(db, { env, now, sync: async () => snapshot('scheduled-only') });
+      const result = await processCalendarSyncJobs(db, { env, now, sync: async () => ({ ...snapshot('scheduled-only'), lastSuccessfulSyncAt: new Date(now.getTime() + 3000).toISOString() }) });
       assert.equal(result.synced, 1);
       assert.equal((await db.query('SELECT snapshot FROM family_calendar_cache')).rows[0].snapshot.events[0].id, 'scheduled-only');
       const row = (await db.query('SELECT * FROM family_calendar_sync_jobs')).rows[0];
       assert.equal(row.next_attempt_at, null);
       assert.ok(row.last_successful_at);
-      const next = await processCalendarSyncJobs(db, { env, now: new Date(now.getTime() + 301_000), sync: async () => snapshot('scheduled-again') });
+      const early = await processCalendarSyncJobs(db, { env, now: new Date(now.getTime() + 59_000), sync: () => { throw Error('A healthy job must not call the provider before its cadence.'); } });
+      assert.equal(early.processed, 0);
+      const next = await processCalendarSyncJobs(db, { env, now: new Date(now.getTime() + 60_000), sync: async () => ({ ...snapshot('scheduled-again'), lastSuccessfulSyncAt: new Date(now.getTime() + 63_000).toISOString() }) });
       assert.equal(next.synced, 1);
+      assert.equal((await db.query('SELECT snapshot FROM family_calendar_cache')).rows[0].snapshot.events[0].id, 'scheduled-again');
     });
 
     await t.test('selection and disconnect clear jobs as well as snapshots', async () => {
