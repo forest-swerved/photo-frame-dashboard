@@ -36,7 +36,7 @@ export function routineDetails(body, current = {}) {
   const taskSection = body.taskSection === undefined ? current.task_section ?? 'tasks' : body.taskSection;
   requireValue(['tasks', 'before_school', 'after_school'].includes(taskSection), 422, 'invalid_task_section', 'Choose Tasks, Before school, or After school.');
   return { required, requiresApproval, instructions: instructions.trim(), subtasks, scheduleType, scheduledDate, schoolDayFilter: schoolFilter,
-    taskSection: scheduleType === 'weekly' && schoolFilter === 'school_day' ? taskSection : 'tasks' };
+    taskSection: scheduleType === 'weekly' && schoolFilter !== 'non_school_day' ? taskSection : 'tasks' };
 }
 
 export function occurrenceDto(row) {

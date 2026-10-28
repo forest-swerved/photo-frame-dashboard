@@ -107,14 +107,24 @@ final class ModelTests: XCTestCase {
         json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(draft)) as? [String: Any])
         XCTAssertEqual(json["schoolDayFilter"] as? String, "any", "One-time chores must not be silently omitted by a school-day filter")
     }
-    func testTaskPhasesOnlyEncodeForWeeklySchoolDays() throws {
+    func testTaskPhasesEncodeDailyPlacementAndNormalizeOneTimeOrDaysOff() throws {
         var draft = ChoreDraft(title: "Synthetic phase task", personId: nil, weekdays: Array(0...6), dueTime: nil, reminderMinutes: 15)
         draft.taskSection = "after_school"
-        for (frequency, filter, expected) in [("weekly", "school_day", "after_school"), ("weekly", "non_school_day", "tasks"), ("weekly", "any", "tasks"), ("one_off", "school_day", "tasks")] {
+        for (frequency, filter, expected) in [("weekly", "school_day", "after_school"), ("weekly", "non_school_day", "tasks"), ("weekly", "any", "after_school"), ("one_off", "school_day", "tasks")] {
             draft.scheduleType = frequency; draft.schoolDayFilter = filter
             let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(draft)) as? [String: Any])
             XCTAssertEqual(json["taskSection"] as? String, expected)
         }
+    }
+    func testBatchTaskRequestEncodesIndependentChildrenAndStableOperation() throws {
+        var draft = ChoreDraft(title: "Synthetic daily task", personId: nil, weekdays: [5], dueTime: nil, reminderMinutes: 15)
+        draft.taskSection = "after_school"
+        let request = TaskCreationRequest(draft: draft, personIds: ["child-b", "child-a"], mutationId: "stable-operation")
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
+        XCTAssertEqual(json["personIds"] as? [String], ["child-a", "child-b"])
+        XCTAssertEqual(json["mutationId"] as? String, "stable-operation")
+        XCTAssertEqual(json["taskSection"] as? String, "after_school")
+        XCTAssertEqual(json["weekdays"] as? [Int], [5])
     }
     func testTaskSectionsDecodeFrozenPhasesAndFlattenForNonSchoolDays() throws {
         let legacy = #"{"id":"synthetic-task","choreId":"synthetic-routine","date":"2026-10-18","originalDate":"2026-10-18","title":"Synthetic task","required":true,"instructions":"","subtasks":[],"requiresApproval":false,"status":"pending","version":1,"completion":{"date":"2026-10-18","completed":false,"version":0},"definitionSource":"routine","routineVersion":1}"#

@@ -11,7 +11,7 @@ async function fixture({ role = 'admin', frame = false, signedOut = false, width
   const person = { id: 'fixture-child', name: 'Synthetic child', color: '#00748c' };
   const routine = { id: 'fixture-routine', title: 'Synthetic routine', personId: person.id, weekdays: [0, 1, 2, 3, 4, 5, 6], version: 2, dueTime: '18:00', reminderMinutes: 15, required: true, requiresApproval: true, scheduleType: 'weekly', instructions: 'Use clean water.', subtasks: [{ id: 'fixture-step', title: 'Prepare supplies' }] };
   const occurrence = { ...routine, id: 'fixture-occurrence', choreId: routine.id, date: '2026-10-17', originalDate: '2026-10-17', status: 'pending', version: 3, subtasks: [{ id: 'fixture-step', title: 'Prepare supplies', completed: false }], completion: { date: '2026-10-17', completed: false, version: 0 } };
-  const state = { calls: [], errors: [], occurrence, routine, notificationRead: false, grant: false };
+  const state = { calls: [], errors: [], occurrence, routine, notificationRead: false, grant: false, people: [person], delayCreate: null };
   page.on('pageerror', error => state.errors.push(error.message));
   await page.route('**/api/**', async route => {
     const req = route.request(), url = new URL(req.url()), method = req.method();
@@ -24,12 +24,13 @@ async function fixture({ role = 'admin', frame = false, signedOut = false, width
       data = { authType: frame ? 'frame' : 'user', role: activeRole, personId: role === 'child' ? person.id : null, household: home, user: { id: 'fixture-user', name: 'Synthetic account' } };
     } else if (url.pathname === '/api/auth/get-session') data = signedOut ? null : { session: { expiresAt: '2099-01-01T00:00:00Z' } };
     else if (url.pathname === '/api/auth/token') data = { token: 'fixture.transient.token' };
-    else if (url.pathname === '/api/household') data = { household: home, role: activeRole, date: '2026-10-17', people: [person], chores: [{ ...routine, completion: occurrence.completion }], routines: [routine], occurrences: [occurrence], capabilities: { manageChores: activeRole === 'admin' || activeRole === 'caregiver', manageInternet: activeRole === 'admin' || activeRole === 'caregiver' } };
+    else if (url.pathname === '/api/household') data = { household: home, role: activeRole, date: '2026-10-17', people: state.people, chores: [{ ...routine, completion: occurrence.completion }], routines: [routine], occurrences: [occurrence], capabilities: { manageChores: activeRole === 'admin' || activeRole === 'caregiver', manageInternet: activeRole === 'admin' || activeRole === 'caregiver' } };
     else if (url.pathname === '/api/internet') data = { serverTime: '2026-10-17T18:00:00Z', timezone: home.timezone, role: activeRole, capabilities: { manageInternet: activeRole === 'admin' }, integration: { state: 'unconfigured' }, devices: [], sessions: [], policies: [], credits: [], progress: [] };
     else if (url.pathname === '/api/calendar') data = { status: 'not_configured', events: [] };
     else if (url.pathname === '/api/calendar/connection') data = { connected: false, calendars: [] };
     else if (url.pathname === '/api/devices') data = { devices: [] };
     else if (url.pathname === '/api/members') data = { members: [] };
+    else if (url.pathname === '/api/chores/batch' && method === 'POST') { if (state.delayCreate) await state.delayCreate; data = { routines: body.personIds.map(personId => ({ ...body, personId, id: `fixture-new-${personId}`, version: 1 })) }; }
     else if (url.pathname === '/api/chores' && method === 'POST') data = { ...body, id: 'fixture-new', version: 1 };
     else if (url.pathname.endsWith('/completion')) {
       occurrence.version++; occurrence.status = body.completed ? role === 'child' ? 'submitted' : 'completed' : 'pending';
@@ -79,16 +80,19 @@ test('parent creates an advanced one-off routine, approves work, and creates an 
     await f.open();
     await f.page.getByRole('button', { name: '+ Add a task', exact: true }).click();
     await f.page.getByLabel('Task', { exact: true }).fill('Fixture one-off');
+    await f.page.getByLabel('Synthetic child', { exact: true }).check();
+    await f.page.getByRole('button', { name: 'Continue', exact: true }).click();
     await f.page.getByLabel('Schedule', { exact: true }).selectOption('one_off');
     await f.page.getByLabel('One-off date').fill('2026-10-24');
-    await f.page.getByLabel('Required for daily rewards').uncheck();
+    await f.page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await f.page.getByLabel('Required before earned device time').uncheck();
     await f.page.getByLabel('A parent must approve completion').check();
     await f.page.getByText('Instructions & checklist', { exact: true }).click();
     await f.page.getByLabel('Instructions', { exact: true }).fill('Read these fixture steps.');
     await f.page.getByLabel('Steps · one per line, up to 20').fill('First step\nSecond step');
-    await f.page.getByRole('button', { name: 'Save task', exact: true }).click();
+    await f.page.getByRole('button', { name: 'Add task', exact: true }).click();
     await f.page.waitForFunction(() => !document.querySelector('dialog').open);
-    const routine = f.state.calls.find(item => item.path === '/api/chores' && item.method === 'POST').body;
+    const routine = f.state.calls.find(item => item.path === '/api/chores/batch' && item.method === 'POST').body;
     assert.equal(routine.scheduleType, 'one_off'); assert.equal(routine.scheduledDate, '2026-10-24');
     assert.equal(routine.required, false); assert.equal(routine.requiresApproval, true); assert.equal(routine.subtasks.length, 2);
     await f.page.getByRole('button', { name: /Waiting for approval ·/ }).click();
@@ -203,6 +207,9 @@ test('dirty drafts retain input on cancel and navigation, and the save bar stays
     await f.open();
     await f.page.getByRole('button', { name: '+ Add a task', exact: true }).click();
     await f.page.getByLabel('Task', { exact: true }).fill('Unsaved synthetic task');
+    await f.page.getByLabel('Synthetic child', { exact: true }).check();
+    await f.page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await f.page.getByRole('button', { name: 'Continue', exact: true }).click();
     await f.page.getByText('Instructions & checklist', { exact: true }).click();
     await f.page.getByLabel('Instructions', { exact: true }).fill('A long synthetic instruction. '.repeat(30));
     const geometry = await f.page.locator('.dialog-footer').evaluate(element => ({ top:element.getBoundingClientRect().top,bottom:element.getBoundingClientRect().bottom,height:innerHeight }));
@@ -221,4 +228,52 @@ test('dirty drafts retain input on cancel and navigation, and the save bar stays
     assert.deepEqual(await f.page.evaluate(() => [Object.keys(localStorage),Object.keys(sessionStorage)]),[[],[]]);
     assert.deepEqual(f.state.errors, []);
   } finally { await f.browser.close(); }
+});
+
+test('guided creation keeps both children and custom days, and invalid review details never trap navigation', { skip: !base }, async () => {
+  const f = await fixture({ width: 390 });
+  try {
+    f.state.people.push({ id: 'fixture-sibling', name: 'Synthetic sibling', color: '#8a00c4' });
+    await f.open(); await f.page.getByRole('button', { name: '+ Add a task', exact: true }).click();
+    await f.page.getByLabel('Task', { exact: true }).fill('Shared Friday task');
+    await f.page.getByRole('button', { name: 'Select all children', exact: true }).click();
+    await f.page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await f.page.getByLabel('On school days', { exact: true }).selectOption('after_school');
+    for (const day of ['Sun','Mon','Tue','Wed','Thu','Sat']) await f.page.getByLabel(day, { exact: true }).uncheck();
+    await f.page.getByLabel('Schedule', { exact: true }).selectOption('one_off');
+    await f.page.getByLabel('Schedule', { exact: true }).selectOption('weekly');
+    assert.equal(await f.page.getByLabel('Fri', { exact: true }).isChecked(), true);
+    assert.equal(await f.page.getByLabel('Mon', { exact: true }).isChecked(), false);
+    await f.page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await f.page.getByText('Instructions & checklist', { exact: true }).click();
+    await f.page.getByLabel('Steps · one per line, up to 20').fill(Array.from({ length: 21 }, (_, i) => `Step ${i}`).join('\n'));
+    await f.page.getByRole('button', { name: 'Back', exact: true }).click();
+    await f.page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await f.page.getByRole('heading', { name: 'Ready to add?', exact: true }).waitFor();
+    await f.page.getByLabel('Steps · one per line, up to 20').fill('Finish the job');
+    const geometry = await f.page.locator('.dialog-footer').evaluate(e => ({ top:e.getBoundingClientRect().top,bottom:e.getBoundingClientRect().bottom,height:innerHeight }));
+    assert.ok(geometry.top >= 0 && geometry.bottom <= geometry.height);
+    await f.page.screenshot({ path: '/tmp/family-task-wizard-phone.png', fullPage: true });
+    await f.page.getByRole('button', { name: 'Add task', exact: true }).click();
+    await f.page.waitForFunction(() => !document.querySelector('dialog').open);
+    const call = f.state.calls.find(c => c.path === '/api/chores/batch');
+    assert.deepEqual(call.body.personIds, ['fixture-child','fixture-sibling']); assert.deepEqual(call.body.weekdays, [5]); assert.equal(call.body.taskSection, 'after_school'); assert.ok(call.body.mutationId);
+    assert.deepEqual(f.state.errors, []);
+  } finally { await f.browser.close(); }
+});
+
+test('a delayed task save cannot close or erase a different newly opened draft', { skip: !base }, async () => {
+  const f = await fixture(); let finish;
+  try {
+    await f.open(); await f.page.getByRole('button', { name: '+ Add a task', exact: true }).click();
+    await f.page.getByLabel('Task', { exact: true }).fill('First task'); await f.page.getByLabel('Synthetic child', { exact: true }).check();
+    await f.page.getByRole('button', { name: 'Continue', exact: true }).click(); await f.page.getByRole('button', { name: 'Continue', exact: true }).click();
+    f.state.delayCreate = new Promise(resolve => { finish = resolve; });
+    await f.page.getByRole('button', { name: 'Add task', exact: true }).click();
+    await f.page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await f.page.getByRole('button', { name: '+ Add a task', exact: true }).click(); await f.page.getByLabel('Task', { exact: true }).fill('Keep this newer draft');
+    finish(); await f.page.getByText('Task added.', { exact: true }).waitFor();
+    assert.equal(await f.page.getByLabel('Task', { exact: true }).inputValue(), 'Keep this newer draft');
+    assert.equal(await f.page.locator('dialog[open]').count(), 1); assert.deepEqual(f.state.errors, []);
+  } finally { finish?.(); await f.browser.close(); }
 });

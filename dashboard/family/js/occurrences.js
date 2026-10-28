@@ -18,7 +18,7 @@ export function routinePayload(form, routine = null) {
   const scheduleType = form.get('scheduleType');
   const schoolDayFilter = scheduleType === 'one_off' ? 'any' : form.get('schoolDayFilter') || routine?.schoolDayFilter || 'any';
   if (!['any', 'school_day', 'non_school_day'].includes(schoolDayFilter)) throw new Error('Choose a valid school-day schedule.');
-  const taskSection = scheduleType === 'weekly' && schoolDayFilter === 'school_day' ? form.get('taskSection') || routine?.taskSection || 'tasks' : 'tasks';
+  const taskSection = scheduleType === 'weekly' && schoolDayFilter !== 'non_school_day' ? form.get('taskSection') || routine?.taskSection || 'tasks' : 'tasks';
   if (!['tasks', 'before_school', 'after_school'].includes(taskSection)) throw new Error('Choose a valid task section.');
   const lines = String(form.get('subtasks') || '').split('\n').map(value => value.trim()).filter(Boolean);
   if (lines.length > 20) throw new Error('Use at most 20 steps.');

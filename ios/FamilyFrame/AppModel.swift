@@ -329,6 +329,12 @@ final class AppModel: ObservableObject {
         do { try await api.saveChore(draft, id: id); guard started == generation else { return false }; Task { await refresh() }; return true }
         catch { await failedChoreMutation(error, generation: started); return false }
     }
+    func createTasks(_ draft: ChoreDraft, personIDs: [String], mutationID: String) async -> Bool {
+        guard canManageChores, canChange, !personIDs.isEmpty else { return false }
+        lastMutationNeedsReview = false; let started = generation
+        do { try await api.createTasks(draft, personIDs: personIDs, mutationID: mutationID); guard started == generation else { return false }; Task { await refresh() }; return true }
+        catch { await failedChoreMutation(error, generation: started); return false }
+    }
     func deleteChore(_ chore: Chore) async -> Bool {
         guard canManageChores, canChange else { return false }
         lastMutationNeedsReview = false; let started = generation

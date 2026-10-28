@@ -527,7 +527,7 @@ function openDialog(titleText, contents, onSubmit) {
     footer.hidden = false;
     footer.append(actions);
     const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'text-button'; cancel.dataset.closeDialog = ''; cancel.textContent = 'Cancel'; footer.prepend(cancel);
-    if (form.querySelector('[name="title"]')) { const scope = document.createElement('p'); scope.className = 'field-help save-scope'; scope.textContent = 'Routine changes apply to future days. Today’s saved work stays intact.'; footer.prepend(scope); }
+    if (form.querySelector('[name="title"]')) { const scope = document.createElement('p'); scope.className = 'field-help save-scope'; scope.textContent = form.querySelector('.task-wizard') ? 'New tasks appear on their scheduled days.' : 'Routine changes apply to future days. Today’s saved work stays intact.'; footer.prepend(scope); }
   }
   form.querySelectorAll('[data-close-dialog]').forEach(button => { button.onclick = () => dialog.close(); });
   form.onsubmit = event => submitForm(event, onSubmit);
@@ -696,7 +696,7 @@ async function action(name, element) {
   }
   if (name === 'add-person') return editPerson();
   if (name === 'edit-person') return editPerson(person(id));
-  if (name === 'add-chore') return workbench.editRoutine(undefined, person(element.dataset.personId)?.id || '', { schoolDayFilter: ['school_day', 'non_school_day'].includes(element.dataset.schoolFilter) ? element.dataset.schoolFilter : 'any', taskSection: ['before_school', 'after_school'].includes(element.dataset.taskSection) ? element.dataset.taskSection : 'before_school' });
+  if (name === 'add-chore') return workbench.editRoutine(undefined, person(element.dataset.personId || S.taskPerson)?.id || '', { schoolDayFilter: ['school_day', 'non_school_day'].includes(element.dataset.schoolFilter) ? element.dataset.schoolFilter : 'any', taskSection: ['before_school', 'after_school'].includes(element.dataset.taskSection) ? element.dataset.taskSection : 'tasks' });
   if (name === 'edit-chore') { if (dialog.open) dialog.close(); return workbench.editRoutine(routines().find(chore => chore.id === id)); }
   if (name === 'complete-chore' || name === 'retry-completion') {
     const chore = scheduledChores().find(item => item.id === id);

@@ -57,7 +57,8 @@ async function fixture({ role = 'admin', frame = false, width = 390, unknown = f
       data = { calendar, schoolDay: lookupDate === '2026-10-15' ? { date: lookupDate, type: 'non_school_day', label: 'No school', reason: 'Synthetic fall break', calendarVersion: calendar.version } : schoolDay };
     } else if (url.pathname === '/api/chores/fixture-routine' && req.method() === 'PATCH') {
       assert.equal(body.expectedVersion, routine.version); Object.assign(routine, body, { version: routine.version + 1 }); data = routine;
-    } else if (url.pathname === '/api/chores' && req.method() === 'POST') data = { id: 'fixture-new-routine', ...body, version: 1 };
+    } else if (url.pathname === '/api/chores/batch' && req.method() === 'POST') data = { routines: body.personIds.map(personId => ({ ...body, personId, id: `new-${personId}`, version: 1 })) };
+    else if (url.pathname === '/api/chores' && req.method() === 'POST') data = { id: 'fixture-new-routine', ...body, version: 1 };
     else if (url.pathname === '/api/notifications') data = { notifications: [] };
     else throw new Error(`Unexpected synthetic route ${req.method()} ${url.pathname}`);
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(url.pathname.startsWith('/api/auth/') ? data : { data }) });
@@ -85,15 +86,18 @@ test('parent edits the school-day filter with routine CAS and one-off chores res
     await f.page.locator('.all-chores').getByText(/Non-school days only/).waitFor();
     await f.page.getByRole('button', { name: '+ Add a task', exact: true }).click();
     await f.page.getByLabel('Task', { exact: true }).fill('Synthetic one-off');
-    await f.page.getByLabel('School-day schedule', { exact: true }).selectOption('school_day');
-    assert.equal(await f.page.getByLabel('School-day task section', { exact: true }).inputValue(), 'before_school');
-    await f.page.getByLabel('School-day task section', { exact: true }).selectOption('after_school');
+    await f.page.getByLabel('Synthetic child', { exact: true }).check();
+    await f.page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await f.page.getByLabel('Day type', { exact: true }).selectOption('school_day');
+    assert.equal(await f.page.getByLabel('On school days', { exact: true }).inputValue(), 'tasks');
+    await f.page.getByLabel('On school days', { exact: true }).selectOption('after_school');
     await f.page.getByLabel('Schedule', { exact: true }).selectOption('one_off');
-    assert.equal(await f.page.getByLabel('School-day schedule', { exact: true }).isVisible(), false);
+    assert.equal(await f.page.getByLabel('Day type', { exact: true }).isVisible(), false);
     await f.page.getByLabel('One-off date', { exact: true }).fill('2026-10-25');
-    await f.page.getByRole('button', { name: 'Save task', exact: true }).click();
+    await f.page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await f.page.getByRole('button', { name: 'Add task', exact: true }).click();
     await f.page.waitForFunction(() => !document.querySelector('dialog').open);
-    const create = f.state.calls.find(call => call.path === '/api/chores' && call.method === 'POST');
+    const create = f.state.calls.find(call => call.path === '/api/chores/batch' && call.method === 'POST');
     assert.equal(create.body.schoolDayFilter, 'any'); assert.equal(create.body.scheduledDate, '2026-10-25');
     assert.equal(create.body.taskSection, 'tasks');
     assert.deepEqual(f.state.errors, []); assert.deepEqual(f.state.external, []);
@@ -110,15 +114,17 @@ test('empty school-day sections are visible immediately and add-task actions pre
     await f.page.getByRole('link', { name: 'Tasks', exact: true }).click();
     await f.page.getByRole('heading', { name: 'Tasks', exact: true, level: 1 }).waitFor();
     await f.page.getByRole('button', { name: 'Add a task after school for Synthetic child', exact: true }).click();
-    assert.equal(await f.page.getByLabel('Family profile', { exact: true }).inputValue(), 'fixture-child');
-    assert.equal(await f.page.getByLabel('School-day schedule', { exact: true }).inputValue(), 'school_day');
-    assert.equal(await f.page.getByLabel('School-day task section', { exact: true }).inputValue(), 'after_school');
+    assert.equal(await f.page.getByLabel('Synthetic child', { exact: true }).isChecked(), true);
     await f.page.getByLabel('Task', { exact: true }).fill('Synthetic afternoon task');
-    await f.page.getByRole('button', { name: 'Save task', exact: true }).click();
+    await f.page.getByRole('button', { name: 'Continue', exact: true }).click();
+    assert.equal(await f.page.getByLabel('Day type', { exact: true }).inputValue(), 'school_day');
+    assert.equal(await f.page.getByLabel('On school days', { exact: true }).inputValue(), 'after_school');
+    await f.page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await f.page.getByRole('button', { name: 'Add task', exact: true }).click();
     await f.page.waitForFunction(() => !document.querySelector('dialog').open);
-    const create = f.state.calls.find(call => call.path === '/api/chores' && call.method === 'POST');
+    const create = f.state.calls.find(call => call.path === '/api/chores/batch' && call.method === 'POST');
     assert.equal(create.body.schoolDayFilter, 'school_day'); assert.equal(create.body.taskSection, 'after_school');
-    assert.equal(create.body.personId, 'fixture-child');
+    assert.deepEqual(create.body.personIds, ['fixture-child']);
     if (process.env.FAMILY_UI_SCREENSHOT_DIR) {
       await mkdir(process.env.FAMILY_UI_SCREENSHOT_DIR, { recursive: true });
       await f.page.screenshot({ path: `${process.env.FAMILY_UI_SCREENSHOT_DIR}/task-sections-empty-1280.png`, fullPage: true });

@@ -5,7 +5,7 @@ import { authenticate, assertSameOrigin, cookieValue, FRAME_COOKIE, requireAdmin
 import { authGateway, confirmedAccountEmail, createAuthContext } from './supabase-auth.js';
 import { digest } from './credentials.js';
 import { enforcePairRateLimit } from './pair-rate-limit.js';
-import { claimHousehold, createChore, createFramePair, createInvite, createPerson, changeChore, changePerson, householdSnapshot, joinHousehold, redeemFramePair, revokeHouseholdMember, sessionData, setCompletion } from './household.js';
+import { claimHousehold, createChore, createChoreBatch, createFramePair, createInvite, createPerson, changeChore, changePerson, householdSnapshot, joinHousehold, redeemFramePair, revokeHouseholdMember, sessionData, setCompletion } from './household.js';
 import { calendarConnection, calendarSnapshot, connectCalendar, removeCalendar, selectCalendars, processCalendarSyncJobs } from './calendar-service.js';
 import { createMobileSession, createMobilePair, redeemMobilePair, mobileSessionData, mobileDevices, revokeMobile } from './mobile.js';
 import { registerPush, sendTestNotification, notificationPreferences, notificationInbox, markNotificationRead, processNotifications } from './notifications.js';
@@ -140,6 +140,7 @@ export async function dispatch(request, db, principal, route, options = {}) {
     return json(await changePerson(db, principal, person[1], body, method === 'DELETE'));
   }
   if (route === 'chores' && method === 'POST') return json(await createChore(db, principal, await readJson(request)), 201);
+  if (route === 'chores/batch' && method === 'POST') return json(await createChoreBatch(db, principal, await readJson(request)), 201);
   const chore = /^chores\/([^/]+)$/.exec(route);
   if (chore && ['PATCH', 'DELETE'].includes(method)) {
     const body = method === 'DELETE' ? { expectedVersion: deleteVersion(url) } : await readJson(request);
