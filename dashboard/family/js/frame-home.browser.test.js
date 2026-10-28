@@ -7,11 +7,21 @@ async function fixture({ off = false, extra = 0, empty = false, paired = true, m
   const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
   const browser = await chromium.launch({headless:true}), page = await browser.newPage({viewport:{width:1280,height:800}});
   page.setDefaultTimeout(8000); await page.clock.install({time:new Date('2026-10-27T18:00:00Z')});
+  await page.addInitScript(()=>{
+    const original=window.fetch.bind(window);
+    window.fetch=(input,options={})=>{
+      const url=new URL(input instanceof Request?input.url:input,location.href);
+      if(url.origin!==location.origin||!url.pathname.startsWith('/api/')) return original(input,options);
+      const headers=new Headers(options.headers||(input instanceof Request?input.headers:undefined));
+      headers.set('x-fixture-clock',new Date().toISOString());
+      return original(input,{...options,headers});
+    };
+  });
   const people = [{id:'frame-stevie',name:'Stevie',color:'#8a00c4'},{id:'frame-andre',name:'Andre',color:'#00748c'}];
   const names = ['Get dressed','Eat breakfast','Brush teeth','Backpack ready','Put backpack away','Dirty laundry in bin','Read for 30 minutes','Homework','Load dishes','Unload dishes','Finish today’s work'];
   const tasks = empty ? [] : people.flatMap((p, n) => Array.from({length:(n ? 11 : 9) + (n ? extra : 0)}, (_,i) => ({id:`${p.id}-${i}`,choreId:`routine-${p.id}-${i}`,title:names[i] || `Extra task ${i + 1}`,personId:p.id,personName:p.name,
     date:'2026-10-27',originalDate:'2026-10-27',definitionSource:'routine',schoolDayFilter:'any',taskSection:i<4?'before_school':'after_school',required:true,status:'pending',requiresApproval:false,version:1,subtasks:[],completion:{date:'2026-10-27',completed:false,version:0}})));
-  const home={id:'frame-fixture-home',title:'Synthetic family',timezone:'America/Denver'}, state={people,tasks,writes:[],errors:[],conflict:null};
+  const home={id:'frame-fixture-home',title:'Synthetic family',timezone:'America/Denver'}, state={people,tasks,writes:[],errors:[],conflict:null,internet:{devices:[],sessions:[],credits:[]}};
   page.on('pageerror',e=>state.errors.push(e.message));
   await page.route('**/api/**',async route=>{
     const req=route.request(),path=new URL(req.url()).pathname; let data;
@@ -20,7 +30,7 @@ async function fixture({ off = false, extra = 0, empty = false, paired = true, m
     else if(path==='/api/auth/token') data={token:'fixture.transient.token'};
     else if(path==='/api/household') data={household:home,role:paired?(manager?'caregiver':'frame'):'member',date:'2026-10-27',people:state.people,routines:[],chores:[],occurrences:state.tasks.filter(t=>state.people.some(p=>p.id===t.personId)),schoolDay:{type:off?'non_school_day':'school_day',label:off?'No school':'School day'},capabilities:{manageChores:manager,manageInternet:false}};
     else if(path==='/api/calendar') data=state.calendar || {status:'ready',events:[{id:'frame-calendar-event',calendarId:'frame-cal',title:'Family dinner',allDay:false,startAt:'2026-10-27T23:30:00Z',endAt:'2026-10-28T00:30:00Z'}],calendars:[],coverage:{startDate:'2026-10-27',endDateExclusive:'2026-11-04',complete:true,truncated:false},lastSuccessfulSyncAt:'2026-10-27T18:00:00Z'};
-    else if(path==='/api/internet') data={serverTime:'2026-10-27T18:00:00Z',timezone:home.timezone,role:'frame',integration:{state:'ready'},devices:[],sessions:[],credits:[],policies:[],progress:[]};
+    else if(path==='/api/internet') data={serverTime:req.headers()['x-fixture-clock'],timezone:home.timezone,role:'frame',integration:{state:'ready'},policies:[],progress:[],...state.internet};
     else if(path.startsWith('/api/chore-occurrences/')&&path.endsWith('/completion')) {
       const body=req.postDataJSON(),task=state.tasks.find(t=>path.includes(t.id));state.writes.push({id:task.id,body});
       assert.equal(body.expectedVersion,task.version);
@@ -35,7 +45,7 @@ async function fixture({ off = false, extra = 0, empty = false, paired = true, m
   await page.locator(paired?'.frame-person-card':'.chores-panel').first().waitFor();
   return {browser,page,state};
 }
-test('frame home fits both children and all 11/9 tasks with individual counts and a calendar at 1280×800', {skip:!base}, async()=>{
+test('frame home keeps both children, individual counts, fixed device panels and a calendar at 1280×800', {skip:!base}, async()=>{
   const f=await fixture();try{
     assert.equal(await f.page.locator('.frame-person-card').count(),2);
     const stevie=f.page.locator('[data-person-id="frame-stevie"]'),andre=f.page.locator('[data-person-id="frame-andre"]');
@@ -47,7 +57,8 @@ test('frame home fits both children and all 11/9 tasks with individual counts an
     await f.page.screenshot({path:'/tmp/family-frame-home-1280.png'});
     const geometry=await f.page.evaluate(()=>({width:document.documentElement.scrollWidth, main:document.querySelector('.main-content').scrollHeight,bottom:document.querySelector('.frame-home-bottom').getBoundingClientRect().bottom,lists:[...document.querySelectorAll('.frame-person-tasks')].map(e=>({height:e.clientHeight,content:e.scrollHeight,bottom:e.getBoundingClientRect().bottom})),font:getComputedStyle(document.querySelector('.frame-person-card .chore-open strong')).fontSize}));
     assert.equal(geometry.width,1280);assert.equal(geometry.main,800);assert.ok(geometry.bottom<=800,JSON.stringify(geometry));
-    assert.ok(geometry.lists.every(l=>l.content<=l.height+1),JSON.stringify(geometry));assert.equal(geometry.font,'20px');
+    assert.equal(await f.page.locator('.frame-device-time').count(),2);assert.equal(geometry.font,'20px');
+    assert.ok(geometry.lists.every(l=>l.height>400),JSON.stringify(geometry));
     await f.page.getByRole('button',{name:'Details for Family dinner',exact:true}).waitFor();
     await f.page.screenshot({path:'/tmp/family-frame-home-1280.png'});assert.deepEqual(f.state.errors,[]);
   }finally{await f.browser.close();}
@@ -65,6 +76,36 @@ test('each child completes independently and frame home ignores the Tasks profil
     await f.page.getByRole('link',{name:'View all tasks for Andre',exact:true}).click();await f.page.getByRole('heading',{name:'Tasks',level:1,exact:true}).waitFor();
     await f.page.getByRole('link',{name:'Today',exact:true}).click();await f.page.locator('.frame-person-card').first().waitFor();assert.equal(await f.page.locator('.frame-person-card').count(),2);
     assert.deepEqual(f.state.errors,[]);
+  }finally{await f.browser.close();}
+});
+test('each child has a pinned device countdown and preparation rolls into full usage once', {skip:!base},async()=>{
+  const f=await fixture({extra:12});try{
+    const active=(id,personId,source,deviceId,end,prepEnd)=>({id,personId,source,deviceId,state:'active',version:2,desiredState:'allowed',observedState:'allowed',verifiedAt:'2026-10-27T18:00:00Z',remainingSeconds:3900,endsAt:end,preparationRemainingSeconds:prepEnd?300:0,preparationEndsAt:prepEnd});
+    f.state.internet.devices=[{id:'ipad',name:'Stevie’s iPad',kind:'tablet'},{id:'ps5',name:'PS5',kind:'console'}];
+    f.state.internet.sessions=[active('stevie-time','frame-stevie','reward','ipad','2026-10-27T19:05:00Z','2026-10-27T18:05:00Z'),active('andre-time','frame-andre','parent','ps5','2026-10-27T19:00:00Z',null)];
+    await f.page.reload();
+    const stevie=f.page.locator('[data-person-id="frame-stevie"] .frame-device-time'),andre=f.page.locator('[data-person-id="frame-andre"] .frame-device-time');
+    await stevie.getByText('Stevie’s iPad',{exact:true}).waitFor();await andre.getByText('PS5',{exact:true}).waitFor();
+    assert.equal(await stevie.locator('.session-timer').innerText(),'5:00');assert.equal(await andre.locator('.session-timer').innerText(),'60:00');
+    const before=await andre.boundingBox();await f.page.locator('[data-person-id="frame-andre"] .frame-person-tasks').evaluate(e=>{e.scrollTop=500;});
+    assert.deepEqual(await andre.boundingBox(),before);assert.ok(before.y+before.height<=800);
+    await f.page.screenshot({path:'/tmp/family-frame-get-ready.png'});
+    for(let elapsed=0;elapsed<300;elapsed++) await f.page.clock.runFor(1000);
+    await f.page.waitForFunction(()=>document.querySelector('[data-session-clock="stevie-time"]').dataset.phase==='usage');
+    assert.equal(await stevie.locator('.session-timer').innerText(),'60:00');
+    assert.equal(await stevie.locator('.session-countdown.just-started').count(),1);
+    await f.page.screenshot({path:'/tmp/family-frame-usage-rollover.png'});
+    assert.equal(await stevie.locator('.session-timer').innerText(),'60:00');
+    await f.page.clock.runFor(5000);assert.equal(await stevie.locator('.session-countdown.just-started').count(),0);
+    await f.page.reload();await stevie.getByText('Stevie’s iPad',{exact:true}).waitFor();
+    assert.equal(await stevie.locator('.session-countdown.just-started').count(),0,'Reload does not replay the animation.');
+    const later=await f.page.evaluate(()=>Date.now());
+    Object.assign(f.state.internet.sessions[0],{id:'later-time',preparationRemainingSeconds:5,preparationEndsAt:new Date(later+5000).toISOString(),endsAt:new Date(later+3605_000).toISOString()});
+    await f.page.reload();await stevie.locator('[data-phase="preparation"]').waitFor();
+    await f.page.getByRole('link',{name:'Calendar',exact:true}).click();await f.page.clock.runFor(11000);
+    await f.page.getByRole('link',{name:'Today',exact:true}).click();await stevie.getByText('Stevie’s iPad',{exact:true}).waitFor();
+    assert.equal(await stevie.locator('.session-countdown.just-started').count(),0,'Returning later never claims usage starts now.');
+    assert.deepEqual(f.state.writes,[]);assert.deepEqual(f.state.errors,[]);
   }finally{await f.browser.close();}
 });
 test('completed tasks stay crossed out at the bottom after reload and reopen into their original section', {skip:!base},async()=>{

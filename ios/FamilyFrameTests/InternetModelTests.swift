@@ -21,6 +21,20 @@ enum InternetFixtures {
 
 @MainActor
 final class InternetModelTests: XCTestCase {
+    func testPreparationCountdownPreservesFullUsageAndFrozenPauseWithoutChangingLegacySessions() {
+        let now=Dates.instant(InternetFixtures.time)!
+        var item=InternetFixtures.session(end:"2026-10-17T19:05:00Z",remaining:3900)
+        item.preparationRemainingSeconds=300; item.preparationEndsAt="2026-10-17T18:05:00Z"; item.grantedSeconds=3600
+        XCTAssertEqual(item.remaining(at:now),3900); XCTAssertEqual(item.displayRemaining(at:now),300)
+        XCTAssertEqual(item.displayRemaining(at:now.addingTimeInterval(300)),3600)
+        XCTAssertEqual(item.preparation(at:now.addingTimeInterval(300)),0)
+        XCTAssertEqual(item.countdownLabel(at:now),"Get ready · free buffer")
+        var paused=InternetFixtures.session(state:"paused",observed:"blocked",end:nil,remaining:3780)
+        paused.preparationRemainingSeconds=180
+        XCTAssertEqual(paused.preparation(at:now.addingTimeInterval(900)),180)
+        XCTAssertEqual(paused.remaining(at:now.addingTimeInterval(900))-paused.preparation(at:now),3600)
+        XCTAssertEqual(InternetFixtures.session().displayRemaining(at:now),3600)
+    }
     private func fixture(role: String = "child", monotonic: (() -> TimeInterval)? = nil) -> (InternetModel, DashboardAPI) {
         let home = Household(id: "synthetic-home", title: "Synthetic family", timezone: "America/Denver")
         let session = MobileSession(authenticated: true, authType: "mobile", role: role, household: home, user: FamilyUser(id: "synthetic-account", name: "Synthetic account", email: nil), personId: role == "child" ? InternetFixtures.child : nil)

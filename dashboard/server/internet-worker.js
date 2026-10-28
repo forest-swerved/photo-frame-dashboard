@@ -4,7 +4,7 @@ import { Temporal } from '@js-temporal/polyfill';
 import { one, transaction } from './database.js';
 import { requireValue } from './errors.js';
 import { createUniFiClient, managedPolicyPlan, managementHost, networkChecksPassed, applePushReady, policyContentFingerprint, policyFieldValue, policyOrdering, reviewedPolicyFingerprint, verifyNetworkScope } from './unifi.js';
-import { internetEvent, internetNotification, queueInternetCommand, sessionDeadline, validateTimedWindow } from './internet.js';
+import { internetEvent, internetNotification, preparationRemaining, queueInternetCommand, sessionDeadline, validateTimedWindow } from './internet.js';
 
 const terminal = row => ['ended', 'failed'].includes(row.state);
 const writableFields = ['enabled', 'source', 'destination', 'action', 'ipProtocolScope', 'schedule', 'connectionStateFilter', 'ipsecFilter', 'description'];
@@ -95,7 +95,7 @@ async function scanSessions(db, now) {
         if (row.ends_at && new Date(row.ends_at) <= now && (row.desired_state === 'allowed' || row.state === 'paused' && row.all_day)) {
           const updated = await one(client, "UPDATE family_internet_sessions SET state='ending',desired_state='blocked',pending_action='end',version=version+1,last_error=NULL WHERE id=$1 RETURNING *", [row.id]);
           await queueInternetCommand(client, updated, now); queued++;
-        } else if (row.state === 'active' && row.ends_at && row.policy_snapshot.warningMinutes > 0 && new Date(row.ends_at) - now <= row.policy_snapshot.warningMinutes * 60_000) {
+        } else if (row.state === 'active' && row.ends_at && preparationRemaining(row, now) === 0 && row.policy_snapshot.warningMinutes > 0 && new Date(row.ends_at) - now <= row.policy_snapshot.warningMinutes * 60_000) {
           await internetNotification(client, { householdId: row.household_id, personId: row.person_id, sessionId: row.id, type: 'session_warning', key: `session-warning:${row.id}:${new Date(row.ends_at).toISOString()}`, now });
         }
       }
@@ -176,9 +176,19 @@ async function prepareActivation(db, command, clock) {
     const previouslyAttempted = session.pending_action === 'start' && (session.allow_attempted_at || session.policy_creation_started_at);
     requireValue(!previouslyAttempted || session.ends_at, 503, 'activation_uncertain', 'The previous activation deadline requires a parent review.');
     const plannedAt = previouslyAttempted ? command.created_at : now;
+    const buffer = preparationRemaining(session, now);
     const endsAt = previouslyAttempted ? session.ends_at : sessionDeadline(plannedAt, session.timezone, session.remaining_seconds,
-      { bedtime: session.source === 'reward' ? session.policy_snapshot.bedtime : null });
-    const updated = await one(client, `UPDATE family_internet_sessions SET ends_at=$2,activation_planned_at=$3 WHERE id=$1 RETURNING *`, [session.id, endsAt, plannedAt]);
+      { roundUp: buffer > 0, bedtime: session.source === 'reward' ? session.policy_snapshot.bedtime : null });
+    let snapshot = session.policy_snapshot, remaining = session.remaining_seconds;
+    if (!previouslyAttempted && snapshot.preparation) {
+      const usage = Math.max(0, remaining - buffer);
+      remaining = Math.max(0, Math.ceil((new Date(endsAt) - plannedAt) / 1000));
+      const actualBuffer = buffer > 0 ? Math.max(0, remaining - usage) : 0;
+      snapshot = { ...snapshot, preparation: { remainingSeconds: actualBuffer,
+        endsAt: actualBuffer > 0 ? new Date(new Date(endsAt).getTime() - usage * 1000).toISOString() : null } };
+    }
+    const updated = await one(client, `UPDATE family_internet_sessions SET ends_at=$2,activation_planned_at=$3,policy_snapshot=$4::jsonb,remaining_seconds=$5 WHERE id=$1 RETURNING *`,
+      [session.id, endsAt, plannedAt, JSON.stringify(snapshot), remaining]);
     return { ...updated, timezone: session.timezone };
   });
 }
@@ -284,10 +294,12 @@ async function publishCommand(db, command, outcome, now) {
       await client.query("UPDATE family_internet_commands SET state='superseded',lease_id=NULL,lease_until=NULL WHERE id=$1", [command.id]); return 'superseded';
     }
     const state = outcome.observed === 'allowed' ? 'active' : row.pending_action === 'pause' ? 'paused' : 'ended';
-    const remaining = state === 'paused' ? Math.max(0, Math.floor((new Date(row.ends_at) - now) / 1000)) : state === 'ended' ? 0 : row.remaining_seconds;
+    const remaining = state === 'paused' ? Math.max(0, Math.ceil((new Date(row.ends_at) - now) / 1000)) : state === 'ended' ? 0 : row.remaining_seconds;
+    const snapshot = state === 'paused' && row.policy_snapshot.preparation ? { ...row.policy_snapshot,
+      preparation: { remainingSeconds: Math.min(remaining, preparationRemaining(row, now)), endsAt: null } } : row.policy_snapshot;
     const updated = await one(client, `UPDATE family_internet_sessions SET state=$2,observed_state=$3,verified_at=$4,policy_id=$5,policy_fingerprint=$7,last_error=NULL,
       started_at=CASE WHEN $3='allowed' THEN coalesce(started_at,$4) ELSE started_at END,ended_at=CASE WHEN $2='ended' THEN $4 ELSE NULL END,
-      remaining_seconds=$6,ends_at=CASE WHEN $2='paused' AND NOT all_day THEN NULL ELSE ends_at END,pending_action=NULL,version=version+1 WHERE id=$1 RETURNING *`, [row.id, state, outcome.observed, now, outcome.policyId, remaining, outcome.policyFingerprint || null]);
+      remaining_seconds=$6,ends_at=CASE WHEN $2='paused' AND NOT all_day THEN NULL ELSE ends_at END,pending_action=NULL,version=version+1,policy_snapshot=$8::jsonb WHERE id=$1 RETURNING *`, [row.id, state, outcome.observed, now, outcome.policyId, remaining, outcome.policyFingerprint || null, JSON.stringify(snapshot)]);
     if (row.credit_id && state === 'active') await client.query("UPDATE family_reward_credits SET status='spent' WHERE id=$1 AND reserved_by=$2", [row.credit_id, row.id]);
     // Only a known never-attempted ALLOW is safe to refund automatically.
     // Ambiguous grants stay tied to their session for explicit parent review.

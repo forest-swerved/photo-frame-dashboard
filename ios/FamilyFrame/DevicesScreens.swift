@@ -228,8 +228,8 @@ struct InternetSessionCard: View {
                         let now = network.serverNow
                         Text(item.statusLabel(at: now)).font(.subheadline.weight(.semibold)).foregroundStyle(item.hasVerifiedAccess ? Brand.cyanInk : Brand.magentaInk)
                         if !item.isTerminal {
-                            Text(InternetSession.durationLabel(item.remaining(at: now))).font(.system(.largeTitle, design: .rounded).weight(.bold)).monospacedDigit().accessibilityLabel("\(item.remaining(at: now) / 60) minutes, \(item.remaining(at: now) % 60) seconds remaining")
-                            Text(item.hasPendingWindow ? "Reserved time · start and end are not confirmed yet" : item.state == "paused" && !item.allDay ? "Paused time is saved; see the network status above." : item.allDay ? "All day · ends at household midnight" : "Time remaining in the scheduled window").font(.caption).foregroundStyle(Brand.muted)
+                            Text(InternetSession.durationLabel(item.displayRemaining(at: now))).font(.system(.largeTitle, design: .rounded).weight(.bold)).monospacedDigit().accessibilityLabel("\(item.displayRemaining(at: now) / 60) minutes, \(item.displayRemaining(at: now) % 60) seconds remaining")
+                            Text(item.hasPendingWindow ? "Reserved time · start and end are not confirmed yet" : item.state == "paused" && !item.allDay ? "Paused time is saved; see the network status above." : item.allDay ? "All day · ends at household midnight" : item.countdownLabel(at: now)).font(.caption).foregroundStyle(Brand.muted)
                         }
                     }
                     if let end = item.endsAt.flatMap(Dates.instant), item.state != "paused" || item.allDay { Text("Ends \(Dates.time(end, in: model.zone)) · \(model.session?.household.timezone ?? "")").font(.caption).foregroundStyle(Brand.muted) }
@@ -270,8 +270,8 @@ struct InternetSessionDetail: View {
                 Text(model.snapshot?.people.first(where: { $0.id == item.personId })?.name ?? "Family member").font(.headline).foregroundStyle(Brand.cyanInk)
                 TimelineView(.periodic(from: .now, by: 1)) { _ in
                     Text(item.statusLabel(at: network.serverNow)).font(.headline)
-                    if !item.isTerminal { Text(InternetSession.durationLabel(item.remaining(at: network.serverNow))).font(.largeTitle.bold()).monospacedDigit() }
-                    if item.hasPendingWindow { Text("Reserved time · the access window is not confirmed yet.").font(.caption).foregroundStyle(Brand.muted) }
+                    if !item.isTerminal { Text(InternetSession.durationLabel(item.displayRemaining(at: network.serverNow))).font(.largeTitle.bold()).monospacedDigit() }
+                    Text(item.countdownLabel(at: network.serverNow)).font(.caption).foregroundStyle(Brand.muted)
                 }
                 Text(item.source == "reward" ? "Earned task reward" : "Parent allowance").font(.subheadline)
                 if item.allDay { Text("All day, until household midnight. A paused all-day window still ends at its original midnight.").font(.caption).foregroundStyle(Brand.muted) }
@@ -279,6 +279,7 @@ struct InternetSessionDetail: View {
             Section("Times · \(model.session?.household.timezone ?? "household timezone")") {
                 timestamp("Requested", item.requestedAt)
                 timestamp("Started", item.startedAt)
+                if item.preparationEndsAt != nil { timestamp("Usage begins", item.preparationEndsAt) }
                 timestamp(item.state == "paused" && !item.allDay ? "Previous end" : "Scheduled end", item.endsAt)
                 timestamp("Network last confirmed", item.verifiedAt)
                 if item.endedAt != nil { timestamp("Ended", item.endedAt) }
@@ -405,13 +406,13 @@ struct HomeInternetSession: View {
     private func description(_ item: InternetSession) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(network.devices.first(where: { $0.id == item.deviceId })?.name ?? "Internet time").font(.headline).foregroundStyle(Brand.ink)
-            Text(item.statusLabel(at: network.serverNow)).font(.caption).foregroundStyle(Brand.blueInk)
+            TimelineView(.periodic(from: .now, by: 1)) { _ in Text(item.statusLabel(at: network.serverNow)).font(.caption).foregroundStyle(Brand.blueInk) }
             if network.isStale { Text("Last known status · refresh to confirm").font(.caption).foregroundStyle(Brand.attentionInk) }
         }
     }
     private func timer(_ item: InternetSession) -> some View {
         TimelineView(.periodic(from: .now, by: 1)) { _ in
-            Text(InternetSession.durationLabel(item.remaining(at: network.serverNow))).font(.title2.bold()).monospacedDigit().foregroundStyle(Brand.blueInk)
+            VStack(alignment: .trailing, spacing: 2) { Text(item.countdownLabel(at: network.serverNow)).font(.caption).foregroundStyle(Brand.muted); Text(InternetSession.durationLabel(item.displayRemaining(at: network.serverNow))).font(.title2.bold()).monospacedDigit().foregroundStyle(Brand.blueInk) }
         }
     }
 }
@@ -461,8 +462,8 @@ struct EmbeddedInternetSession: View {
             } else { Button("Session details") { details = true }.frame(minHeight: 44) }
         }.sheet(isPresented: $details) { NavigationStack { InternetSessionDetail(network: network, original: item) }.environmentObject(model) }
     }
-    private func state(_ item: InternetSession) -> some View { Text(item.statusLabel(at: network.serverNow)).font(.subheadline.weight(.semibold)).foregroundStyle(item.hasVerifiedAccess ? Brand.blueInk : Brand.attentionInk) }
-    private func timer(_ item: InternetSession) -> some View { TimelineView(.periodic(from: .now, by: 1)) { _ in Text(InternetSession.durationLabel(item.remaining(at: network.serverNow))).font(.title2.bold()).monospacedDigit().foregroundStyle(Brand.blueInk) } }
+    private func state(_ item: InternetSession) -> some View { TimelineView(.periodic(from: .now, by: 1)) { _ in Text(item.statusLabel(at: network.serverNow)).font(.subheadline.weight(.semibold)).foregroundStyle(item.hasVerifiedAccess ? Brand.blueInk : Brand.attentionInk) } }
+    private func timer(_ item: InternetSession) -> some View { TimelineView(.periodic(from: .now, by: 1)) { _ in VStack(alignment: .trailing, spacing: 2) { Text(item.countdownLabel(at: network.serverNow)).font(.caption).foregroundStyle(Brand.muted); Text(InternetSession.durationLabel(item.displayRemaining(at: network.serverNow))).font(.title2.bold()).monospacedDigit().foregroundStyle(Brand.blueInk) } } }
     @ViewBuilder private func controls(_ item: InternetSession) -> some View {
         if item.state == "active" { Button("Pause") { Task { _ = await network.act(item, action: "pause") } }.frame(minHeight: 44).disabled(!network.canChange) }
         if item.state == "paused" { Button("Resume") { Task { _ = await network.act(item, action: "resume") } }.frame(minHeight: 44).disabled(!network.canChange || item.remaining(at: network.serverNow) <= 0) }

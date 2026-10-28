@@ -1,6 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canRedeem, rewardDevices, liveSession, remainingTime, remainingLabel, earnedToday } from './internet-ui.js';
+import { canRedeem, rewardDevices, liveSession, remainingTime, remainingLabel, earnedToday, sessionCountdown } from './internet-ui.js';
+
+test('free preparation rolls into full usage time and pauses without consuming either balance', () => {
+  const now=Date.parse('2026-10-28T18:00:00Z');
+  const session={state:'active',endsAt:'2026-10-28T19:05:00Z',remainingSeconds:3900,preparationRemainingSeconds:300,preparationEndsAt:'2026-10-28T18:05:00Z'};
+  assert.deepEqual(sessionCountdown(session,now),{phase:'preparation',preparation:300,remaining:300,usage:3600,label:'Get ready',progress:1});
+  assert.equal(sessionCountdown(session,now+300_000).phase,'usage');
+  assert.equal(sessionCountdown(session,now+300_000).remaining,3600);
+  const paused={...session,state:'paused',endsAt:null,remainingSeconds:3780,preparationRemainingSeconds:180,preparationEndsAt:null};
+  assert.equal(sessionCountdown(paused,now+999_000).preparation,180);assert.equal(sessionCountdown(paused,now+999_000).usage,3600);
+  const legacy={state:'active',endsAt:'2026-10-28T19:00:00Z'};
+  assert.equal(sessionCountdown(legacy,now).remaining,3600);assert.equal(sessionCountdown(legacy,now).phase,'usage');
+  assert.equal(sessionCountdown({...session,allDay:true},now).preparation,0);
+});
 const now = Date.parse('2026-11-01T06:30:00Z');
 test('earned announcements require this household day and all approved required tasks; saved rewards remain redeemable', () => {
   const credit = { id:'credit', personId:'child-a', status:'available', earnedDate:'2026-10-31', expiresAt:'2026-11-08T07:00:00Z' };
