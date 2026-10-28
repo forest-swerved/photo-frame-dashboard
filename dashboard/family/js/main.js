@@ -254,7 +254,7 @@ function frameHomeCalendar() {
   return `<section class="frame-home-calendar" aria-label="Family calendar"><a href="#calendar" class="frame-calendar-link">Calendar ↗</a><div>${notice}${content}</div></section>`;
 }
 function frameHomeView() {
-  const tasks = scheduledChores(), lanes = frameTaskLanes(people(), tasks, S.snapshot?.schoolDay, S.recentTasks);
+  const tasks = scheduledChores(), lanes = frameTaskLanes(people(), tasks, S.snapshot?.schoolDay);
   const submitted = taskGroups(tasks, S.snapshot?.schoolDay).submitted;
   const shared = taskGroups(tasks.filter(item => !item.personId), S.snapshot?.schoolDay);
   const network = internet.summary(true);

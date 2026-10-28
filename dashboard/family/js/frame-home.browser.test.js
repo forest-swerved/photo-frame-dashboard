@@ -67,6 +67,46 @@ test('each child completes independently and frame home ignores the Tasks profil
     assert.deepEqual(f.state.errors,[]);
   }finally{await f.browser.close();}
 });
+test('completed tasks stay crossed out at the bottom after reload and reopen into their original section', {skip:!base},async()=>{
+  const f=await fixture();try{
+    const stevie=f.page.locator('[data-person-id="frame-stevie"]'),andre=f.page.locator('[data-person-id="frame-andre"]');
+    const completed=stevie.locator('.task-section').filter({has:f.page.getByRole('heading',{name:'Completed today',exact:true})});
+    await stevie.getByRole('button',{name:'Complete Get dressed',exact:true}).click();
+    await completed.getByRole('button',{name:'Reopen Get dressed',exact:true}).waitFor();
+    await f.page.waitForFunction(()=>!document.querySelector('[data-person-id="frame-stevie"] .is-pending'));
+    assert.equal(await stevie.locator('.task-section').last().getByRole('heading').textContent(),'Completed today');
+    assert.equal(await stevie.locator('.chore-row').count(),9);
+    assert.equal(await completed.locator('.is-done .chore-open strong').evaluate(e=>getComputedStyle(e).textDecorationLine),'line-through');
+    assert.equal(await andre.locator('.frame-person-count strong').innerText(),'0 / 11');
+    await f.page.reload();await completed.getByRole('button',{name:'Reopen Get dressed',exact:true}).waitFor();
+    await f.page.screenshot({path:'/tmp/family-frame-completed-tasks-1280.png'});
+    assert.equal(await stevie.locator('.frame-person-count strong').innerText(),'1 / 9');
+    await completed.getByRole('button',{name:'Reopen Get dressed',exact:true}).click();
+    const before=stevie.locator('.task-section').filter({has:f.page.getByRole('heading',{name:'Before school',exact:true})});
+    await before.getByRole('button',{name:'Complete Get dressed',exact:true}).waitFor();
+    await f.page.waitForFunction(()=>!document.querySelector('[data-person-id="frame-stevie"] .is-pending'));
+    assert.equal(await stevie.locator('.frame-person-count strong').innerText(),'0 / 9');
+    assert.equal(await completed.count(),0);assert.equal(await andre.locator('.frame-person-count strong').innerText(),'0 / 11');
+    assert.deepEqual(f.state.writes.map(w=>w.body.completed),[true,false]);assert.deepEqual(f.state.errors,[]);
+  }finally{await f.browser.close();}
+});
+test('completed day-off lists remain expanded while submitted tasks still wait for approval', {skip:!base},async()=>{
+  const f=await fixture({off:true});try{
+    f.state.tasks.filter(t=>t.personId==='frame-stevie').forEach(t=>{t.status='completed';t.completion.completed=true;});
+    const waiting=f.state.tasks.find(t=>t.personId==='frame-andre');waiting.status='submitted';waiting.requiresApproval=true;
+    await f.page.reload();
+    const stevie=f.page.locator('[data-person-id="frame-stevie"]'),andre=f.page.locator('[data-person-id="frame-andre"]');
+    await stevie.getByRole('heading',{name:'Completed today',exact:true}).waitFor();
+    assert.equal(await stevie.getByRole('button',{name:/^Reopen /}).count(),9);
+    assert.equal(await stevie.locator('.frame-person-count strong').innerText(),'9 / 9');
+    assert.equal(await stevie.getByText('All done today!',{exact:true}).count(),1);
+    assert.equal(await stevie.locator('details').count(),0);
+    await andre.getByRole('button',{name:'Withdraw submission for Get dressed',exact:true}).waitFor();
+    assert.equal(await andre.getByRole('heading',{name:'Completed today',exact:true}).count(),0);
+    assert.equal(await andre.locator('.frame-person-count strong').innerText(),'0 / 11');
+    assert.deepEqual(f.state.writes,[]);assert.deepEqual(f.state.errors,[]);
+  }finally{await f.browser.close();}
+});
 test('long child lists scroll independently and scoped or empty profiles never disappear incorrectly', {skip:!base},async()=>{
   const f=await fixture({extra:12,off:true});try{
     assert.equal(await f.page.getByRole('heading',{name:'Before school',exact:true}).count(),0);
