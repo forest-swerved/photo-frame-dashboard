@@ -543,7 +543,7 @@ async function saveCompletion(chore, desired) {
     S.recentTasks.add(chore.id);
     S.attempts.delete(key);
     if (occurrence) await loadHousehold().catch(dataFailure);
-    if (occurrence && epoch === generation) await internet.load({ celebrateFor: desired ? chore.personId : null });
+    if (occurrence && epoch === generation) await internet.load();
   } catch (error) {
     if (epoch !== generation) return;
     if (error.status === 401 || error.status === 403) { dataFailure(error); return; }

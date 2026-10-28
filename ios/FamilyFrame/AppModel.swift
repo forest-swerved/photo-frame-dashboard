@@ -383,7 +383,7 @@ final class AppModel: ObservableObject {
             persistCache(); changingChores.remove(occurrence.id); UISelectionFeedbackGenerator().selectionChanged()
             Task {
                 async let household: Void = refresh()
-                async let rewards: Void = internet.refresh(celebrateRewards: result.status == "completed" && result.required)
+                async let rewards: Void = internet.refresh()
                 _ = await (household, rewards)
             }; return true
         } catch { await failedChoreMutation(error, generation: started); return false }

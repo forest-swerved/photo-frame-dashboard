@@ -24,12 +24,12 @@ async function fixture({ role = 'admin', frame = false, ready = true, allDayRead
     if (url.pathname === '/api/session') data = { authType: frame ? 'frame' : 'user', role: activeRole, personId: childIdentity, household: unclaimed || state.deleted ? null : home, user: { id: 'fixture-user', name: 'Synthetic account', email: 'fixture@example.invalid' } };
     else if (url.pathname === '/api/auth/get-session') data = { session: { expiresAt: '2099-01-01T00:00:00Z' } };
     else if (url.pathname === '/api/auth/token') data = { token: 'fixture.transient.token' };
-    else if (url.pathname === '/api/household') data = { household: home, role: activeRole, date: occurrence.date, people: [person], chores: [], routines: [], occurrences: [occurrence], capabilities: { manageChores: activeRole === 'admin', manageInternet: activeRole === 'admin' } };
+    else if (url.pathname === '/api/household') data = { household: home, role: activeRole, date: occurrence.date, people: [person], chores: [], routines: [], occurrences: [occurrence,...Array.from({length:state.extraTasks || 0},(_,i)=>({...occurrence,id:`remaining-${i}`,choreId:`remaining-routine-${i}`,title:`Remaining task ${i+1}`,status:'pending',completion:{...occurrence.completion,completed:false}}))], capabilities: { manageChores: activeRole === 'admin', manageInternet: activeRole === 'admin' } };
     else if (url.pathname === '/api/calendar') data = { status: 'not_configured', events: [] };
     else if (url.pathname === '/api/calendar/connection') data = { connected: false, calendars: [] };
     else if (url.pathname === '/api/devices') data = { devices: [] };
     else if (url.pathname === '/api/members') data = { members: [{ id: 'fixture-adult', role: 'member', name: 'Synthetic adult' }] };
-    else if (url.pathname === '/api/internet') data = { serverTime: '2026-10-17T18:00:00Z', timezone: home.timezone, role: activeRole, capabilities: { manageInternet: activeRole === 'admin' }, integration: { state: ready ? 'ready' : 'pilot_required', scheduleSupport: { overnight: allDayReady, allDay: allDayReady } }, devices: state.devices.map(item => ({ ...item, ...(activeRole === 'admin' ? {} : { macAddresses: undefined }) })), sessions: state.sessions, policies: [{ personId: person.id, version: 1, enabled: true, rewardMinutes: 60, carryoverDays: 7, dailyLimitMinutes: 180, warningMinutes: 5, bedtime: '21:00' }], credits: state.credits, progress: [{ personId: person.id, requiredCount: 1, completedCount: state.complete ? 1 : 0, pendingApprovalCount: 0 }] };
+    else if (url.pathname === '/api/internet') data = { serverTime: state.serverTime || '2026-10-17T18:00:00Z', timezone: home.timezone, role: activeRole, capabilities: { manageInternet: activeRole === 'admin' }, integration: { state: ready ? 'ready' : 'pilot_required', scheduleSupport: { overnight: allDayReady, allDay: allDayReady } }, devices: state.devices.map(item => ({ ...item, ...(activeRole === 'admin' ? {} : { macAddresses: undefined }) })), sessions: state.sessions, policies: [{ personId: person.id, version: 1, enabled: true, rewardMinutes: 60, carryoverDays: 7, dailyLimitMinutes: 180, warningMinutes: 5, bedtime: '21:00' }], credits: state.credits, progress: [{ personId: person.id, date:occurrence.date, requiredCount: 1+(state.extraTasks || 0), completedCount: state.complete ? 1 : 0, pendingApprovalCount: 0, remainingCount:1+(state.extraTasks || 0)-(state.complete?1:0),eligible:state.complete && !state.extraTasks }] };
     else if (url.pathname.endsWith('/completion')) { state.complete = true; data = { ...occurrence, status: 'completed', version: 2 }; }
     else if (url.pathname === '/api/internet/redeem' || url.pathname === '/api/internet/grants') {
       if (state.failRedeem) { await route.abort('failed'); return; }
@@ -48,6 +48,10 @@ async function fixture({ role = 'admin', frame = false, ready = true, allDayRead
     else if (url.pathname.startsWith('/api/auth/')) data = { success: true };
     else if (url.pathname === '/api/notifications') data = { notifications: [] };
     else throw new Error(`Missing synthetic route ${method} ${url.pathname}`);
+    if(url.pathname==='/api/internet') {
+      data.progress.push(...(state.extraProgress || []));
+      if(activeRole==='child') { data.credits=data.credits.filter(item=>item.personId===person.id);data.progress=data.progress.filter(item=>item.personId===person.id); }
+    }
     const payload = JSON.stringify(url.pathname.startsWith('/api/auth/') ? data : { data });
     if (url.pathname === '/api/internet' && state.deferNextRead) { state.deferNextRead = false; await new Promise(resolve => { state.releaseRead = resolve; }); }
     if (url.pathname === '/api/internet/devices' && method === 'POST' && state.deferDeviceSave) { state.deferDeviceSave = false; await new Promise(resolve => { state.releaseDeviceSave = resolve; }); }
@@ -96,7 +100,8 @@ test('child completes last chore, saves credit, then selects one device for a co
   const f = await fixture({ role: 'child' });
   try {
     f.state.credits.length = 0;
-    await f.open('chores'); f.state.credits.push(f.credit);
+    await f.open(); await f.page.getByRole('heading',{name:'Family devices',exact:true}).waitFor();
+    await f.page.getByRole('link',{name:'My tasks',exact:true}).click(); f.state.credits.push(f.credit);
     await f.page.getByRole('button', { name: 'Complete Synthetic last chore', exact: true }).click();
     await f.page.getByRole('heading', { name: 'Great job, Synthetic child!', exact: true }).waitFor();
     await f.page.getByRole('button', { name: 'Save for later', exact: true }).click();
@@ -110,6 +115,64 @@ test('child completes last chore, saves credit, then selects one device for a co
     const calls = f.state.calls.filter(call => call.path === '/api/internet/redeem'); assert.equal(calls.length, 1); assert.equal(calls[0].body.deviceId, 'fixture-device'); assert.ok(calls[0].body.mutationId);
     assert.equal(await f.page.getByRole('button', { name: /Grant Internet time|End now|Reward settings/ }).count(), 0); assert.deepEqual(f.state.errors, []);
   } finally { await f.browser.close(); }
+});
+
+test('one of nine tasks does not reannounce yesterday’s saved reward on a paired frame', {skip:!base},async()=>{
+  const f=await fixture({frame:true,role:'frame',width:1280});try{
+    f.credit.earnedDate='2026-10-16';f.state.extraTasks=8;
+    await f.open();await f.page.getByText(/Available · earned 2026-10-16/).waitFor();
+    await f.page.getByRole('link',{name:'Tasks',exact:true}).click();
+    await f.page.getByRole('button',{name:'Complete Synthetic last chore',exact:true}).click();
+    await f.page.getByRole('button',{name:'Reopen Synthetic last chore',exact:true}).waitFor();
+    await f.page.waitForFunction(()=>!document.querySelector('[data-action="complete-chore"][data-id="fixture-occurrence"]')?.hasAttribute('aria-busy'));
+    await f.page.getByText('Task completed. Saved for the family.',{exact:true}).waitFor();
+    assert.equal(await f.page.locator('dialog[open]').count(),0);
+    assert.equal(await f.page.getByText('Great job, Synthetic child!',{exact:true}).count(),0);
+    await f.page.getByRole('link',{name:'Devices',exact:true}).click();
+    await f.page.getByText(/Available · earned 2026-10-16/).waitFor();
+    assert.equal(f.state.calls.filter(call=>call.path==='/api/internet/redeem').length,0);assert.deepEqual(f.state.errors,[]);
+  }finally{await f.browser.close();}
+});
+
+test('restoring a known reward after completing tasks does not announce it as newly earned', {skip:!base},async()=>{
+  const f=await fixture({role:'child'});try{
+    f.credit.status='held';await f.open();await f.page.getByRole('heading',{name:'Family devices',exact:true}).waitFor();
+    await f.page.getByRole('link',{name:'My tasks',exact:true}).click();f.credit.status='available';
+    await f.page.getByRole('button',{name:'Complete Synthetic last chore',exact:true}).click();
+    await f.page.getByRole('button',{name:'Reopen Synthetic last chore',exact:true}).waitFor();
+    await f.page.waitForFunction(()=>!document.querySelector('[data-action="complete-chore"][data-id="fixture-occurrence"]')?.hasAttribute('aria-busy'));
+    assert.equal(await f.page.locator('dialog[open]').count(),0);assert.equal(f.state.credits.length,1);
+    assert.equal(f.state.calls.filter(call=>call.path==='/api/internet/redeem').length,0);assert.deepEqual(f.state.errors,[]);
+  }finally{await f.browser.close();}
+});
+
+test('a celebration closes after the household day changes without removing the saved reward', {skip:!base},async()=>{
+  const f=await fixture({role:'child'});try{
+    f.state.credits=[];await f.open();await f.page.getByRole('heading',{name:'Family devices',exact:true}).waitFor();
+    await f.page.getByRole('link',{name:'My tasks',exact:true}).click();f.state.credits.push(f.credit);
+    await f.page.getByRole('button',{name:'Complete Synthetic last chore',exact:true}).click();
+    await f.page.getByRole('heading',{name:'Great job, Synthetic child!',exact:true}).waitFor();
+    f.state.serverTime='2026-10-18T06:01:00Z';await f.page.clock.setSystemTime(new Date(f.state.serverTime));await f.page.clock.runFor(1100);
+    await f.page.locator('dialog[open]').waitFor({state:'hidden'});
+    await f.page.getByRole('link',{name:'Devices',exact:true}).click();await f.page.getByText(/Available · earned 2026-10-17/).waitFor();
+    assert.equal(f.state.credits[0].status,'available');assert.deepEqual(f.state.errors,[]);
+  }finally{await f.browser.close();}
+});
+
+test('an old bare-frame read cannot announce a sibling reward after a child unlock', {skip:!base},async()=>{
+  const f=await fixture({frame:true,width:1280});try{
+    await f.open();await f.page.getByRole('button',{name:'Unlock to use',exact:true}).waitFor();
+    await f.page.evaluate(()=>{window.rewardTitles=[];new MutationObserver(()=>{const title=document.querySelector('dialog[open] h2')?.textContent;if(title)window.rewardTitles.push(title);}).observe(document.querySelector('dialog'),{childList:true,subtree:true,attributes:true});});
+    f.state.extraProgress=[{personId:'fixture-sibling',date:'2026-10-17',eligible:true,requiredCount:1,completedCount:1,remainingCount:0,pendingApprovalCount:0}];
+    f.state.credits.push({...f.credit,id:'sibling-credit',personId:'fixture-sibling'});f.state.deferNextRead=true;
+    await f.page.getByRole('button',{name:'Refresh status',exact:true}).click();
+    await f.page.getByRole('button',{name:'Unlock to use',exact:true}).click();await f.page.getByLabel('Unlock code',{exact:true}).fill('123456');
+    await f.page.getByRole('button',{name:'Unlock controls',exact:true}).click();await f.page.getByText('Frame controls unlocked temporarily.',{exact:true}).waitFor();
+    assert.ok(f.state.releaseRead);f.state.releaseRead();
+    await f.page.getByRole('heading',{name:'Choose one device · 60 minutes',exact:true}).waitFor();
+    assert.equal((await f.page.evaluate(()=>window.rewardTitles)).some(title=>title.startsWith('Great job')),false);
+    assert.deepEqual(f.state.errors,[]);
+  }finally{f.state.releaseRead?.();await f.browser.close();}
 });
 
 test('bare frame needs a child-scoped code before reward spending; private grant stays in memory', { skip: !base }, async () => {

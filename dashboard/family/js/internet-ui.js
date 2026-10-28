@@ -28,12 +28,21 @@ export function rewardDevices(data, personId) {
     && device.controlState === 'ready' && !device.accessPending && device.personIds.includes(personId));
 }
 
+export function earnedToday(data, credit) {
+  const time = Date.parse(data?.serverTime);
+  if (!Number.isFinite(time) || !data?.timezone || credit?.status !== 'available' || !(Date.parse(credit.expiresAt) > time)) return false;
+  const date = dateInZone(new Date(time), data.timezone);
+  const progress = data.progress?.find(item => item.personId === credit.personId && item.date === date);
+  return credit.earnedDate === date && progress?.eligible === true && progress.requiredCount > 0
+    && progress.completedCount === progress.requiredCount && progress.pendingApprovalCount === 0 && progress.remainingCount === 0;
+}
+
 const states = { starting: 'Starting · awaiting network confirmation', active: 'Session active', pausing: 'Pausing · checking block', paused: 'Paused', resuming: 'Resuming · awaiting network confirmation', adjusting: 'Updating access window', ending: 'Ending · checking block', ended: 'Session ended', failed: 'Could not start', checking: 'Checking network state' };
 const kinds = { console: 'Game console', tablet: 'Tablet', phone: 'Phone', computer: 'Computer', tv: 'TV', other: 'Other device' };
 const check = (label, name, enabled) => `<label class="checkbox-label"><input type="checkbox" name="${name}" ${enabled ? 'checked' : ''}><span>${h(label)}</span></label>`;
 
 export function createInternetUI(ctx) {
-  const freshState = () => ({ data: null, busy: false, error: '', serverMs: null, monoMs: 0, receivedAt: null, pendingCreditId: null, prompted: new Set(), writing: new Set(), revision: 0, reloadRequested: false, celebrateFor: null });
+  const freshState = () => ({ data: null, busy: false, error: '', serverMs: null, monoMs: 0, receivedAt: null, pendingCreditId: null, knownCredits: new Set(), newRewards: new Set(), rewardDialog: null, writing: new Set(), revision: 0, reloadRequested: false });
   let state = freshState();
   const allDayAvailable = () => state.data?.integration.scheduleSupport?.allDay !== false;
   const epoch = () => ctx.epoch();
@@ -43,31 +52,49 @@ export function createInternetUI(ctx) {
   const manager = () => state.data?.capabilities?.manageInternet === true;
   const ready = () => state.data?.integration.state === 'ready' && !state.error;
   const now = () => state.serverMs === null ? Date.now() : state.serverMs + performance.now() - state.monoMs;
+  const readScope = () => {
+    const session = ctx.session(), access = frameAccessStatus();
+    return JSON.stringify([session?.authType, session?.role, session?.personId, access?.scope, access?.personId, access?.expiresAt]);
+  };
   const stamp = value => value ? dateFormatter({ timeZone: state.data?.timezone || ctx.zone(), month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(value)) : 'Not confirmed';
   const midnight = () => `Midnight at the start of ${dateLabel(addDays(dateInZone(new Date(now()), state.data?.timezone || ctx.zone()), 1))} · ${state.data?.timezone || ctx.zone()}`;
   function reset() { state = freshState(); }
-  async function load({ celebrateFor = null } = {}) {
-    if (state.busy) { state.reloadRequested = true; state.celebrateFor = celebrateFor || state.celebrateFor; return; }
-    const started = epoch(), revision = state.revision; state.busy = true;
+  async function load() {
+    if (state.busy) { state.reloadRequested = true; return; }
+    const started = epoch(), revision = state.revision, scope = readScope(); state.busy = true;
     try {
       const data = await request('/api/internet');
       if (started !== epoch()) return;
-      if (revision !== state.revision) { state.reloadRequested = true; state.celebrateFor = celebrateFor || state.celebrateFor; return; }
+      if (scope !== readScope()) { state.reloadRequested = true; return; }
+      if (revision !== state.revision) { state.reloadRequested = true; return; }
+      // The first read establishes saved rewards. Later accepted reads may
+      // announce only genuinely new credits, never replay an old carryover.
+      for (const credit of data.credits) {
+        if (state.data && !state.knownCredits.has(credit.id) && earnedToday(data, credit)) state.newRewards.add(credit.id);
+        state.knownCredits.add(credit.id);
+      }
+      for (const id of state.newRewards) if (!data.credits.some(credit => credit.id === id && earnedToday(data, credit))) state.newRewards.delete(id);
       state.data = data; state.serverMs = Date.parse(data.serverTime); state.monoMs = performance.now(); state.receivedAt = new Date().toISOString(); state.error = '';
       if (!Number.isFinite(state.serverMs)) state.serverMs = null;
+      if (state.rewardDialog) {
+        const shown = state.rewardDialog;
+        if (!ctx.dialog.open || ctx.dialog.querySelector('form') !== shown.form) state.rewardDialog = null;
+        else if (!data.credits.some(credit => credit.id === shown.id && earnedToday(data, credit))) { ctx.dialog.close(); state.rewardDialog = null; }
+      }
       ctx.render();
       const pending = data.credits.find(credit => credit.id === state.pendingCreditId);
       if (pending && canRedeem(data, pending, ctx.session(), frameAccessStatus()) && !ctx.dialog.open) { state.pendingCreditId = null; picker(pending); }
-      else if (celebrateFor) {
-        const credit = data.credits.find(item => item.personId === celebrateFor && item.status === 'available' && !state.prompted.has(item.id));
-        if (credit && !ctx.dialog.open && (data.role === 'child' || ctx.frame())) { state.prompted.add(credit.id); celebrate(credit); }
-        else if (credit && manager()) ctx.toast(`${personName(credit.personId)} earned ${credit.minutes} minutes. Their reward is saved in Devices.`);
+      else {
+        const access = frameAccessStatus(), childId = access?.scope === 'child' ? access.personId : ctx.session()?.role === 'child' ? ctx.session().personId : null;
+        const credit = data.credits.find(item => state.newRewards.has(item.id) && (!childId || item.personId === childId));
+        if (credit && !ctx.dialog.open && (data.role === 'child' || ctx.frame())) { state.newRewards.delete(credit.id); celebrate(credit); }
+        else if (credit && manager()) { state.newRewards.delete(credit.id); ctx.toast(`${personName(credit.personId)} earned ${credit.minutes} minutes. Their reward is saved in Devices.`); }
       }
     } catch (error) { if (started === epoch()) { state.error = error.message; ctx.render(); } }
     finally {
       if (started === epoch()) {
         state.busy = false; tick();
-        if (state.reloadRequested) { const pending = state.celebrateFor; state.reloadRequested = false; state.celebrateFor = null; await load({ celebrateFor: pending }); }
+        if (state.reloadRequested) { state.reloadRequested = false; await load(); }
       }
     }
   }
@@ -152,6 +179,7 @@ export function createInternetUI(ctx) {
 
   function celebrate(credit) {
     ctx.openDialog(`Great job, ${personName(credit.personId)}!`, `<div class="reward-celebration"><strong>${credit.minutes} minutes earned</strong><p>Your approved tasks are complete. Use this reward now, or save it until ${h(stamp(credit.expiresAt))}.</p><div class="dialog-actions">${ctx.button('Save for later', 'reward-later', 'button button-secondary')}${ctx.button('Use now', 'reward-use', 'button', `data-id="${h(credit.id)}"`)}</div></div>`, async () => {});
+    state.rewardDialog = { id: credit.id, form: ctx.dialog.querySelector('form') };
   }
   function picker(credit) {
     if (!canRedeem(state.data, credit, ctx.session(), frameAccessStatus())) {
