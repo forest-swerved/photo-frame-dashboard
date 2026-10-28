@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 const base = process.env.FAMILY_UI_TEST_URL;
-async function fixture({ off = false, extra = 0, empty = false } = {}) {
+async function fixture({ off = false, extra = 0, empty = false, paired = true, manager = false } = {}) {
   const origin = new URL(base); assert.ok(['localhost','127.0.0.1'].includes(origin.hostname));
   const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
   const browser = await chromium.launch({headless:true}), page = await browser.newPage({viewport:{width:1280,height:800}});
@@ -15,8 +15,10 @@ async function fixture({ off = false, extra = 0, empty = false } = {}) {
   page.on('pageerror',e=>state.errors.push(e.message));
   await page.route('**/api/**',async route=>{
     const req=route.request(),path=new URL(req.url()).pathname; let data;
-    if(path==='/api/session') data={authenticated:true,authType:'frame',role:'frame',household:home,user:{id:'frame-device',name:'Synthetic frame'}};
-    else if(path==='/api/household') data={household:home,role:'frame',date:'2026-10-27',people:state.people,routines:[],chores:[],occurrences:state.tasks.filter(t=>state.people.some(p=>p.id===t.personId)),schoolDay:{type:off?'non_school_day':'school_day',label:off?'No school':'School day'},capabilities:{manageChores:false,manageInternet:false}};
+    if(path==='/api/session') data={authenticated:true,authType:paired?'frame':'user',role:paired?(manager?'caregiver':'frame'):'member',household:home,user:{id:'frame-device',name:'Synthetic frame'}};
+    else if(path==='/api/auth/get-session') data={session:{expiresAt:'2099-01-01T00:00:00Z'},user:{id:'frame-user',name:'Synthetic user',email:'fixture@example.invalid'}};
+    else if(path==='/api/auth/token') data={token:'fixture.transient.token'};
+    else if(path==='/api/household') data={household:home,role:paired?(manager?'caregiver':'frame'):'member',date:'2026-10-27',people:state.people,routines:[],chores:[],occurrences:state.tasks.filter(t=>state.people.some(p=>p.id===t.personId)),schoolDay:{type:off?'non_school_day':'school_day',label:off?'No school':'School day'},capabilities:{manageChores:manager,manageInternet:false}};
     else if(path==='/api/calendar') data=state.calendar || {status:'ready',events:[{id:'frame-calendar-event',calendarId:'frame-cal',title:'Family dinner',allDay:false,startAt:'2026-10-27T23:30:00Z',endAt:'2026-10-28T00:30:00Z'}],calendars:[],coverage:{startDate:'2026-10-27',endDateExclusive:'2026-11-04',complete:true,truncated:false},lastSuccessfulSyncAt:'2026-10-27T18:00:00Z'};
     else if(path==='/api/internet') data={serverTime:'2026-10-27T18:00:00Z',timezone:home.timezone,role:'frame',integration:{state:'ready'},devices:[],sessions:[],credits:[],policies:[],progress:[]};
     else if(path.startsWith('/api/chore-occurrences/')&&path.endsWith('/completion')) {
@@ -27,10 +29,10 @@ async function fixture({ off = false, extra = 0, empty = false } = {}) {
       task.status=body.completed?'completed':'pending';task.completion={date:task.date,completed:body.completed,version:task.version};data=task;
     } else if(path==='/api/notifications') data={notifications:[]};
     else throw new Error(`Unexpected synthetic frame route ${path}`);
-    await route.fulfill({contentType:'application/json',body:JSON.stringify({data})});
+    await route.fulfill({contentType:'application/json',body:JSON.stringify(path.startsWith('/api/auth/')?data:{data})});
   });
   await page.goto(new URL('/family.html?display=frame#today',origin).href);
-  await page.locator('.frame-person-card').first().waitFor();
+  await page.locator(paired?'.frame-person-card':'.chores-panel').first().waitFor();
   return {browser,page,state};
 }
 test('frame home fits both children and all 11/9 tasks with individual counts and a calendar at 1280×800', {skip:!base}, async()=>{
@@ -100,5 +102,37 @@ test('calendar background updates stay quiet on frame Home and Calendar while fa
       assert.equal(await f.page.getByRole('button',{name:'Details for Saved appointment',exact:true}).count(),1);
     }
     assert.deepEqual(f.state.errors,[]);
+  }finally{await f.browser.close();}
+});
+
+test('paired frame returns to Today after sixty idle seconds despite polling and dismisses read-only details', {skip:!base},async()=>{
+  const f=await fixture();try{
+    await f.page.getByRole('link',{name:'Calendar',exact:true}).click();
+    await f.page.clock.runFor(59_000);assert.ok(f.page.url().endsWith('#calendar'));
+    await f.page.clock.runFor(1100);await f.page.locator('.frame-person-card').first().waitFor();assert.ok(f.page.url().endsWith('#today'));
+    await f.page.getByRole('button',{name:'Details for Family dinner',exact:true}).click();
+    await f.page.locator('dialog[open]').waitFor();await f.page.clock.runFor(61_000);
+    assert.equal(await f.page.locator('dialog[open]').count(),0);assert.equal(await f.page.locator('.frame-person-card').count(),2);
+    assert.deepEqual(f.state.errors,[]);
+  }finally{await f.browser.close();}
+});
+
+test('frame activity restarts the idle deadline and unfinished parent task forms remain intact', {skip:!base},async()=>{
+  const f=await fixture({manager:true});try{
+    await f.page.getByRole('link',{name:'Calendar',exact:true}).click();
+    await f.page.clock.runFor(59_000);await f.page.keyboard.press('Shift');
+    await f.page.clock.runFor(59_000);assert.ok(f.page.url().endsWith('#calendar'));
+    await f.page.clock.runFor(1100);await f.page.locator('.frame-person-card').first().waitFor();
+    await f.page.getByRole('link',{name:'Tasks',exact:true}).click();await f.page.getByRole('button',{name:'+ Add a task',exact:true}).click();
+    await f.page.getByLabel('Task',{exact:true}).fill('Unfinished parent draft');
+    await f.page.clock.runFor(91_000);assert.equal(await f.page.getByLabel('Task',{exact:true}).inputValue(),'Unfinished parent draft');
+    assert.ok(f.page.url().endsWith('#chores'));assert.deepEqual(f.state.writes,[]);assert.deepEqual(f.state.errors,[]);
+  }finally{await f.browser.close();}
+});
+
+test('a signed-in web client using the frame display query never auto-returns', {skip:!base},async()=>{
+  const f=await fixture({paired:false});try{
+    await f.page.getByRole('link',{name:'Calendar',exact:true}).click();await f.page.clock.runFor(91_000);
+    assert.ok(f.page.url().endsWith('#calendar'));assert.deepEqual(f.state.errors,[]);
   }finally{await f.browser.close();}
 });

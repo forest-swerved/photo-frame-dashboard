@@ -9,6 +9,7 @@ import { createInternetUI } from './internet-ui.js';
 import { createAccountUI } from './account-ui.js';
 import { taskOverview, taskGroups, agendaParts, completionLabel, protectDialogDraft, quietCalendarRefresh } from './presentation.js';
 import { frameTaskLanes } from './frame-home.js';
+import { createFrameIdleReturn } from './frame-idle.js';
 
 const app = document.querySelector('#family-app');
 const dialog = document.querySelector('#family-dialog');
@@ -53,6 +54,17 @@ const workbench = createWorkbench({ snapshot: () => S.snapshot, session: () => S
   reload: async () => { await loadHousehold(); if (internet.loaded() || S.view === 'devices') await internet.load(); }, reloadSetup: loadSetup, reboot: boot });
 const internet = createInternetUI({ snapshot: () => S.snapshot, session: () => S.session, epoch: () => generation,
   zone, frame, field, button, openDialog, dialog, toast, render, unlock: workbench.unlock });
+const frameIdle = createFrameIdleReturn({
+  enabled: () => frame() && !!S.session?.household && !S.booting,
+  blocked: () => S.pending.size > 0 || internet.writing() || !!document.querySelector('form[data-submitting]'),
+  onIdle: () => {
+    if (dialog.open) {
+      if (!dialog.dispatchEvent(new Event('request-close', { cancelable: true }))) return;
+      dialog.close();
+    }
+    if (S.view !== 'today') location.hash = 'today';
+  },
+});
 
 if (location.hash.startsWith('#invite=')) {
   try { S.inviteToken = decodeURIComponent(location.hash.slice(8)); } catch { /* Invalid token stays blank. */ }
@@ -590,7 +602,7 @@ async function submitForm(event, run) {
   form.dataset.submitting = 'true';
   if (submit) { submit.disabled = true; submit.textContent = 'Saving…'; }
   if (errorBox) { errorBox.hidden = true; errorBox.textContent = ''; }
-  try { await run(new FormData(form), form); }
+  try { await run(new FormData(form), form); frameIdle.saved(form); }
   catch (error) {
     if (errorBox) { errorBox.textContent = `${errorMessage(error)}${error.status === 409 ? ' Another device changed this item. Close this form, refresh, and try again.' : ''}`; errorBox.hidden = false; }
   } finally {
@@ -810,6 +822,7 @@ window.addEventListener('hashchange', () => {
 window.addEventListener('online', () => refresh());
 document.addEventListener('visibilitychange', () => { tickFrameEvents(); if (!document.hidden && S.session?.household) refresh(); });
 setInterval(() => {
+  frameIdle.tick();
   paintClock();
   internet.tick();
   tickFrameEvents();

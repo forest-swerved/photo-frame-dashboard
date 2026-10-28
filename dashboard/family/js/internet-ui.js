@@ -275,5 +275,5 @@ export function createInternetUI(ctx) {
       if (element.textContent !== value) element.textContent = value;
     }
   }
-  return { load, view, action, summary, tick, reset, loaded: () => !!state.data };
+  return { load, view, action, summary, tick, reset, loaded: () => !!state.data, writing: () => state.writing.size > 0 };
 }
