@@ -8,7 +8,7 @@ import { enforcePairRateLimit } from './pair-rate-limit.js';
 import { claimHousehold, createChore, createChoreBatch, createFramePair, createInvite, createPerson, changeChore, changePerson, householdSnapshot, joinHousehold, redeemFramePair, revokeHouseholdMember, sessionData, setCompletion } from './household.js';
 import { calendarConnection, calendarSnapshot, connectCalendar, removeCalendar, selectCalendars, processCalendarSyncJobs } from './calendar-service.js';
 import { createMobileSession, createMobilePair, redeemMobilePair, mobileSessionData, mobileDevices, revokeMobile } from './mobile.js';
-import { registerPush, sendTestNotification, notificationPreferences, notificationInbox, markNotificationRead, processNotifications } from './notifications.js';
+import { registerPush, sendTestNotification, notificationPreferences, notificationInbox, markNotificationRead, markAllNotificationsRead, processNotifications } from './notifications.js';
 import { preflightApns } from './apns.js';
 import { setOccurrenceCompletion, changeChoreOccurrence, choreHistory, choreExceptions, createChoreException, revokeChoreException } from './chore-occurrences.js';
 import { parentCapabilities, changeMemberCapabilities, createFrameAccessCode, redeemFrameAccess, frameAuthorization, transferOwnership } from './capabilities.js';
@@ -97,6 +97,7 @@ export async function dispatch(request, db, principal, route, options = {}) {
     if (route === 'mobile/notifications/test' && method === 'POST') return json(await sendTestNotification(db, principal, options.notificationOptions || { env: options.env }));
     if (route === 'mobile/notification-preferences' && ['GET', 'PUT', 'PATCH'].includes(method)) return json(await notificationPreferences(db, principal, method === 'GET' ? undefined : await readJson(request)));
     if (route === 'mobile/notifications' && method === 'GET') return json(await notificationInbox(db, principal));
+    if (route === 'mobile/notifications/read-all' && method === 'POST') return json(await markAllNotificationsRead(db, principal));
     const readNotification = /^mobile\/notifications\/([^/]+)\/read$/.exec(route);
     if (readNotification && method === 'POST') return json(await markNotificationRead(db, principal, readNotification[1]));
   }

@@ -228,6 +228,23 @@ export async function markNotificationRead(db, principal, id) {
   });
 }
 
+export async function markAllNotificationsRead(db, principal) {
+  return transaction(db, async client => {
+    const account = await checkedAccount(client, principal, new Date(), true);
+    await client.query(`UPDATE family_account_notification_inbox i SET read_at=now() FROM family_notification_events e
+      WHERE i.event_id=e.id AND i.household_id=$1 AND i.user_id=$2 AND i.read_at IS NULL
+        AND ($3::uuid IS NULL OR ${childEventScope('e', '$3')})`, [account.householdId, account.userId, account.personId]);
+    // All installations of this account share Activity read state. Other
+    // parents, siblings and households retain their own unread notifications.
+    await client.query(`UPDATE family_notification_inbox i SET read_at=a.read_at
+      FROM family_mobile_sessions s,family_account_notification_inbox a JOIN family_notification_events e ON e.id=a.event_id
+      WHERE i.mobile_session_id=s.id AND i.event_id=a.event_id AND i.household_id=$1 AND s.household_id=$1
+        AND s.user_id=$2 AND a.household_id=$1 AND a.user_id=$2 AND a.read_at IS NOT NULL AND i.read_at IS NULL
+        AND ($3::uuid IS NULL OR ${childEventScope('e', '$3')})`, [account.householdId, account.userId, account.personId]);
+    return { read: true };
+  });
+}
+
 export function occurrenceInstant(date, time, timezone) {
   return new Date(Temporal.PlainDateTime.from(`${date}T${time}`).toZonedDateTime(timezone, { disambiguation: 'compatible' }).epochMilliseconds);
 }

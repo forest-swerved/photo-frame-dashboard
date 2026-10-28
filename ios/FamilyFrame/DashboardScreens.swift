@@ -333,7 +333,7 @@ struct ActivityScreen: View {
                     }
                 }
             }.padding(20).frame(maxWidth: 1000).frame(maxWidth: .infinity)
-        }.background(Brand.background).navigationTitle("Activity").refreshable { await model.refresh() }
+        }.background(Brand.background).navigationTitle("Activity").refreshable { await model.refresh(); await model.activityOpened() }
     }
 }
 private extension String {
