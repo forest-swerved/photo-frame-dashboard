@@ -46,6 +46,8 @@ final class DashboardAPI: FamilyAPI {
     var statusHandler: (() async throws -> MobileServiceStatus)?
     var preferencesHandler: (() async throws -> NotificationPreferences)?
     var savePreferencesHandler: ((NotificationPreferences) async throws -> NotificationPreferences)?
+    var markAllReadHandler: (() async throws -> Void)?
+    var markAllReadCalls = 0
     var markReadHandler: (() async throws -> Void)?
     var frameCodeHandler: ((String, String?) async throws -> FrameAccessCode)?
     var resetPasswordHandler: (() async throws -> Void)?
@@ -85,6 +87,7 @@ final class DashboardAPI: FamilyAPI {
     func createTasks(_ draft: ChoreDraft, personIDs: [String], mutationID: String) async throws { }
     func deleteChore(_ chore: Chore) async throws { }
     func markRead(id: String) async throws { markReadCalls += 1; try await markReadHandler?() }
+    func markAllNotificationsRead() async throws { markAllReadCalls += 1; try await markAllReadHandler?() }
     func registerPush(token: String, environment: String, installationID: String) async throws { }
     func sendTestNotification() async throws { }
     func savePreferences(_ prefs: NotificationPreferences) async throws -> NotificationPreferences { try await savePreferencesHandler?(prefs) ?? prefs }
@@ -679,4 +682,69 @@ final class AppModelTests: XCTestCase {
         XCTAssertNil(model.session); XCTAssertNil(model.snapshot); XCTAssertNil(store.value); XCTAssertNil(cache.value)
         XCTAssertEqual(api.householdCalls, 0)
     }
+    private func activityItem(_ id: String, readAt: String? = nil) -> FamilyNotification {
+        FamilyNotification(id: id, kind: "chore_completed", title: "Synthetic update", body: "Synthetic body", createdAt: "2026-10-17T18:00:00Z", readAt: readAt, choreId: nil, date: nil)
+    }
+    func testOpeningActivityMarksAllReadAndOldRefreshCannotRestoreBadge() async {
+        let (model, api, _, cache) = fixture(); let items = [activityItem("first"), activityItem("second"), activityItem("read", readAt: "2026-10-17T17:00:00Z")]
+        api.activityHandler = { items }; await model.start()
+        XCTAssertEqual(model.unreadCount, 2); XCTAssertEqual(api.markAllReadCalls, 0, "Background Activity loading must not mark notifications read")
+        await model.activityOpened()
+        XCTAssertEqual(api.markAllReadCalls, 1); XCTAssertEqual(api.markReadCalls, 0); XCTAssertEqual(model.unreadCount, 0)
+        XCTAssertEqual(model.notifications.last?.readAt, items.last?.readAt)
+        await model.refresh(); XCTAssertEqual(model.unreadCount, 0)
+        XCTAssertTrue(cache.value?.notifications.allSatisfy { $0.readAt != nil } == true)
+    }
+    func testActivityReadWaitsForConfirmationAndCoalescesRepeatedOpenings() async {
+        let (model, api, _, _) = fixture(); api.activityHandler = { [self.activityItem("first")] }; await model.start()
+        let delayed = Deferred<Void>(); api.markAllReadHandler = { try await delayed.wait() }
+        let first = Task { await model.activityOpened() }; await waitUntil { delayed.waiting }
+        let second = Task { await model.activityOpened() }; await Task.yield()
+        XCTAssertEqual(model.unreadCount, 1); XCTAssertEqual(api.markAllReadCalls, 1)
+        delayed.resolve(()); await first.value; await second.value
+        XCTAssertEqual(model.unreadCount, 0); XCTAssertEqual(api.markAllReadCalls, 1)
+    }
+    func testActivityReadFailureKeepsUnreadAndExplicitRetryCanClearIt() async {
+        let (model, api, _, _) = fixture(); api.activityHandler = { [self.activityItem("first")] }; await model.start()
+        api.markAllReadHandler = { throw APIError(status: 503, code: "fixture", message: "Unavailable") }
+        await model.activityOpened(); XCTAssertEqual(model.unreadCount, 1); XCTAssertNotNil(model.activityMessage)
+        api.markAllReadHandler = nil; await model.activityOpened()
+        XCTAssertEqual(model.unreadCount, 0); XCTAssertNil(model.activityMessage); XCTAssertEqual(api.markAllReadCalls, 2)
+    }
+    func testActivityReadDoesNotClaimNewNotificationArrivingDuringRequest() async {
+        let (model, api, _, _) = fixture(); let original = activityItem("first"), arriving = activityItem("new")
+        api.activityHandler = { [original] }; await model.start()
+        let delayed = Deferred<Void>(); api.markAllReadHandler = { try await delayed.wait() }
+        let opening = Task { await model.activityOpened() }; await waitUntil { delayed.waiting }
+        api.activityHandler = { [arriving, original] }; await model.refresh()
+        XCTAssertEqual(model.unreadCount, 2)
+        delayed.resolve(()); await opening.value
+        XCTAssertEqual(model.unreadCount, 1); XCTAssertNil(model.notifications.first?.readAt); XCTAssertNotNil(model.notifications.last?.readAt)
+    }
+    func testLateBulkReadCannotRestorePreviousAccountOrErrorAfterSignOut() async {
+        for fail in [false, true] {
+            let (model, api, _, _) = fixture(); api.activityHandler = { [self.activityItem("first")] }; await model.start()
+            let delayed = Deferred<Void>(); api.markAllReadHandler = { try await delayed.wait() }
+            let opening = Task { await model.activityOpened() }; await waitUntil { delayed.waiting }
+            await model.signOut()
+            if fail { delayed.fail(APIError(status: 500, code: "fixture", message: "Previous account")) } else { delayed.resolve(()) }
+            await opening.value
+            XCTAssertNil(model.session); XCTAssertTrue(model.notifications.isEmpty); XCTAssertNil(model.activityMessage); XCTAssertNil(model.message)
+        }
+    }
+    func testActivityReadAuthenticationFailureClearsSession() async {
+        let (model, api, _, _) = fixture(); api.activityHandler = { [self.activityItem("first")] }; await model.start()
+        api.markAllReadHandler = { throw APIError(status: 401, code: "mobile_session_expired", message: "Sign in again") }
+        await model.activityOpened(); XCTAssertNil(model.session); XCTAssertTrue(model.notifications.isEmpty)
+    }
+    func testActivityTabMarksAllReadWhenShown() async {
+        let (model, api, _, _) = fixture(); api.activityHandler = { [self.activityItem("first")] }; await model.start()
+        await attachLayout(DashboardTabs().environmentObject(model), name: "Activity remains unread on Today")
+        XCTAssertEqual(api.markAllReadCalls, 0)
+        model.selectedTab = 4
+        await attachLayout(DashboardTabs().environmentObject(model), name: "Activity tab marks all notifications read")
+        await waitUntil { api.markAllReadCalls == 1 }
+        XCTAssertEqual(model.unreadCount, 0)
+    }
+
 }

@@ -33,6 +33,7 @@ final class AppModel: ObservableObject {
     private let cache: any DashboardCaching
     private let now: () -> Date
     private var refreshTask: Task<Void, Never>?
+    private var activityReadTask: Task<Void, Never>?
     private var refreshRequested = false
     private var preferencesRequested = false
     private var statusRequested = false
@@ -451,6 +452,31 @@ final class AppModel: ObservableObject {
             preferencesRevision += 1; message = error.localizedDescription; return false
         }
     }
+    func activityOpened() async {
+        guard session != nil else { return }
+        if let task = activityReadTask { await task.value; return }
+        let started = generation
+        let task = Task { [weak self] in
+            guard let self else { return }
+            let unreadIDs = Set(notifications.filter { $0.readAt == nil }.map(\.id))
+            do {
+                try await api.markAllNotificationsRead()
+                guard started == generation, !Task.isCancelled else { return }
+                let readAt = ISO8601DateFormatter().string(from: now())
+                for i in notifications.indices where unreadIDs.contains(notifications[i].id) { notifications[i].readAt = notifications[i].readAt ?? readAt }
+                activityMessage = nil; persistCache()
+                await refreshActivity(generation: started)
+                if started == generation, !Task.isCancelled { persistCache() }
+            } catch {
+                guard started == generation, !(error is CancellationError), !Task.isCancelled else { return }
+                if (error as? APIError)?.isAuthenticationFailure == true { await forgetSession(reason: error.localizedDescription); return }
+                activityMessage = "Notifications could not be marked as read. Pull to try again."
+            }
+        }
+        activityReadTask = task
+        await task.value
+        if started == generation { activityReadTask = nil }
+    }
     func markRead(_ item: FamilyNotification) async {
         guard item.readAt == nil, !isStale else { return }
         let started = generation
@@ -603,6 +629,7 @@ final class AppModel: ObservableObject {
         message = reason
     }
     private func clearDashboard() {
+        activityReadTask?.cancel(); activityReadTask = nil
         internet.bind(nil)
         accountDeletionNeedsReview = false
         snapshot = nil; calendar = nil; calendarAgenda = []; agendaCache = CalendarAgendaCache(); calendarReadAt = nil; confirmedOccurrences = [:]; openedOccurrence = nil; notifications = []; preferences = nil; deliveryStatus = nil; lastUpdated = nil

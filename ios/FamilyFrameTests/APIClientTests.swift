@@ -435,4 +435,18 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(decision.status, "approved"); XCTAssertEqual(decision.version, 2); XCTAssertEqual(calls, 2)
     }
 
+    @MainActor func testMarkAllActivityReadUsesOwnSessionAndRequiresConfirmation() async throws {
+        let api = client()
+        MockProtocol.handler = { [self] request in
+            XCTAssertEqual(request.url?.path, "/api/mobile/notifications/read-all"); XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "FamilyMobile " + String(repeating: "a", count: 43))
+            XCTAssertTrue(body(request).isEmpty)
+            return (200, Data(#"{"data":{"read":true}}"#.utf8))
+        }
+        try await api.markAllNotificationsRead()
+        MockProtocol.handler = { _ in (200, Data(#"{"data":{"read":false}}"#.utf8)) }
+        do { try await api.markAllNotificationsRead(); XCTFail("Do not claim an unconfirmed read") }
+        catch let error as APIError { XCTAssertEqual(error.code, "read_unconfirmed") }
+    }
+
 }

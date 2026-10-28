@@ -4,11 +4,12 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createPool } from './database.js';
 import { digest } from './credentials.js';
+import { dispatch } from './app.js';
 import { householdDate } from './errors.js';
 import { createChore, householdSnapshot, setCompletion } from './household.js';
 import { changeChoreOccurrence, createChoreException } from './chore-occurrences.js';
 import { authenticateMobile, createMobileSession } from './mobile.js';
-import { markNotificationRead, notificationInbox, notificationPreferences, occurrenceInstant, processNotifications, registerPush } from './notifications.js';
+import { markAllNotificationsRead, markNotificationRead, notificationInbox, notificationPreferences, occurrenceInstant, processNotifications, registerPush } from './notifications.js';
 
 const enabled = process.env.FAMILY_RUN_DB_TESTS === '1' && Boolean(process.env.DATABASE_URL);
 test('account-owned Activity and preferences across devices, scope changes and sign-out', { skip: !enabled, timeout: 45_000 }, async t => {
@@ -154,6 +155,45 @@ test('account-owned Activity and preferences across devices, scope changes and s
       const result = await run(); assert.equal(result.counts.accepted, 1); assert.equal(result.counts.suppressed, 2);
       const link = (await notificationInbox(db, parent)).notifications[0];
       assert.equal(link.sessionId, null); assert.equal(link.creditId, null);
+      await reset();
+    });
+
+    await t.test('mark-all covers older Activity across installations without changing another account', async () => {
+      await reset();
+      for (let index=0;index<105;index++) await insertNetwork('reward_earned');
+      await run(); await run();
+      const parentRows=()=>db.query('SELECT id,read_at FROM family_account_notification_inbox WHERE household_id=$1 AND user_id=$2 ORDER BY id',[household.id,accounts.parent.id]);
+      assert.equal((await parentRows()).rowCount,105);
+      assert.equal((await notificationInbox(db,sessions.parent1)).notifications.length,100,'The bulk update must include notifications older than the visible page.');
+      const otherParent=randomUUID();
+      await db.query("INSERT INTO family_members(household_id,user_id,name,email,role) VALUES($1,$2,'Other parent','other@example.invalid','member')",[household.id,otherParent]);
+      await db.query('INSERT INTO family_account_notification_inbox(event_id,household_id,user_id,created_at) SELECT event_id,household_id,$3,created_at FROM family_account_notification_inbox WHERE household_id=$1 AND user_id=$2',[household.id,accounts.parent.id,otherParent]);
+      const response=await dispatch(new Request('https://family.example/api/mobile/notifications/read-all',{method:'POST'}),db,sessions.parent1,'mobile/notifications/read-all');
+      assert.equal(response.status,200); assert.deepEqual((await response.json()).data,{read:true});
+      const read=(await parentRows()).rows; assert.ok(read.every(row=>row.read_at));
+      assert.ok((await notificationInbox(db,sessions.parent2)).notifications.every(row=>row.readAt));
+      assert.ok((await db.query(`SELECT i.read_at FROM family_notification_inbox i JOIN family_mobile_sessions s ON s.id=i.mobile_session_id WHERE s.user_id=$1`,[accounts.parent.id])).rows.every(row=>row.read_at));
+      for(const userId of [accounts.a.id,otherParent]) assert.equal((await db.query('SELECT id FROM family_account_notification_inbox WHERE user_id=$1 AND read_at IS NOT NULL',[userId])).rowCount,0);
+      await markAllNotificationsRead(db,sessions.parent1);
+      assert.deepEqual((await parentRows()).rows,read,'A repeat read preserves the original timestamp.');
+      await insertNetwork('session_started'); await run();
+      assert.equal((await db.query('SELECT id FROM family_account_notification_inbox WHERE user_id=$1 AND read_at IS NULL',[accounts.parent.id])).rowCount,1,'Later notifications stay unread.');
+      await db.query('DELETE FROM family_account_notification_inbox WHERE user_id=$1',[otherParent]);
+      await db.query('DELETE FROM family_members WHERE user_id=$1',[otherParent]);
+      await reset();
+    });
+    await t.test('mark-all retains child occurrence scope and rejects frame or revoked access', async () => {
+      await insertNetwork('session_started'); await insertNetwork('session_started',accounts.b.personId); await run();
+      const siblingEvent=(await db.query('SELECT id,occurred_at FROM family_notification_events WHERE person_id=$1',[accounts.b.personId])).rows[0];
+      await db.query('INSERT INTO family_account_notification_inbox(event_id,household_id,user_id,created_at) VALUES($1,$2,$3,$4)',[siblingEvent.id,household.id,accounts.a.id,siblingEvent.occurred_at]);
+      await markAllNotificationsRead(db,sessions.childA);
+      assert.ok((await notificationInbox(db,sessions.childA)).notifications.every(row=>row.readAt));
+      assert.equal((await db.query('SELECT read_at FROM family_account_notification_inbox WHERE event_id=$1 AND user_id=$2',[siblingEvent.id,accounts.a.id])).rows[0].read_at,null);
+      assert.ok((await notificationInbox(db,sessions.childB)).notifications.every(row=>row.readAt===null));
+      await assert.rejects(markAllNotificationsRead(db,{...parent,authType:'frame',role:'frame'}),error=>error.status===403);
+      await db.query('UPDATE family_members SET revoked_at=now() WHERE user_id=$1',[accounts.a.id]);
+      await assert.rejects(markAllNotificationsRead(db,sessions.childA),error=>error.status===401);
+      await db.query('UPDATE family_members SET revoked_at=NULL WHERE user_id=$1',[accounts.a.id]);
       await reset();
     });
 

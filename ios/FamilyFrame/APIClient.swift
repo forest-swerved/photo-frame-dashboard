@@ -52,6 +52,7 @@ protocol FamilyAPI: AnyObject {
     func savePreferences(_ prefs: NotificationPreferences) async throws -> NotificationPreferences
     func notifications() async throws -> [FamilyNotification]
     func markRead(id: String) async throws
+    func markAllNotificationsRead() async throws
     func setOccurrenceCompletion(_ occurrence: ChoreOccurrence, completed: Bool, mutationID: String) async throws -> ChoreOccurrence
     func changeOccurrence(_ id: String, action: OccurrenceAction) async throws -> ChoreOccurrence
     func choreHistory(from: String, to: String, personID: String?) async throws -> [ChoreHistoryItem]
@@ -236,6 +237,11 @@ final class APIClient: FamilyAPI {
         let list: NotificationList = try await send("/api/mobile/notifications"); return list.notifications
     }
     func markRead(id: String) async throws { let _: Acknowledgement = try await send("/api/mobile/notifications/\(id)/read", method: "POST", body: Data("{}".utf8)) }
+    func markAllNotificationsRead() async throws {
+        struct ReadResult: Decodable { let read: Bool }
+        let result: ReadResult = try await send("/api/mobile/notifications/read-all", method: "POST", body: Data("{}".utf8))
+        guard result.read else { throw APIError(status: 0, code: "read_unconfirmed", message: "Notification read status was not confirmed. Refresh Activity to try again.") }
+    }
     func setOccurrenceCompletion(_ occurrence: ChoreOccurrence, completed: Bool, mutationID: String) async throws -> ChoreOccurrence {
         struct Change: Encodable { let completed: Bool; let expectedVersion: Int; let mutationId: String }
         return try await send("/api/chore-occurrences/\(occurrence.id)/completion", method: "PUT", body: encoded(Change(completed: completed, expectedVersion: occurrence.version, mutationId: mutationID)))

@@ -51,6 +51,10 @@ private struct DashboardTabContent: View {
             NavigationStack { DevicesScreen().modifier(SettingsToolbar()) }.tabItem { Label("Devices", systemImage: "gamecontroller.fill") }.tag(3)
             NavigationStack { ActivityScreen().modifier(SettingsToolbar()) }.tabItem { Label("Activity", systemImage: "bell.fill") }.badge(model.unreadCount).tag(4)
         }
+        .task(id: model.selectedTab) {
+            guard model.selectedTab == 4 else { return }
+            await model.activityOpened()
+        }
         .sheet(item: $model.openedOccurrence) { OccurrenceDetailScreen(original: $0) }
         .sheet(item: $network.openedSession) { item in NavigationStack { InternetSessionDetail(network: network, original: item) } }
     }
