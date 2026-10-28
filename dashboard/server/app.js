@@ -15,6 +15,8 @@ import { parentCapabilities, changeMemberCapabilities, createFrameAccessCode, re
 import { deleteAccount } from './account-deletion.js';
 import { internetSnapshot, saveRewardPolicy, saveManagedDevice, changeDeviceAccess, startInternetSession, changeInternetSession, internetHistory, syncChoreReward, resolveRewardReview, requestDeviceAccess, decideDeviceAccess } from './internet.js';
 import { processInternetJobs } from './internet-worker.js';
+import { drainInternetQueue, startsInternetWork } from './internet-queue.js';
+import { liveStatus } from './live-status.js';
 import { saveSchoolCalendar, schoolCalendarSnapshot } from './school-calendar.js';
 
 export function apiPath(request) {
@@ -47,6 +49,7 @@ export async function dispatch(request, db, principal, route, options = {}) {
   if (route === 'claim' && method === 'POST') return json(await claimHousehold(db, principal, await readJson(request), options.env));
   if (route === 'join' && method === 'POST') return json(await joinHousehold(db, principal, await readJson(request), { getVerifiedEmail: () => confirmedAccountEmail(request, principal, options) }));
   requireHousehold(principal);
+  if (route === 'live-status' && method === 'GET') return json(await liveStatus(db, principal, options));
   if (route === 'account/transfer-ownership' && method === 'POST') return json(await transferOwnership(db, principal, await readJson(request)));
   if (principal.role === 'member' && /^(household|chores|chore-occurrences|chore-exceptions|chore-history|school-calendar)(\/|$)/.test(route)) principal = { ...principal, verifiedCapabilities: await parentCapabilities(db, principal) };
   options = { ...options, choreOptions: { ...options.choreOptions, onChange: options.choreOptions?.onChange || ((client, change) => syncChoreReward(client, change)) } };
@@ -234,6 +237,13 @@ export async function handleRequest(request, options = {}) {
     let principal = await (options.authenticate || authenticate)(request, db, { ...options, authContext });
     if (request.headers.has('x-family-authorization')) principal = await frameAuthorization(db, principal, request.headers.get('x-family-authorization'));
     const response = await dispatch(request, db, principal, route, { ...options, ...(authContext ? { authContext } : {}) });
+    if (response.ok && options.scheduleBackground && startsInternetWork(route, request.method)) {
+      const work = Promise.resolve().then(() => (options.internetQueue || drainInternetQueue)(db, { env: options.env || process.env })).catch(() => {
+        console.error(JSON.stringify({ requestId,code:'internet_background_failed',route,method:request.method }));
+      });
+      try { options.scheduleBackground(work); }
+      catch { console.error(JSON.stringify({requestId,code:'internet_background_unavailable',route,method:request.method})); }
+    }
     return authContext ? authContext.finish(response) : response;
   } catch (error) {
     const known = error instanceof ApiError;

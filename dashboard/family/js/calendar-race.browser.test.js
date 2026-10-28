@@ -19,6 +19,7 @@ test('the BFF retrieves a transient JWT using only same-origin requests', { skip
     const externalRequests = [];
     page.on('request', request => { if (new URL(request.url()).origin !== origin.origin) externalRequests.push(request.url()); });
     await page.route('**/api/**', async route => {
+    if(new URL(route.request().url()).pathname==='/api/live-status') { await route.fulfill({contentType:'application/json',body:JSON.stringify({data:{}})});return; }
       const path = new URL(route.request().url()).pathname;
       if (path === '/api/session') {
         await route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: { code: 'test_signed_out', message: 'Test session only.' } }) });

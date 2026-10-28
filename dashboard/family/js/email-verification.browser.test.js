@@ -20,6 +20,7 @@ test('pending confirmation clears passwords, resends, and verifies codes or past
     page.on('pageerror', error => errors.push(error.message));
     page.on('request', request => { if (new URL(request.url()).origin !== origin.origin) external.push(request.url()); });
     await page.route('**/api/**', async route => {
+    if(new URL(route.request().url()).pathname==='/api/live-status') { await route.fulfill({contentType:'application/json',body:JSON.stringify({data:{}})});return; }
       const path = new URL(route.request().url()).pathname;
       const body = route.request().method() === 'POST' ? route.request().postDataJSON() : null;
       if (body) submissions.push({ path, body });

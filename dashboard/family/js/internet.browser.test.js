@@ -14,6 +14,7 @@ async function fixture({ role = 'admin', frame = false, ready = true, allDayRead
   const state = { devices: [device], calls: [], errors: [], grant: null, sessions: [], credits: [credit], deleted: false, deleteGuard: false, complete: false, failRedeem: false };
   page.on('pageerror', error => state.errors.push(error.message));
   await page.route('**/api/**', async route => {
+    if(new URL(route.request().url()).pathname==='/api/live-status') { await route.fulfill({contentType:'application/json',body:JSON.stringify({data:{}})});return; }
     const req = route.request(), url = new URL(req.url()), method = req.method();
     const body = ['POST', 'PUT', 'PATCH'].includes(method) ? req.postDataJSON() : null;
     state.calls.push({ path: url.pathname, method, body, headers: req.headers() });

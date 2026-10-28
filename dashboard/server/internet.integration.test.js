@@ -9,6 +9,8 @@ import { createFrameAccessCode, frameAuthorization, redeemFrameAccess, parentCap
 import { ipv4OnlyScope, managedPolicyPlan, requiredPilotChecks, reviewedPolicyFingerprint } from './unifi.js';
 import { processInternetJobs } from './internet-worker.js';
 import { verifySchema } from './verify-schema.js';
+import { liveStatus } from './live-status.js';
+import { handleRequest } from './app.js';
 
 const enabled = process.env.FAMILY_RUN_DB_TESTS === '1' && Boolean(process.env.DATABASE_URL);
 test('reward reservation, frame authorization and durable provider reconciliation', { skip: !enabled, timeout: 45_000 }, async t => {
@@ -536,6 +538,36 @@ test('reward reservation, frame authorization and durable provider reconciliatio
       assert.equal(earned.progress[0].eligible,true);assert.equal(earned.credits.length,2);
       assert.equal(earned.credits.find(c=>c.id===yesterday.id).status,'available');
       assert.equal(earned.credits.find(c=>c.earnedDate===nextDate).minutes,60);
+    });
+    await t.test('live revisions detect confirmed access without version changes and keep child scope private',async()=>{
+      const before=await liveStatus(db,frame,{now}),self=await liveStatus(db,child,{now});
+      const count=(await db.query('SELECT count(*)::int AS n FROM family_reward_credits')).rows[0].n;
+      assert.deepEqual(await liveStatus(db,frame,{now:new Date(+now+1000)}),{...before,serverTime:new Date(+now+1000).toISOString()});
+      const version=(await deviceRow(device.id)).version;
+      await db.query("UPDATE family_managed_devices SET observed_access='unknown',access_error='policy_review_required' WHERE id=$1",[device.id]);
+      const error=await liveStatus(db,frame,{now});assert.notEqual(error.internet,before.internet);assert.equal(error.household,before.household);assert.equal(error.calendar,before.calendar);
+      await db.query("UPDATE family_managed_devices SET observed_access='allowed',access_error=NULL,access_verified_at=$2 WHERE id=$1",[device.id,now]);
+      const confirmed=await liveStatus(db,frame,{now});assert.notEqual(confirmed.internet,error.internet);assert.equal((await deviceRow(device.id)).version,version);
+      const childBefore=await liveStatus(db,child,{now});await createRoutine(sibling.personId);
+      assert.equal((await liveStatus(db,child,{now})).household,childBefore.household,'Sibling-only edits must not leak into a child token.');
+      assert.notEqual((await liveStatus(db,frame,{now})).household,confirmed.household);
+      assert.equal((await db.query('SELECT count(*)::int AS n FROM family_reward_credits')).rows[0].n,count,'A live-status read never reconciles or creates rewards.');
+      assert.match(self.internet,/^[0-9a-f]{64}$/);assert.deepEqual(Object.keys(before).sort(),['calendar','household','internet','serverTime']);
+      await db.query("INSERT INTO family_calendar_sync_jobs(household_id,start_date,end_date,timezone,connection_version,credential_generation,requested_at,next_attempt_at) VALUES($1,'2026-10-17','2026-10-24','America/Denver',1,$2,$3,NULL)",[household.id,'0'.repeat(64),now]);
+      const idleCalendar=await liveStatus(db,frame,{now});
+      await db.query('UPDATE family_calendar_sync_jobs SET requested_at=$2 WHERE household_id=$1',[household.id,new Date(+now+2000)]);
+      assert.equal((await liveStatus(db,frame,{now})).calendar,idleCalendar.calendar,'Calendar keepalive reads cannot create a refresh loop.');
+      await db.query('UPDATE family_calendar_sync_jobs SET last_successful_at=$2 WHERE household_id=$1',[household.id,new Date(+now+3000)]);
+      assert.notEqual((await liveStatus(db,frame,{now})).calendar,idleCalendar.calendar);
+    });
+    await t.test('a committed control kicks background work without waiting for provider completion',async()=>{
+      let finish;const pending=new Promise(resolve=>finish=resolve);let queued=0,scheduled=0;
+      const current=await deviceRow(device.id);
+      const request=new Request(`https://family.example/api/internet/devices/${device.id}/access`,{method:'POST',headers:{origin:'https://family.example','content-type':'application/json'},body:JSON.stringify({access:'blocked',expectedVersion:current.version,mutationId:randomUUID()})});
+      const response=await handleRequest(request,{db,env,authenticate:async()=>parent,internetQueue:()=>{queued++;return pending;},scheduleBackground:work=>{scheduled++;assert.equal(typeof work.then,'function');}});
+      assert.equal(response.status,202);assert.equal(queued,1);assert.equal(scheduled,1);
+      const command=(await db.query("SELECT id FROM family_internet_commands WHERE device_id=$1 AND state='pending'",[device.id])).rows[0];assert.ok(command,'The durable command is committed before the response.');
+      finish();
     });
   } finally {
     if (created) await pool.query(`DROP SCHEMA ${schema} CASCADE`);

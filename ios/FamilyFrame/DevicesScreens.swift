@@ -63,7 +63,7 @@ private struct DevicesContent: View {
                                     VStack(alignment: .leading, spacing: 6) {
                                         Text(device.name).font(.headline).foregroundStyle(Brand.ink)
 
-                                        Text(network.internetIsOn(device) && device.observedAccess != "allowed" && device.accessPending != true ? "Internet time in progress" : device.controlLabel).font(.subheadline).foregroundStyle(Brand.muted)
+                                        Text(network.internetIsOn(device) && device.observedAccess != "allowed" && device.accessPending != true && device.accessError == nil ? "Internet time in progress" : device.controlLabel).font(.subheadline).foregroundStyle(Brand.muted)
                                         Text(device.personIds.map(personName).joined(separator: " · ")).font(.caption).foregroundStyle(Brand.cyanInk)
                                         if let online = device.online { Text(online ? "Connected to the home network" : "Not currently seen on the home network").font(.caption).foregroundStyle(Brand.muted) }
                                     }; Spacer(minLength: 0); Image(systemName: "chevron.right").font(.caption).foregroundStyle(Brand.muted)

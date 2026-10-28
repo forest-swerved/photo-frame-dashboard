@@ -14,6 +14,7 @@ async function fixture({frame=true,reduced=false,blockedStorage=false}={}) {
   const role=frame?'frame':'admin',state={events:[{id:'fixture-event',calendarId:'fixture-calendar',title:'Soccer practice',allDay:false,startAt:'2026-10-27T18:08Z',endAt:'2026-10-27T19:08Z',location:'North field'}],status:'ready',revoked:false,writes:[],errors:[]};
   page.on('pageerror',error=>state.errors.push(error.message));
   await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/live-status') { await route.fulfill({contentType:'application/json',body:JSON.stringify({data:{}})});return; }
     const request=route.request(),url=new URL(request.url()); let data;
     if(request.method()!=='GET') state.writes.push(url.pathname);
     if(state.revoked && url.pathname==='/api/household') return route.fulfill({status:401,contentType:'application/json',body:JSON.stringify({error:{code:'revoked',message:'Fixture revoked'}})});
@@ -30,7 +31,7 @@ async function fixture({frame=true,reduced=false,blockedStorage=false}={}) {
     await route.fulfill({contentType:'application/json',body:JSON.stringify(url.pathname.startsWith('/api/auth/')?data:{data})});
   });
   await page.goto(new URL('/family.html?display=frame#today',origin).href);
-  await page.getByRole('heading',{name:'Up next',exact:true}).waitFor();
+  await page.getByRole('heading',{name:frame?'Today':'Up next',exact:true}).waitFor();
   return {browser,page,state};
 }
 test('paired frame animates an upcoming event, dismisses it, deduplicates reloads and announces start', {skip:!base},async()=>{
@@ -41,7 +42,7 @@ test('paired frame animates an upcoming event, dismisses it, deduplicates reload
     const bounds=await card.boundingBox(); assert.ok(bounds.x>=0 && bounds.x+bounds.width<=1280 && bounds.y+bounds.height<=800);
     if(process.env.FAMILY_UI_SCREENSHOT_DIR) {await mkdir(process.env.FAMILY_UI_SCREENSHOT_DIR,{recursive:true}); await f.page.screenshot({path:`${process.env.FAMILY_UI_SCREENSHOT_DIR}/frame-event-reminder.png`,animations:'disabled'});}
     await f.page.getByRole('button',{name:'Dismiss event reminder'}).click(); await card.waitFor({state:'hidden'});
-    await f.page.reload(); await f.page.getByRole('heading',{name:'Up next',exact:true}).waitFor(); await f.page.clock.runFor(1100); assert.equal(await card.isVisible(),false);
+    await f.page.reload(); await f.page.getByRole('heading',{name:'Today',exact:true}).waitFor(); await f.page.clock.runFor(1100); assert.equal(await card.isVisible(),false);
     await f.page.clock.fastForward(8*60_000); await card.waitFor(); assert.match(await card.innerText(),/Starting now/);
     await f.page.clock.fastForward(21_000); assert.equal(await card.isVisible(),false);
     assert.deepEqual(f.state.writes,[]); assert.deepEqual(f.state.errors,[]);

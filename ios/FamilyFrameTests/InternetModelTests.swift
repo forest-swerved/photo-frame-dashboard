@@ -21,6 +21,13 @@ enum InternetFixtures {
 
 @MainActor
 final class InternetModelTests: XCTestCase {
+    func testPendingDeviceFailureShowsReviewInsteadOfEndlessWaiting() {
+        var device=InternetFixtures.device
+        device.accessPending=true;device.accessError="policy_review_required"
+        XCTAssertTrue(device.controlLabel.contains("parent review"))
+        device.accessError="network_unavailable"
+        XCTAssertTrue(device.controlLabel.contains("retrying"))
+    }
     func testPreparationCountdownPreservesFullUsageAndFrozenPauseWithoutChangingLegacySessions() {
         let now=Dates.instant(InternetFixtures.time)!
         var item=InternetFixtures.session(end:"2026-10-17T19:05:00Z",remaining:3900)

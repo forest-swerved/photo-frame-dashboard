@@ -1,4 +1,4 @@
-import { request, setFrameMode } from './api.js';
+import { request, setFrameMode, frameAccessStatus } from './api.js';
 import { authClient, clearAuthCache } from './auth.js';
 import { escapeHtml as h, color, dateInZone, dateFormatter, addDays, dateLabel, weekday, calendarRange, calendarEventsByDay, calendarDayIsKnown, timeLabel, choreUrgency, orderChores, completionBody, mergeCompletion, reconcileHousehold, mutationId } from './model.js';
 import { createRenderer } from './render.js';
@@ -10,6 +10,7 @@ import { createAccountUI } from './account-ui.js';
 import { taskOverview, taskGroups, agendaParts, completionLabel, protectDialogDraft, quietCalendarRefresh } from './presentation.js';
 import { frameTaskLanes } from './frame-home.js';
 import { createFrameIdleReturn } from './frame-idle.js';
+import { createLiveUpdates } from './live-updates.js';
 
 const app = document.querySelector('#family-app');
 const dialog = document.querySelector('#family-dialog');
@@ -32,7 +33,7 @@ const S = {
   calendarMode: 'day', taskPerson: 'all', taskMode: 'today', taskStatus: 'active', settingsSection: new URLSearchParams(location.search).get('settings') || '', selectedDate: dateInZone(), authMode: 'sign-in',
   verificationEmail: '', verificationMethod: 'code',
   entryPair: new URLSearchParams(location.search).get('display') === 'frame',
-  inviteToken: '', generatedInvite: null, pairing: null, message: '', error: '', loading: false,
+  inviteToken: '', generatedInvite: null, pairing: null, message: '', error: '', liveIssue: '', loading: false,
   recentTasks: new Set(), pending: new Map(), conflicts: new Map(), failures: new Map(), attempts: new Map(), calendarBusy: false, calendarShowingBusy: false, setupBusy: false,
 };
 let generation = 0;
@@ -54,6 +55,17 @@ const workbench = createWorkbench({ snapshot: () => S.snapshot, session: () => S
   reload: async () => { await loadHousehold(); if (internet.loaded() || S.view === 'devices') await internet.load(); }, reloadSetup: loadSetup, reboot: boot });
 const internet = createInternetUI({ snapshot: () => S.snapshot, session: () => S.session, epoch: () => generation,
   zone, frame, field, button, openDialog, dialog, toast, render, unlock: workbench.unlock });
+const liveUpdates = createLiveUpdates({
+  read: () => request('/api/live-status', { timeoutMs: 8000 }),
+  loaders: { household:()=>loadHousehold().catch(error=>{dataFailure(error);return false;}), internet:()=>internet.load(), calendar:()=>loadCalendar() },
+  scope: () => JSON.stringify([generation,S.session?.authType,S.session?.role,S.session?.personId,frameAccessStatus()]),
+  visible: () => !document.hidden && !!S.session?.household && !S.booting,
+  onStatus: error => {
+    if(error?.status===401||error?.status===403) { dataFailure(error);return; }
+    const message=error ? 'Live updates interrupted. Reconnecting…' : '';
+    if(S.liveIssue!==message) { S.liveIssue=message;render(); }
+  },
+});
 const frameIdle = createFrameIdleReturn({
   enabled: () => frame() && !!S.session?.household && !S.booting,
   blocked: () => S.pending.size > 0 || internet.writing() || !!document.querySelector('form[data-submitting]'),
@@ -120,7 +132,7 @@ function empty(titleText, detail, action = '') { return `<div class="empty-state
 function initials(name) { return (name || '?').trim().split(/\s+/).slice(0, 2).map(part => part[0] || '').join('').toUpperCase(); }
 function avatar(profile) { return `<span class="avatar" style="--person:${color(profile?.color)}" aria-hidden="true">${h(initials(profile?.name || 'Anyone'))}</span>`; }
 function profileLabel(id) { return person(id)?.name || 'Anyone'; }
-function noticeBanner() { return S.error ? `<div class="banner banner-error" data-key="data-error" role="alert"><span>${h(S.error)}</span>${button('Retry', 'refresh', 'text-button')}</div>` : ''; }
+function noticeBanner() { return S.error || S.liveIssue ? `<div class="banner banner-error" data-key="data-error" role="alert"><span>${h(S.error || S.liveIssue)}</span>${button('Retry', 'refresh', 'text-button')}</div>` : ''; }
 function updateStamp(value) {
   if (!value) return '';
   const minutes = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 60000));
@@ -370,7 +382,7 @@ function render(force = false) {
 async function loadHousehold() {
   const epoch = generation;
   const data = await request(`/api/household?date=${today()}`);
-  if (epoch !== generation) return;
+  if (epoch !== generation) return false;
   let snapshot = reconcileHousehold(S.snapshot, data);
   for (const item of S.snapshot?.occurrences || []) snapshot = mergeOccurrence(snapshot, item);
   if (JSON.stringify(snapshot) !== JSON.stringify(S.snapshot)) S.snapshot = snapshot;
@@ -378,6 +390,7 @@ async function loadHousehold() {
   S.error = '';
   render();
   refreshTaskDetails();
+  return true;
 }
 
 function invalidateCalendar() {
@@ -389,8 +402,8 @@ function invalidateCalendar() {
 }
 
 async function loadCalendar(explicit = false) {
-  if (!S.session?.household) return;
-  if (S.calendarBusy) { queuedCalendar = { explicit: explicit || queuedCalendar?.explicit }; return; }
+  if (!S.session?.household) return false;
+  if (S.calendarBusy) { queuedCalendar = { explicit: explicit || queuedCalendar?.explicit }; return false; }
   const epoch = generation;
   const calendarEpoch = calendarGeneration;
   const current = () => epoch === generation && calendarEpoch === calendarGeneration;
@@ -417,14 +430,17 @@ async function loadCalendar(explicit = false) {
             S.frameCalendar = null;
             if (error.status === 401 || error.status === 403) dataFailure(error);
           }
+          return false;
         }
       }
     }
+    return current();
   } catch (error) {
-    if (!current()) return;
-    if (error.status === 401 || error.status === 403) { dataFailure(error); return; }
+    if (!current()) return false;
+    if (error.status === 401 || error.status === 403) { dataFailure(error); return false; }
     S.frameCalendar = null;
     S.calendar = { ...S.calendar, status: S.calendar?.events?.length ? 'stale' : 'error', events: S.calendar?.events || [], error: { message: errorMessage(error) } };
+    return false;
   } finally {
     if (current()) {
       S.calendarBusy = false;
@@ -466,6 +482,7 @@ async function boot() {
   S.snapshot = null; S.calendar = null; S.frameCalendar = null; S.connection = null; S.devices = []; S.members = [];
   workbench.reset();
   internet.reset();
+  liveUpdates.reset(); S.liveIssue='';
   S.generatedInvite = null; S.pairing = null; S.taskPerson = 'all'; S.taskMode = 'today'; S.taskStatus = 'active';
   S.recentTasks.clear(); S.pending.clear(); S.conflicts.clear(); S.failures.clear(); S.attempts.clear();
   S.booting = true;
@@ -819,12 +836,13 @@ window.addEventListener('hashchange', () => {
   render(true);
   if (S.session?.household) { if (next === 'setup') loadSetup(); else if (next === 'activity') workbench.loadActivity(); else if (next === 'devices') internet.load(); else loadCalendar(); }
 });
-window.addEventListener('online', () => refresh());
-document.addEventListener('visibilitychange', () => { tickFrameEvents(); if (!document.hidden && S.session?.household) refresh(); });
+window.addEventListener('online', () => { liveUpdates.tick(true);refresh(); });
+document.addEventListener('visibilitychange', () => { tickFrameEvents(); if (!document.hidden && S.session?.household) { liveUpdates.tick(true);refresh(); } });
 setInterval(() => {
   frameIdle.tick();
   paintClock();
   internet.tick();
+  liveUpdates.tick();
   tickFrameEvents();
   if (frame() && workbench.accessExpired()) { workbench.reset(); boot(); return; }
   if (S.session?.household && S.snapshot && S.snapshot.date !== today() && !pollBusy) { pollBusy = true; refresh().finally(() => { pollBusy = false; }); }
@@ -832,7 +850,7 @@ setInterval(() => {
 setInterval(async () => {
   if (document.hidden || !S.session?.household || pollBusy || dialog.open) return;
   pollBusy = true;
-  try { await loadHousehold(); await Promise.allSettled([loadCalendar(), internet.loaded() || Array.isArray(S.snapshot?.occurrences) ? internet.load() : Promise.resolve()]); if (S.view === 'activity') await workbench.loadActivity(); } catch (error) { dataFailure(error); }
+  try { await Promise.allSettled([loadHousehold().catch(dataFailure),loadCalendar(), internet.loaded() || Array.isArray(S.snapshot?.occurrences) ? internet.load() : Promise.resolve()]); if (S.view === 'activity') await workbench.loadActivity(); } catch (error) { dataFailure(error); }
   finally { pollBusy = false; }
 }, 20000);
 boot();

@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canRedeem, rewardDevices, liveSession, remainingTime, remainingLabel, earnedToday, sessionCountdown } from './internet-ui.js';
+import { canRedeem, rewardDevices, liveSession, remainingTime, remainingLabel, earnedToday, sessionCountdown, deviceAccessProblem } from './internet-ui.js';
+test('a failed pending change shows its review requirement instead of endless confirmation',()=>{
+  assert.match(deviceAccessProblem({accessPending:true,accessError:'policy_review_required'}),/parent review/);
+  assert.match(deviceAccessProblem({accessPending:true,accessError:'network_unavailable'}),/retrying/);
+  assert.equal(deviceAccessProblem({accessPending:true}), '');
+});
 
 test('free preparation rolls into full usage time and pauses without consuming either balance', () => {
   const now=Date.parse('2026-10-28T18:00:00Z');

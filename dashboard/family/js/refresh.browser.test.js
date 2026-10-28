@@ -24,6 +24,7 @@ async function fixture({ frame = true, width = 1280, height = 800 } = {}) {
   page.on('pageerror', error => state.errors.push(error.message));
   page.on('request', request => { if (new URL(request.url()).origin !== origin.origin) state.external.push(request.url()); });
   await page.route('**/api/**', async route => {
+    if(new URL(route.request().url()).pathname==='/api/live-status') { await route.fulfill({contentType:'application/json',body:JSON.stringify({data:{}})});return; }
     const url = new URL(route.request().url());
     state.requests.push(url.pathname);
     let data;
