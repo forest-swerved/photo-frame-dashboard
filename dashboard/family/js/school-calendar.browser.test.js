@@ -65,7 +65,7 @@ async function fixture({ role = 'admin', frame = false, width = 390, unknown = f
   });
   return { browser, page, state, async open(view = 'chores') {
     await page.goto(new URL(`/family.html${frame ? '?display=frame' : ''}#${view}`, origin).href);
-    await page.getByRole('heading', { name: view === 'setup' ? 'Settings' : view === 'chores' ? (role === 'child' ? 'My tasks' : 'Tasks') : view[0].toUpperCase() + view.slice(1), exact: true, level: 1 }).waitFor();
+    await page.getByRole('heading', { name: frame && view === 'today' ? /^Today/ : view === 'setup' ? 'Settings' : view === 'chores' ? (role === 'child' ? 'My tasks' : 'Tasks') : view[0].toUpperCase() + view.slice(1), exact: true, level: 1 }).waitFor();
   } };
 }
 
@@ -134,7 +134,7 @@ test('empty school-day sections are visible immediately and add-task actions pre
 });
 
 for (const width of [1280, 390]) {
-  test(`Today shows a bounded unfinished-task preview with an explicit path to every school task at ${width}px`, { skip: !baseUrl }, async () => {
+  test(`Frame Home shows the full child task list and keeps day-off sections correct at ${width}px`, { skip: !baseUrl }, async () => {
     const f = await fixture({ role: 'frame', frame: true, width });
     try {
       f.state.occurrences = Array.from({ length: 8 }, (_, index) => ({
@@ -144,19 +144,19 @@ for (const width of [1280, 390]) {
         completion: { date: today, completed: false, version: 0 },
       }));
       await f.open('today');
-      const panel = f.page.locator('.chores-panel');
-      assert.equal(await panel.locator('.chore-row').count(), 4);
-      assert.equal(await panel.getByRole('link', { name: 'View 4 more tasks →', exact: true }).count(), 1);
-      await panel.getByRole('link', { name: 'View 4 more tasks →', exact: true }).click();
+      const panel = f.page.locator('.frame-person-card');
+      assert.equal(await panel.locator('.chore-row').count(), 8);
+      assert.equal(await panel.getByRole('link', { name: 'View all tasks for Synthetic child', exact: true }).count(), 1);
+      await panel.getByRole('link', { name: 'View all tasks for Synthetic child', exact: true }).click();
       await f.page.getByRole('heading', { name: 'Tasks', exact: true, level: 1 }).waitFor();
       assert.equal(await f.page.locator('.person-lane .chore-row').count(), 8);
       f.state.schoolDay.type = 'non_school_day'; f.state.schoolDay.label = 'No school';
       await f.page.getByRole('link', { name: 'Today', exact: true }).click();
-      await f.page.getByRole('heading', { name: 'Today', exact: true, level: 1 }).waitFor();
+      await f.page.getByRole('heading', { name: /^Today/, level: 1 }).waitFor();
       await f.page.reload();
-      await f.page.locator('.welcome-summary').getByText(/No school/).waitFor();
+      await f.page.locator('.frame-person-empty').getByText('No tasks scheduled for today.', { exact: true }).waitFor();
       assert.equal(await panel.locator('.chore-row').count(), 0);
-      assert.equal(await panel.getByText('No unfinished tasks. Nice work!', { exact: true }).count(), 1);
+      assert.equal(await panel.getByText('No tasks scheduled for today.', { exact: true }).count(), 1);
       assert.equal(await panel.getByRole('heading', { name: 'After school', exact: true }).count(), 0);
       assert.deepEqual(f.state.errors, []); assert.deepEqual(f.state.external, []);
     } finally { await f.browser.close(); }

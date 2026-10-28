@@ -50,10 +50,18 @@ for (const { frame, width, height } of [
         await route.fulfill({ contentType: 'application/json', body: JSON.stringify(url.pathname.startsWith('/api/auth/') ? data : { data }) });
       });
       await page.goto(new URL(`/family.html${frame ? '?display=frame' : ''}#today`, origin).href);
-      await page.getByRole('heading', { name: 'Up next', exact: true }).waitFor();
-      await page.getByText('Earlier today · 2', { exact: true }).click();
+      await page.locator(frame ? '.frame-home-calendar' : '.agenda-panel').waitFor();
       const browserDate = await page.evaluate(() => ({ local: new Date().getDate(), utc: new Date().getUTCDate() }));
       assert.deepEqual(browserDate, { local: 22, utc: 22 }, 'The test must cross the browser/UTC date boundary.');
+      if (frame) {
+        const next = page.locator('.frame-next-event');
+        assert.match(await next.innerText(), /Synthetic school break.*Wednesday, October 21.*All day/s);
+        await page.clock.setSystemTime(new Date('2026-10-21T07:00:00Z'));
+        await page.reload();
+        await page.getByRole('button', { name: 'Details for Synthetic overnight event', exact: true }).waitFor();
+        assert.match(await next.innerText(), /Tuesday, October 20.*11:00 PM/s, 'An ongoing overnight event keeps its real start day and takes priority over an all-day event.');
+      } else {
+      await page.getByText('Earlier today · 2', { exact: true }).click();
       const cards = page.locator('.agenda-panel .event-card');
       assert.equal(await cards.count(), 3);
       assert.deepEqual(await cards.locator('h3').allTextContents(), ['Synthetic school break', 'Synthetic overnight event', 'Synthetic afternoon appointment']);
@@ -68,6 +76,7 @@ for (const { frame, width, height } of [
       assert.match(overnightTime, /Tue, Oct 20.*11:00 PM/);
       assert.match(overnightTime, /Wed, Oct 21.*2:00 AM/);
       assert.equal(await cards.nth(2).locator('.event-time').innerText(), '3:00 PM – 4:00 PM');
+      }
       const layout = await page.evaluate(() => ({
         viewport: innerWidth,
         document: document.documentElement.scrollWidth,
@@ -82,7 +91,7 @@ for (const { frame, width, height } of [
         await mkdir(process.env.FAMILY_UI_SCREENSHOT_DIR, { recursive: true });
         await page.screenshot({ path: `${process.env.FAMILY_UI_SCREENSHOT_DIR}/calendar-dates-${frame ? 'frame' : 'phone'}-${width}.png`, fullPage: true });
       }
-      await page.getByRole('link', { name: 'View calendar', exact: false }).click();
+      await (frame ? page.locator('.frame-calendar-link') : page.getByRole('link', { name: 'View calendar', exact: false })).click();
       await page.getByRole('heading', { name: 'Calendar', exact: true }).waitFor();
       await page.getByRole('button', { name: 'Day', exact: true }).click();
       await page.getByRole('heading', { name: 'Wednesday, October 21', exact: true }).waitFor();

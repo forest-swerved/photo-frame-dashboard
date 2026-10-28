@@ -42,14 +42,15 @@ for (const [role,width,height] of [['frame',1280,800],['admin',390,844],['child'
       const layout=await page.evaluate(()=>({width:innerWidth,document:document.documentElement.scrollWidth,mainHeight:document.querySelector('.main-content').scrollHeight,
         stripBottom:document.querySelector('.home-internet-strip').getBoundingClientRect().bottom,
         primary:getComputedStyle(document.documentElement).getPropertyValue('--primary').trim(),
-        list:document.querySelector('.home-task-list').getBoundingClientRect().top}));
+        list:document.querySelector('.frame-person-tasks,.home-task-list').getBoundingClientRect().top}));
       assert.equal(layout.document,width,JSON.stringify(layout)); assert.equal(layout.primary,'#8a00c4');
       assert.equal(await page.locator('nav .nav-item').count(),role==='frame'?4:5);
       if(role==='frame') {
         assert.equal(layout.mainHeight,height,JSON.stringify(layout)); assert.ok(layout.stripBottom<=height,JSON.stringify(layout));
         assert.equal(await page.getByRole('button',{name:'Unlock to review',exact:true}).count(),1);
-        assert.equal(await page.getByLabel('Filter by family profile').getByRole('button').count(),5);
-        assert.equal(await page.locator('.home-task-list').getByText('Optional extra task',{exact:true}).count(),0,'Required tasks get preview priority.');
+        assert.equal(await page.getByLabel('Filter by family profile').count(),0);
+        assert.equal(await page.locator('.frame-person-card').count(),4);
+        assert.equal(await page.locator('.frame-person-tasks').getByText('Optional extra task',{exact:true}).count(),4,'Every child keeps their own complete task list.');
       } else { assert.ok(layout.list<height,JSON.stringify(layout)); }
       if(process.env.FAMILY_UI_SCREENSHOT_DIR) {
         await mkdir(process.env.FAMILY_UI_SCREENSHOT_DIR,{recursive:true});
