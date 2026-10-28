@@ -84,9 +84,12 @@ test('reward reservation, frame authorization and durable provider reconciliatio
       await assert.rejects(saveManagedDevice(db, parent, null, { name: 'Duplicate', personIds: [sibling.personId], macAddresses: ['02:11:22:33:44:55'], mutationId: randomUUID() }), e => e.code === 'identity_in_use');
     });
     await t.test('concurrent final chores earn one immutable daily credit; reopening holds it', async () => {
-      await Promise.all([createRoutine(), createRoutine()]);
+      await Promise.all(Array.from({length:9},()=>createRoutine()));
       const rows = await transaction(db, c => ensureDailyOccurrences(c, household, today, { now }));
-      await Promise.all(rows.map(row => change(row, true)));
+      await change(rows[0],true);
+      const partial=await snapshot();assert.equal(partial.progress[0].requiredCount,9);assert.equal(partial.progress[0].completedCount,1);
+      assert.equal(partial.progress[0].eligible,false);assert.equal(partial.credits.length,0,'One of nine tasks cannot mint a reward.');
+      await Promise.all(rows.slice(1).map(row => change(row, true)));
       let state = await snapshot(); assert.equal(state.credits.length, 1); credit = state.credits[0]; assert.equal(credit.minutes, 60); assert.equal(credit.status, 'available');
       const completed = (await db.query('SELECT *,date::text FROM family_chore_occurrences ORDER BY id')).rows[0];
       const reopened = await change(completed, false); assert.equal((await snapshot()).credits[0].status, 'held');
@@ -466,6 +469,27 @@ test('reward reservation, frame authorization and durable provider reconciliatio
       assert.equal(calls.blocks, blocks); assert.equal((await deviceRow(freeDevice.id)).observed_access, 'unknown');
       policies.delete(extra.id); ordered = ordered.filter(id => id !== extra.id);
       assert.equal((await worker(new Date(now.getTime() + 31_000))).state, 'allowed');
+    });
+    await t.test('a child keeps yesterday’s sixty minutes and can earn a separate sixty today after all required tasks', async () => {
+      const actor={...child,personId:randomUUID(),actor:'mobile:carryover-fixture',user:{...child.user,id:randomUUID(),name:'Carryover fixture'}};
+      await db.query("INSERT INTO family_people(id,household_id,name,color) VALUES($1,$2,'Carryover fixture','#00748c')",[actor.personId,household.id]);
+      await db.query("INSERT INTO family_members(household_id,user_id,name,email,role,person_id) VALUES($1,$2,'Carryover fixture','carryover@example.test','child',$3)",[household.id,actor.user.id,actor.personId]);
+      await Promise.all(Array.from({length:9},()=>createRoutine(actor.personId)));
+      const finish=async(row,at)=>setOccurrenceCompletion(db,actor,row.id,{completed:true,expectedVersion:row.version,mutationId:randomUUID()},{now:at,onChange:(client,event)=>syncChoreReward(client,event,{now:at})});
+      const first=(await transaction(db,c=>ensureDailyOccurrences(c,household,today,{now}))).filter(row=>row.person_id===actor.personId);
+      for(const row of first) await finish(row,now);
+      const yesterday=(await internetSnapshot(db,actor,{env,now})).credits[0];assert.equal(yesterday.minutes,60);assert.equal(yesterday.status,'available');
+      const nextDate='2026-10-18',nextTime=new Date(now.getTime()+86_400_000);
+      const second=(await transaction(db,c=>ensureDailyOccurrences(c,household,nextDate,{now:nextTime}))).filter(row=>row.person_id===actor.personId);
+      await finish(second[0],nextTime);
+      const partial=await internetSnapshot(db,actor,{env,now:nextTime});
+      assert.equal(partial.progress[0].completedCount,1);assert.equal(partial.progress[0].requiredCount,9);assert.equal(partial.progress[0].eligible,false);
+      assert.deepEqual(partial.credits.map(c=>[c.id,c.minutes,c.status]),[[yesterday.id,60,'available']]);
+      for(const row of second.slice(1)) await finish(row,nextTime);
+      const earned=await internetSnapshot(db,actor,{env,now:nextTime});
+      assert.equal(earned.progress[0].eligible,true);assert.equal(earned.credits.length,2);
+      assert.equal(earned.credits.find(c=>c.id===yesterday.id).status,'available');
+      assert.equal(earned.credits.find(c=>c.earnedDate===nextDate).minutes,60);
     });
   } finally {
     if (created) await pool.query(`DROP SCHEMA ${schema} CASCADE`);

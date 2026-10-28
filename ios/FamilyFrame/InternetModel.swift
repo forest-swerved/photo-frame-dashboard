@@ -20,7 +20,6 @@ final class InternetModel: ObservableObject {
     private var revision = 0
     private var task: Task<Void, Never>?
     private var requested = false
-    private var celebrate = false
     private var knownCreditIDs = Set<String>()
     private var presentedCredits = Set<String>()
     private var serverAnchor: Date?
@@ -63,11 +62,11 @@ final class InternetModel: ObservableObject {
         if session?.cacheIdentity == principal?.cacheIdentity && session?.role == principal?.role { principal = session; return }
         generation += 1; task?.cancel(); task = nil; requested = false; principal = session
         snapshot = nil; isLoading = false; isChanging = false; isStale = true; message = nil; mutationNeedsReview = false
-        serverAnchor = nil; readUptime = nil; confirmedSessions = [:]; knownCreditIDs = []; presentedCredits = []; earnedReward = nil; openedSession = nil; celebrate = false
+        serverAnchor = nil; readUptime = nil; confirmedSessions = [:]; knownCreditIDs = []; presentedCredits = []; earnedReward = nil; openedSession = nil
     }
-    func refresh(celebrateRewards: Bool = false) async {
+    func refresh() async {
         guard principal != nil else { return }
-        requested = true; celebrate = celebrate || celebrateRewards
+        requested = true
         if let task { await task.value; return }
         let started = generation; isLoading = true
         let next = Task { [weak self] in guard let self else { return }; await self.refreshLoop(generation: started) }; task = next
@@ -76,11 +75,11 @@ final class InternetModel: ObservableObject {
     private func refreshLoop(generation started: Int) async {
         defer { if generation == started { task = nil; isLoading = false } }
         while requested && generation == started && !Task.isCancelled {
-            requested = false; let readRevision = revision, shouldCelebrate = celebrate; celebrate = false
+            requested = false; let readRevision = revision
             do {
                 var result = try await api.internet()
                 guard generation == started, !Task.isCancelled else { return }
-                guard readRevision == revision else { requested = true; celebrate = celebrate || shouldCelebrate; continue }
+                guard readRevision == revision else { requested = true; continue }
                 guard let time = Dates.instant(result.serverTime), result.role == principal?.role, result.timezone == principal?.household.timezone else {
                     throw APIError(status: 0, code: "invalid_response", message: "Network status could not be confirmed. Refresh before changing access.")
                 }
@@ -93,12 +92,15 @@ final class InternetModel: ObservableObject {
                 let hadSnapshot = snapshot != nil
                 let newCredits = result.credits.filter { !knownCreditIDs.contains($0.id) }
                 knownCreditIDs.formUnion(result.credits.map(\.id)); snapshot = result; isStale = false; message = nil
-                let candidates = shouldCelebrate ? result.credits : hadSnapshot ? newCredits : []
-                if isChild, let reward = candidates.first(where: { $0.personId == personID && $0.status == "available" && !presentedCredits.contains($0.id) && (Dates.instant($0.expiresAt) ?? .distantPast) > serverNow }) {
+                let candidates = hadSnapshot ? newCredits : []
+                let date = Dates.day(time, in: TimeZone(identifier: result.timezone) ?? .gmt)
+                let completedToday = result.progress.contains { $0.personId == personID && $0.date == date && $0.eligible && $0.requiredCount > 0 && $0.completedCount == $0.requiredCount && $0.pendingApprovalCount == 0 && $0.remainingCount == 0 }
+                let eligibleCredits = completedToday ? result.credits.filter { $0.personId == personID && $0.earnedDate == date && $0.status == "available" && (Dates.instant($0.expiresAt) ?? .distantPast) > serverNow } : []
+                if isChild, let reward = candidates.first(where: { candidate in eligibleCredits.contains { $0.id == candidate.id } && !presentedCredits.contains(candidate.id) }) {
                     presentedCredits.insert(reward.id); earnedReward = reward
                     UIAccessibility.post(notification: .announcement, argument: "Great job! You earned \(reward.minutes) minutes of Internet time. Use your reward now or save it for later.")
                 }
-                if let shown = earnedReward, !availableCredits.contains(where: { $0.id == shown.id }) { earnedReward = nil }
+                if let shown = earnedReward, !eligibleCredits.contains(where: { $0.id == shown.id }) { earnedReward = nil }
             } catch {
                 guard generation == started, !Task.isCancelled, !(error is CancellationError) else { return }
                 if (error as? APIError)?.isAuthenticationFailure == true { await authenticationFailed?(error.localizedDescription); return }

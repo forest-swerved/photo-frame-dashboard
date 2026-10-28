@@ -7,12 +7,15 @@ enum InternetFixtures {
     static let time = "2026-10-17T18:00:00Z"
     static let child = "synthetic-child"
     static let device = ManagedInternetDevice(id: "synthetic-console", name: "Synthetic console", kind: "console", personIds: [child], macAddresses: ["02:00:00:00:00:01"], version: 1, controlState: "ready", online: true, lastSeenAt: time, managementAccessVerifiedAt: time, defaultAccess: "blocked", desiredAccess: "blocked", observedAccess: "blocked", accessVerifiedAt: time, accessPending: false, rewardAvailable: true)
-    static func credit(status: String = "available", id: String = "synthetic-credit", person: String = child) -> RewardCredit { RewardCredit(id: id, personId: person, earnedDate: "2026-10-17", minutes: 60, status: status, expiresAt: "2026-10-25T06:00:00Z", policyVersion: 1) }
+    static func credit(status: String = "available", id: String = "synthetic-credit", person: String = child, earnedDate: String = "2026-10-17") -> RewardCredit { RewardCredit(id: id, personId: person, earnedDate: earnedDate, minutes: 60, status: status, expiresAt: "2026-10-25T06:00:00Z", policyVersion: 1) }
+    static func progress(required: Int = 9, completed: Int = 9, date: String = "2026-10-17") -> RequiredChoreProgress {
+        RequiredChoreProgress(personId: child, date: date, requiredCount: required, completedCount: completed, pendingApprovalCount: 0, remainingCount: required-completed, eligible: required>0 && completed==required, occurrenceIds: [])
+    }
     static func session(state: String = "active", version: Int = 1, observed: String = "allowed", end: String? = "2026-10-17T19:00:00Z", allDay: Bool = false, person: String = child, credit: String? = "synthetic-credit", remaining: Int = 1800) -> InternetSession {
         InternetSession(id: "synthetic-session", personId: person, deviceId: device.id, creditId: credit, source: credit == nil ? "parent" : "reward", state: state, version: version, desiredState: ["paused", "pausing", "ending", "ended"].contains(state) ? "blocked" : "allowed", observedState: observed, requestedAt: time, startedAt: state == "starting" ? nil : time, endsAt: end, remainingSeconds: remaining, verifiedAt: observed == "unknown" ? nil : time, endedAt: state == "ended" ? time : nil, reason: nil, lastError: nil, allDay: allDay)
     }
-    static func snapshot(role: String = "child", credits: [RewardCredit] = [], sessions: [InternetSession] = [], integration: String = "ready", manage: Bool? = nil, scheduleSupport: InternetScheduleSupport? = nil) -> InternetSnapshot {
-        InternetSnapshot(serverTime: time, timezone: "America/Denver", role: role, capabilities: ParentCapabilities(manageChores: manage ?? (role == "admin"), manageInternet: manage ?? (role == "admin")), integration: InternetIntegration(state: integration, managementHost: "frame.test", managementAccessVerifiedAt: integration == "ready" ? time : nil, lastCheckedAt: time, error: nil, scheduleSupport: scheduleSupport), policies: [RewardPolicy(personId: child, version: 1, rewardMinutes: 60, carryoverDays: 7, dailyLimitMinutes: 180, bedtime: "21:00", warningMinutes: 5, enabled: true)], credits: credits, devices: [device], sessions: sessions, progress: [])
+    static func snapshot(role: String = "child", credits: [RewardCredit] = [], sessions: [InternetSession] = [], integration: String = "ready", manage: Bool? = nil, scheduleSupport: InternetScheduleSupport? = nil, progress: [RequiredChoreProgress] = [], serverTime: String = time) -> InternetSnapshot {
+        InternetSnapshot(serverTime: serverTime, timezone: "America/Denver", role: role, capabilities: ParentCapabilities(manageChores: manage ?? (role == "admin"), manageInternet: manage ?? (role == "admin")), integration: InternetIntegration(state: integration, managementHost: "frame.test", managementAccessVerifiedAt: integration == "ready" ? time : nil, lastCheckedAt: time, error: nil, scheduleSupport: scheduleSupport), policies: [RewardPolicy(personId: child, version: 1, rewardMinutes: 60, carryoverDays: 7, dailyLimitMinutes: 180, bedtime: "21:00", warningMinutes: 5, enabled: true)], credits: credits, devices: [device], sessions: sessions, progress: progress)
     }
 }
 
@@ -167,14 +170,39 @@ final class InternetModelTests: XCTestCase {
         XCTAssertNil(model.snapshot); XCTAssertTrue(model.availableCredits.isEmpty); XCTAssertFalse(model.canManage)
     }
     func testEarnedPromptRequiresConfirmedAvailableCreditAndSaveLaterDoesNotSpendIt() async {
-        let (model, api) = fixture(); await model.refresh(celebrateRewards: true)
+        let (model, api) = fixture(); await model.refresh()
         XCTAssertNil(model.earnedReward, "Finishing local checkboxes does not invent an award")
-        api.internetData = InternetFixtures.snapshot(credits: [InternetFixtures.credit(status: "held")]); await model.refresh(celebrateRewards: true)
+        api.internetData = InternetFixtures.snapshot(credits: [InternetFixtures.credit(status: "held")]); await model.refresh()
         XCTAssertNil(model.earnedReward)
-        api.internetData = InternetFixtures.snapshot(credits: [InternetFixtures.credit()]); await model.refresh(celebrateRewards: true)
-        XCTAssertEqual(model.earnedReward?.id, "synthetic-credit"); model.earnedReward = nil; await model.refresh(celebrateRewards: true)
+        api.internetData = InternetFixtures.snapshot(credits: [InternetFixtures.credit()], progress: [InternetFixtures.progress()]); await model.refresh()
+        XCTAssertNil(model.earnedReward, "Restoring an existing credit does not earn it again")
+        api.internetData = InternetFixtures.snapshot(credits: [InternetFixtures.credit(),InternetFixtures.credit(id: "new-credit")], progress: [InternetFixtures.progress()]); await model.refresh()
+        XCTAssertEqual(model.earnedReward?.id, "new-credit"); model.earnedReward = nil; await model.refresh()
         XCTAssertNil(model.earnedReward, "Save for later prevents repeated prompts for the same award")
-        XCTAssertEqual(model.availableCredits.count, 1); XCTAssertEqual(api.redeemCalls, 0)
+        XCTAssertEqual(model.availableCredits.count, 2); XCTAssertEqual(api.redeemCalls, 0)
+    }
+    func testSavedRewardsAndIncompleteDailyProgressCannotAnnounceEarnedTime() async {
+        let (model, api) = fixture()
+        let saved = InternetFixtures.credit(earnedDate: "2026-10-16")
+        api.internetData = InternetFixtures.snapshot(credits: [saved], progress: [InternetFixtures.progress(completed: 1)])
+        await model.refresh(); await model.refresh(); XCTAssertNil(model.earnedReward)
+        XCTAssertEqual(model.availableCredits.count, 1, "Saved time stays available without claiming today's tasks are done")
+        api.internetData = InternetFixtures.snapshot(credits: [saved,InternetFixtures.credit(id: "incomplete-credit")], progress: [InternetFixtures.progress(completed: 1)])
+        await model.refresh(); XCTAssertNil(model.earnedReward)
+        api.internetData = InternetFixtures.snapshot(credits: [InternetFixtures.credit(id: "missing-progress")])
+        await model.refresh(); XCTAssertNil(model.earnedReward)
+    }
+    func testInitialReadOfCurrentRewardDoesNotReplayItsCelebration() async {
+        let (model, api) = fixture()
+        api.internetData = InternetFixtures.snapshot(credits: [InternetFixtures.credit()], progress: [InternetFixtures.progress()])
+        await model.refresh(); await model.refresh(); XCTAssertNil(model.earnedReward)
+    }
+    func testMidnightClearsYesterdayCelebrationButKeepsItsSavedCredit() async {
+        let (model, api) = fixture(); await model.refresh()
+        api.internetData = InternetFixtures.snapshot(credits: [InternetFixtures.credit()], progress: [InternetFixtures.progress()])
+        await model.refresh(); XCTAssertNotNil(model.earnedReward)
+        api.internetData = InternetFixtures.snapshot(credits: [InternetFixtures.credit()], progress: [InternetFixtures.progress(completed: 1, date: "2026-10-18")], serverTime: "2026-10-18T06:01:00Z")
+        await model.refresh(); XCTAssertNil(model.earnedReward); XCTAssertEqual(model.availableCredits.count, 1)
     }
     func testReviewCreditIsNeverAutomaticallyRestoredOrCharged() async {
         let (model, api) = fixture(role: "admin"); api.internetData = InternetFixtures.snapshot(role: "admin", credits: [InternetFixtures.credit(status: "review")]); await model.refresh()
