@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { taskOverview, taskGroups, agendaParts, completionLabel } from './presentation.js';
+import { taskOverview, taskGroups, agendaParts, completionLabel, quietCalendarRefresh } from './presentation.js';
+import { calendarDayIsKnown } from './model.js';
 
 test('required progress excludes optional, excused and earlier-schedule work; submission is not completion', () => {
   const base = { date:'2026-10-26', originalDate:'2026-10-26', required:true };
@@ -32,4 +33,21 @@ test('agenda keeps all-day and overnight live events while separating elapsed ev
 test('optional submissions appear in the approval count without reducing remaining required work', () => {
   assert.deepEqual(taskOverview([{ required:true, status:'pending' },{ required:false, status:'submitted' }]),
     { total:1, completed:0, remaining:1, submitted:1, todo:1, optional:1, optionalDone:0 });
+});
+
+test('routine calendar refresh is quiet without certifying stale availability; errors and old or incomplete copies still warn', () => {
+  const now = Date.parse('2026-10-27T18:00:00Z');
+  const calendar = { status: 'stale', sync: { state: 'scheduled' }, lastSuccessfulSyncAt: '2026-10-27T17:59:00Z',
+    coverage: { startDate: '2026-10-27', endDateExclusive: '2026-10-28', complete: true, truncated: false } };
+  assert.equal(quietCalendarRefresh(calendar, now), true);
+  assert.equal(quietCalendarRefresh({ ...calendar, sync: { state: 'syncing' } }, now), true);
+  assert.equal(calendarDayIsKnown(calendar, '2026-10-27'), false);
+  for (const value of [null, { ...calendar, error: { message: 'Failed' } },
+    { ...calendar, sync: { state: 'syncing', error: { message: 'Failed' } } },
+    { ...calendar, sync: { state: 'retrying' } }, { ...calendar, lastSuccessfulSyncAt: null },
+    { ...calendar, lastSuccessfulSyncAt: '2026-10-27T17:50:00Z' },
+    { ...calendar, lastSuccessfulSyncAt: '2026-10-27T18:01:00Z' },
+    { ...calendar, coverage: { complete: false } }, { ...calendar, coverage: { complete: true, truncated: true } }]) {
+    assert.equal(quietCalendarRefresh(value, now), false);
+  }
 });

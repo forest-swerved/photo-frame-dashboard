@@ -7,7 +7,7 @@ import { scheduledItems, mergeOccurrence, occurrenceDetails, schoolDayFilterLabe
 import { createWorkbench } from './workbench.js';
 import { createInternetUI } from './internet-ui.js';
 import { createAccountUI } from './account-ui.js';
-import { taskOverview, taskGroups, agendaParts, completionLabel, protectDialogDraft } from './presentation.js';
+import { taskOverview, taskGroups, agendaParts, completionLabel, protectDialogDraft, quietCalendarRefresh } from './presentation.js';
 import { frameTaskLanes } from './frame-home.js';
 
 const app = document.querySelector('#family-app');
@@ -126,10 +126,9 @@ function calendarStatus() {
   if (!calendar) return '<div class="status-note">Checking your calendar connection…</div>';
   if (calendar.status === 'not_configured') return `<div class="status-note">Your Apple Calendar is not connected.${admin() ? ' Connect it in Setup.' : ' Ask your family administrator to connect it.'}</div>`;
   if (calendar.status === 'loading') return '<div class="status-note">Your calendar is syncing. Events will appear after a successful sync.</div>';
-  if (calendar.status === 'stale') {
-    const updating = ['scheduled', 'syncing'].includes(calendar.sync?.state);
-    const heading = updating ? 'Calendar update in progress.' : calendar.sync?.state === 'retrying' ? 'Calendar update delayed.' : 'Calendar may be out of date.';
-    const detail = updating ? 'Showing saved events while the background sync runs.' : calendar.error?.message || 'Showing the last synced events. A background update will check for changes.';
+  if (calendar.status === 'stale' && !quietCalendarRefresh(calendar)) {
+    const heading = calendar.error || calendar.sync?.error || calendar.sync?.state === 'retrying' ? 'Calendar update delayed.' : 'Calendar may be out of date.';
+    const detail = calendar.error?.message || calendar.sync?.error?.message || 'Showing the last synced events. A background update will check for changes.';
     return `<div class="status-note status-warning"><strong>${heading}</strong> ${h(updateStamp(calendar.lastSuccessfulSyncAt))}. ${h(detail)}</div>`;
   }
   if (calendar.status === 'error') return `<div class="status-note status-warning"><strong>Calendar is unavailable.</strong> ${h(calendar.error?.message || 'Please try refreshing.')}</div>`;
@@ -237,7 +236,7 @@ function frameHomeCalendar() {
     if (event) next = { date, event };
   }
   const healthy = S.calendar?.status === 'ready' && S.calendar.coverage?.complete && !S.calendar.coverage.truncated;
-  const notice = healthy ? '' : calendarStatus();
+  const notice = healthy || quietCalendarRefresh(S.calendar) ? '' : calendarStatus();
   const eventDate = next && (next.event.allDay ? next.date : dateInZone(new Date(next.event.startAt), zone()));
   const content = next ? `<button type="button" class="frame-next-event" data-action="event-details" data-id="${h(next.event.id)}" data-calendar="${h(next.event.calendarId)}" data-date="${h(next.date)}" aria-label="Details for ${h(next.event.title || 'Calendar event')}"><strong>${h(next.event.title || 'Calendar event')}</strong><span>${h(dateLabel(eventDate))} · ${next.event.allDay ? 'All day' : h(dateFormatter({ timeZone: zone(), hour: 'numeric', minute: '2-digit' }).format(new Date(next.event.startAt)))}</span></button>` : `<p class="frame-calendar-empty">${calendarDayIsKnown(S.calendar, today()) ? 'The rest of today is clear.' : 'Upcoming events are not confirmed yet.'}</p>`;
   return `<section class="frame-home-calendar" aria-label="Family calendar"><a href="#calendar" class="frame-calendar-link">Calendar ↗</a><div>${notice}${content}</div></section>`;

@@ -75,7 +75,7 @@ Completion mutations use UUID IDs. Retrying an identical mutation returns its sa
 
 Use an Apple app-specific password. Username and password are encrypted together with AES-256-GCM, a fresh IV, and household-bound authenticated data. They never appear in connection responses, localStorage, errors or logs. The API returns discovered calendar IDs without DAV URLs.
 
-Requests use household local `from` / exclusive `to` dates and an IANA timezone. Windows are capped at 60 calendar days and 400 expanded events. Five-minute successful caches are marked ready. Provider, parse, timeout or coverage failures retain a previous matching good snapshot as stale and do not advance its success timestamp. Selection/disconnection/reconnection invalidates the old connection's results, including in-flight successes and failures. No partial snapshot is marked ready.
+Requests use household local `from` / exclusive `to` dates and an IANA timezone. Windows are capped at 60 calendar days and 400 expanded events. Successful caches younger than one minute are marked ready. The minute worker schedules healthy refreshes from the previous attempt's start, so provider duration does not skip alternate ticks. Routine background refreshes stay quiet in the UI; failures, incomplete coverage and copies at least ten minutes old still warn. Provider, parse, timeout or coverage failures retain a previous matching good snapshot as stale and do not advance its success timestamp. Selection/disconnection/reconnection invalidates the old connection's results, including in-flight successes and failures. No partial snapshot is marked ready.
 
 The adapter validates every Apple DAV destination and redirect before credentials are attached, limits transport and object sizes, and bounds recurrence normalization in a worker. Known IANA TZIDs work without embedded timezone definitions; custom TZIDs need valid calendar definitions. Unsupported RDATE PERIOD or EXRULE data fails explicitly. Fixture tests do not prove real-account connectivity or deployed browser cookie acceptance; those require live sign-in and the owner's calendar connection.
 
@@ -131,7 +131,7 @@ Event identifiers are deduplicated locally, including across page reloads. Reduc
 motion disables animation. Stale/cancelled/removed events cannot announce; phones
 never show the card, including a phone opened with `?display=frame`.
 Calendar connection-health alerts remain account preferences;
-provider calendar refresh also runs through the leased five-minute calendar worker. Frame offline alerts
+provider calendar refresh also runs through the leased minute calendar worker. Frame offline alerts
 use a fifteen-minute grace above the five-minute heartbeat write interval. Initial
 scans establish a baseline rather than flooding users with historical overdue alerts.
 

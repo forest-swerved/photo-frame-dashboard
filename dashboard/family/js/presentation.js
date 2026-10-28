@@ -27,6 +27,14 @@ export function agendaParts(events, now = Date.now()) {
   const upcoming = timed.filter(event => Math.max(Date.parse(event.endAt) || 0, Date.parse(event.startAt) || 0) >= now);
   return { allDay, upcoming, earlier: timed.filter(event => !upcoming.includes(event)) };
 }
+// A routine background read should not interrupt the family dashboard. This is
+// presentation only: saved events remain stale for availability and reminders.
+export function quietCalendarRefresh(calendar, now = Date.now()) {
+  const age = now - Date.parse(calendar?.lastSuccessfulSyncAt);
+  return calendar?.status === 'stale' && ['scheduled', 'syncing'].includes(calendar.sync?.state)
+    && !calendar.error && !calendar.sync?.error && calendar.coverage?.complete === true && !calendar.coverage.truncated
+    && Number.isFinite(age) && age >= 0 && age < 10 * 60_000;
+}
 export function completionLabel(item) {
   if (item.status === 'submitted') return 'Waiting for parent approval';
   if (item.status === 'skipped') return 'Excused';
