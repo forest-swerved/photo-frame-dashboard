@@ -167,7 +167,7 @@ test('an old bare-frame read cannot announce a sibling reward after a child unlo
     f.state.extraProgress=[{personId:'fixture-sibling',date:'2026-10-17',eligible:true,requiredCount:1,completedCount:1,remainingCount:0,pendingApprovalCount:0}];
     f.state.credits.push({...f.credit,id:'sibling-credit',personId:'fixture-sibling'});f.state.deferNextRead=true;
     await f.page.getByRole('button',{name:'Refresh status',exact:true}).click();
-    await f.page.getByRole('button',{name:'Unlock to use',exact:true}).click();await f.page.getByLabel('Unlock code',{exact:true}).fill('123456');
+    await f.page.getByRole('button',{name:'Unlock to use',exact:true}).click();await f.page.getByRole('button',{name:'Use a temporary code',exact:true}).click();await f.page.getByLabel('Unlock code',{exact:true}).fill('123456');
     await f.page.getByRole('button',{name:'Unlock controls',exact:true}).click();await f.page.getByText('Frame controls unlocked temporarily.',{exact:true}).waitFor();
     assert.ok(f.state.releaseRead);f.state.releaseRead();
     await f.page.getByRole('heading',{name:'Choose one device · 60 minutes',exact:true}).waitFor();
@@ -180,7 +180,7 @@ test('bare frame needs a child-scoped code before reward spending; private grant
   const f = await fixture({ frame: true, width: 1280 });
   try {
     await f.open(); await f.page.getByRole('button', { name: 'Unlock to use', exact: true }).click();
-    await f.page.getByLabel('Unlock code', { exact: true }).fill('123456');
+    await f.page.getByRole('button',{name:'Use a temporary code',exact:true}).click();await f.page.getByLabel('Unlock code', { exact: true }).fill('123456');
     assert.equal(f.state.calls.filter(call => call.path === '/api/internet/redeem').length, 0);
     await f.page.getByRole('button', { name: 'Unlock controls', exact: true }).click();
     await f.page.getByRole('heading', { name: 'Choose one device · 60 minutes', exact: true }).waitFor();

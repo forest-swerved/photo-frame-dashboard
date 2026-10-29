@@ -1,24 +1,27 @@
 :root {
   color-scheme: light;
-  /* Family Frame: semantic purple actions, readable neon accents, distinct danger. */
-  --paper: #ffffff;
-  --surface: #ffffff;
-  --surface-soft: #faf8fd;
-  --ink: #111111;
-  --ink-soft: #434349;
-  --muted: #63636b;
-  --line: #e4dfe9;
+  /* Mission Paper: warm planning surfaces and precise neon instrument accents. */
+  --paper: #f6f5f1;
+  --surface: #fffefa;
+  --surface-soft: #efeee8;
+  --ink: #202725;
+  --ink-soft: #424b47;
+  --muted: #626963;
+  --line: #d8dbd5;
   --line-strong: #92929b;
-  --primary: #8a00c4;
+  --primary: #b026ff;
+  --instrument: #071725;
+  --instrument-muted: #c5ced5;
+  --neon-green: #39ff14;
   --action: var(--primary);
-  --action-hover: #6d009c;
-  --action-ink: #7600a8;
-  --action-tint: #f3e8fb;
-  --cyan: #3bceff;
-  --cyan-ink: #00536e;
-  --cyan-tint: #e5f8ff;
-  --lime: #00f5a0;
-  --lime-ink: #006b49;
+  --action-hover: #9200de;
+  --action-ink: #8400c9;
+  --action-tint: #f1e7f7;
+  --cyan: #b026ff;
+  --cyan-ink: #202725;
+  --cyan-tint: #efeee8;
+  --lime: #39ff14;
+  --lime-ink: #285c28;
   --magenta: #ff5c5c;
   --magenta-ink: #a32929;
   --magenta-tint: #fff0f0;
@@ -32,7 +35,8 @@
   --green: var(--action);
   --green-light: var(--action-tint);
   --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-display: 'Plus Jakarta Sans', var(--font-body);
+  --font-display: var(--font-body);
+  --font-timer: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
   font-family: var(--font-body);
   color: var(--ink);
   background: var(--paper);

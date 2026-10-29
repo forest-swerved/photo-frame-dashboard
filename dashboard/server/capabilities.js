@@ -1,4 +1,5 @@
-import { randomInt, randomUUID } from 'node:crypto';
+import { randomBytes, randomInt, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
+import { promisify } from 'node:util';
 import { one, transaction } from './database.js';
 import { digest, keyedDigest, randomToken } from './credentials.js';
 import { requireAdmin, requireHousehold } from './auth.js';
@@ -98,7 +99,68 @@ export async function revokeFrameAccessAfterRecovery(db, userId) {
       UNION SELECT household_id FROM family_frame_authorizations WHERE created_by=$1 ORDER BY household_id`, [userId])).rows;
     for (const row of households) await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`frame-unlock:${row.household_id}:${userId}`]);
     await client.query('UPDATE family_frame_authorizations SET revoked_at=coalesce(revoked_at,now()) WHERE created_by=$1', [userId]);
+    await client.query('UPDATE family_members SET frame_pin_hash=NULL,frame_pin_salt=NULL,frame_pin_lookup=NULL,frame_pin_updated_at=now() WHERE user_id=$1', [userId]);
   });
+}
+
+const derivePin = promisify(scrypt);
+export async function parentPinHash(householdId, userId, pin, {env=process.env,salt=randomBytes(16).toString('hex')}={}) {
+  requireValue(typeof pin==='string' && /^\d{4}$/.test(pin),422,'invalid_parent_pin','Use a four-digit parent PIN.');
+  const value=await derivePin(keyedDigest('frame-parent-pin',`${householdId}:${userId}:${pin}`,env),salt,32,{N:16384,r:8,p:1,maxmem:64*1024*1024});
+  return {salt,hash:value.toString('hex')};
+}
+export async function parentPinSettings(db,principal,body,options={}) {
+  requireHousehold(principal);
+  requireValue(['user','mobile'].includes(principal.authType) && principal.role!=='child',403,'parent_required','Use your own signed-in parent account.');
+  const prepared=body?.pin!==undefined ? await parentPinHash(principal.household.id,principal.user.id,body.pin,options) : null;
+  return transaction(db,async client=>{
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`membership:${principal.user.id}`]);
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`frame-unlock:${principal.household.id}:${principal.user.id}`]);
+    await frameCodeIssuer(client,principal,'parent',null);
+    if(body!==undefined) {
+      const lookup=prepared ? keyedDigest('frame-parent-pin-lookup',`${principal.household.id}:${body.pin}`,options.env) : null;
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`parent-pin-lookup:${principal.household.id}:${lookup}`]);
+      requireValue(!lookup || !await one(client,'SELECT user_id FROM family_members WHERE household_id=$1 AND frame_pin_lookup=$2 AND user_id<>$3 AND revoked_at IS NULL',[principal.household.id,lookup,principal.user.id]),422,'parent_pin_in_use','Each parent needs a different PIN. Choose another four digits.');
+      requireValue(prepared || body.remove===true,422,'invalid_parent_pin','Enter your new four-digit PIN.');
+      await client.query('UPDATE family_members SET frame_pin_hash=$3,frame_pin_salt=$4,frame_pin_lookup=$5,frame_pin_updated_at=now() WHERE household_id=$1 AND user_id=$2',[principal.household.id,principal.user.id,prepared?.hash||null,prepared?.salt||null,lookup]);
+      await client.query('UPDATE family_frame_authorizations SET revoked_at=coalesce(revoked_at,now()) WHERE household_id=$1 AND created_by=$2',[principal.household.id,principal.user.id]);
+    }
+    const row=await one(client,'SELECT frame_pin_hash IS NOT NULL AS configured,frame_pin_updated_at FROM family_members WHERE household_id=$1 AND user_id=$2',[principal.household.id,principal.user.id]);
+    return {configured:row.configured,updatedAt:row.frame_pin_updated_at?.toISOString()||null};
+  });
+}
+export async function redeemParentPin(db,principal,body,{env=process.env,now=new Date()}={}) {
+  requireValue(principal.authType==='frame' && !principal.verifiedFrameGrant,403,'frame_required','Enter this PIN on the locked, paired frame.');
+  requireValue(typeof body.pin==='string' && /^\d{4}$/.test(body.pin),403,'invalid_parent_pin','That parent PIN is not valid.');
+  const lookup=keyedDigest('frame-parent-pin-lookup',`${principal.household.id}:${body.pin}`,env);
+  const selected=await one(db,'SELECT user_id FROM family_members WHERE household_id=$1 AND frame_pin_lookup=$2 AND revoked_at IS NULL',[principal.household.id,lookup]);
+  const result=await transaction(db,async client=>{
+    if(selected) {
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`membership:${selected.user_id}`]);
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`frame-unlock:${principal.household.id}:${selected.user_id}`]);
+    }
+    const frame=await one(client,'SELECT * FROM family_devices WHERE household_id=$1 AND id=$2 AND revoked_at IS NULL AND expires_at>$3 FOR UPDATE',[principal.household.id,principal.user.id,now]);
+    requireValue(frame,403,'frame_required','Pair this frame again.');
+    if(frame.parent_pin_locked_until && new Date(frame.parent_pin_locked_until)>now) return {error:'parent_pin_locked'};
+    const parent=selected && await one(client,`SELECT * FROM family_members m WHERE household_id=$1 AND user_id=$2 AND frame_pin_lookup=$3 AND revoked_at IS NULL
+      AND (role='admin' OR role='member' AND (manage_chores OR manage_internet))
+      AND NOT EXISTS(SELECT 1 FROM family_account_deletion_jobs d WHERE d.user_id=m.user_id::uuid) FOR UPDATE`,[principal.household.id,selected.user_id,lookup]);
+    const candidate=parent?.frame_pin_hash && await parentPinHash(principal.household.id,parent.user_id,body.pin,{env,salt:parent.frame_pin_salt});
+    const valid=candidate && /^[a-f0-9]{64}$/.test(parent.frame_pin_hash) && timingSafeEqual(Buffer.from(candidate.hash,'hex'),Buffer.from(parent.frame_pin_hash,'hex'));
+    if(!valid) {
+      const failures=frame.parent_pin_locked_until ? 1 : frame.parent_pin_failures+1;
+      await client.query('UPDATE family_devices SET parent_pin_failures=$3,parent_pin_locked_until=$4 WHERE household_id=$1 AND id=$2',[principal.household.id,principal.user.id,failures,failures>=5?new Date(+now+15*60_000):null]);
+      return {error:failures>=5?'parent_pin_locked':'invalid_parent_pin'};
+    }
+    const token=randomToken(),expiresAt=new Date(+now+10*60_000);
+    await client.query('UPDATE family_devices SET parent_pin_failures=0,parent_pin_locked_until=NULL WHERE household_id=$1 AND id=$2',[principal.household.id,principal.user.id]);
+    await client.query('UPDATE family_frame_authorizations SET revoked_at=$3 WHERE household_id=$1 AND frame_id=$2 AND revoked_at IS NULL',[principal.household.id,principal.user.id,now]);
+    await client.query(`INSERT INTO family_frame_authorizations(id,household_id,created_by,scope,person_id,frame_id,token_hash,redeemed_at,expires_at)
+      VALUES($1,$2,$3,'parent',NULL,$4,$5,$6,$7)`,[randomUUID(),principal.household.id,parent.user_id,principal.user.id,digest(token),now,expiresAt]);
+    return {token,scope:'parent',personId:null,parentName:parent.name,expiresAt:expiresAt.toISOString()};
+  });
+  requireValue(!result.error,result.error==='parent_pin_locked'?429:403,result.error||'invalid_parent_pin',result.error==='parent_pin_locked'?'Too many incorrect PINs. Parent PIN entry is locked for 15 minutes.':'That parent PIN is not valid.');
+  return result;
 }
 
 export async function createFrameAccessCode(db, principal, body, { env = process.env, now = new Date() } = {}) {

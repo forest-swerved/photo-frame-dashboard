@@ -58,10 +58,10 @@ test('frame home keeps both children, individual counts, fixed device panels and
     assert.equal((await f.page.locator('body').innerText()).includes('0 of 20'),false);
     await f.page.getByRole('button',{name:'Details for Family dinner',exact:true}).waitFor();
     await f.page.screenshot({path:'/tmp/family-frame-home-1280.png'});
-    const geometry=await f.page.evaluate(()=>({width:document.documentElement.scrollWidth, main:document.querySelector('.main-content').scrollHeight,bottom:document.querySelector('.frame-home-bottom').getBoundingClientRect().bottom,lists:[...document.querySelectorAll('.frame-person-tasks')].map(e=>({height:e.clientHeight,content:e.scrollHeight,bottom:e.getBoundingClientRect().bottom})),font:getComputedStyle(document.querySelector('.frame-person-card .chore-open strong')).fontSize}));
-    assert.equal(geometry.width,1280);assert.equal(geometry.main,800);assert.ok(geometry.bottom<=800,JSON.stringify(geometry));
-    assert.equal(await f.page.locator('.frame-device-time').count(),2);assert.equal(geometry.font,'20px');
-    assert.ok(geometry.lists.every(l=>l.height>400),JSON.stringify(geometry));
+    const geometry=await f.page.evaluate(()=>({width:document.documentElement.scrollWidth, main:document.querySelector('.main-content').scrollHeight,header:document.querySelector('.sidebar').getBoundingClientRect().height,bottom:document.querySelector('.frame-home-bottom').getBoundingClientRect().bottom,lists:[...document.querySelectorAll('.frame-person-tasks')].map(e=>({height:e.clientHeight,content:e.scrollHeight,bottom:e.getBoundingClientRect().bottom})),font:getComputedStyle(document.querySelector('.frame-person-card .chore-open strong')).fontSize}));
+    assert.equal(geometry.width,1280);assert.equal(geometry.main+geometry.header,800);assert.ok(geometry.bottom<=800,JSON.stringify(geometry));
+    assert.equal(await f.page.locator('.frame-device-time').count(),2);assert.equal(geometry.font,'22px');
+    assert.ok(geometry.lists.every(l=>l.height>350),JSON.stringify(geometry));
     await f.page.getByRole('button',{name:'Details for Family dinner',exact:true}).waitFor();
     await f.page.screenshot({path:'/tmp/family-frame-home-1280.png'});assert.deepEqual(f.state.errors,[]);
   }finally{await f.browser.close();}

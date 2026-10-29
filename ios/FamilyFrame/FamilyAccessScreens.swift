@@ -1,5 +1,41 @@
 import SwiftUI
 
+struct ParentPinStatus: Decodable { let configured: Bool; let updatedAt: String? }
+extension FamilyAPI {
+    func parentPin(pin: String?) async throws -> ParentPinStatus { throw APIError(status:503,code:"unsupported",message:"Parent PIN settings are unavailable.") }
+}
+
+struct ParentPinScreen: View {
+    @EnvironmentObject var model: AppModel
+    @State private var pin=""
+    @State private var confirm=""
+    @State private var configured=false
+    @State private var saving=false
+    @State private var message: String?
+    var body: some View {
+        Form {
+            Section {
+                Text("Enter your unique four-digit PIN on the family frame to unlock your parent controls for ten minutes.")
+                Text(configured ? "You have a parent PIN set." : "Set your parent PIN.").font(.subheadline.weight(.semibold))
+            }
+            Section("Set or change your PIN") {
+                SecureField("Four-digit PIN",text:$pin).keyboardType(.numberPad).textContentType(nil)
+                SecureField("Confirm PIN",text:$confirm).keyboardType(.numberPad).textContentType(nil)
+                Button("Save parent PIN") { Task { await save() } }.disabled(saving || pin.count != 4 || !pin.allSatisfy(\.isASCII) || !pin.allSatisfy(\.isNumber) || pin != confirm || model.isStale)
+                if saving {ProgressView("Saving…")}
+            }
+            if let message {Section {Text(message)}}
+        }.navigationTitle("Your parent PIN").navigationBarTitleDisplayMode(.inline)
+            .task {do {configured=try await model.parentPin().configured}catch{message=error.localizedDescription}}
+            .onDisappear {pin="";confirm=""}
+    }
+    private func save() async {
+        saving=true;message=nil;defer{saving=false;pin="";confirm=""}
+        do {configured=try await model.parentPin(pin).configured;message="Your parent PIN was saved."}
+        catch {message="PIN save was not confirmed. Refresh these settings before trying again."}
+    }
+}
+
 struct FrameAccessCode: Decodable {
     let code: String
     let scope: String
@@ -27,6 +63,9 @@ struct FrameAccessScreen: View {
     @State private var error: String?
     var body: some View {
         List {
+            if model.canManageChores || model.canManageInternet {
+                Section("Parent PIN") {NavigationLink("Set or change your four-digit PIN") {ParentPinScreen()}}
+            }
             Section {
                 Text("Unlock protected controls on the shared frame using a short code from your own account.").font(.subheadline)
                 if model.canManageInternet {

@@ -40,14 +40,14 @@ for (const [role,width,height] of [['frame',1280,800],['admin',390,844],['child'
       });
       await page.goto(new URL(`/family.html${role==='frame'?'?display=frame':''}#today`,origin).href);
       await page.locator(role==='frame'?'.frame-device-time':'.home-internet-strip').first().waitFor();
-      const layout=await page.evaluate(()=>({width:innerWidth,document:document.documentElement.scrollWidth,mainHeight:document.querySelector('.main-content').scrollHeight,
+      const layout=await page.evaluate(()=>({width:innerWidth,document:document.documentElement.scrollWidth,mainHeight:document.querySelector('.main-content').scrollHeight,headerHeight:document.querySelector('.sidebar').getBoundingClientRect().height,
         stripBottom:document.querySelector('.frame-device-time,.home-internet-strip').getBoundingClientRect().bottom,
         primary:getComputedStyle(document.documentElement).getPropertyValue('--primary').trim(),
         list:document.querySelector('.frame-person-tasks,.home-task-list').getBoundingClientRect().top}));
-      assert.equal(layout.document,width,JSON.stringify(layout)); assert.equal(layout.primary,'#8a00c4');
+      assert.equal(layout.document,width,JSON.stringify(layout)); assert.equal(layout.primary,'#b026ff');
       assert.equal(await page.locator('nav .nav-item').count(),role==='frame'?4:5);
       if(role==='frame') {
-        assert.equal(layout.mainHeight,height,JSON.stringify(layout)); assert.ok(layout.stripBottom<=height,JSON.stringify(layout));
+        assert.equal(layout.mainHeight+layout.headerHeight,height,JSON.stringify(layout)); assert.ok(layout.stripBottom<=height,JSON.stringify(layout));
         assert.equal(await page.getByRole('button',{name:'Unlock to review',exact:true}).count(),1);
         assert.equal(await page.getByLabel('Filter by family profile').count(),0);
         assert.equal(await page.locator('.frame-person-card').count(),4);

@@ -576,6 +576,12 @@ final class AppModel: ObservableObject {
         do { let result = try await api.members(); guard started == generation else { throw CancellationError() }; return result }
         catch { guard started == generation else { throw CancellationError() }; throw error }
     }
+    func parentPin(_ pin: String? = nil) async throws -> ParentPinStatus {
+        guard session != nil, session?.isChild != true, !isStale, canManageChores || canManageInternet else { throw APIError(status:403,code:"parent_required",message:"Use your own current parent account.") }
+        let started=generation
+        do { let result=try await api.parentPin(pin:pin);guard started==generation else {throw CancellationError()};return result }
+        catch {guard started==generation else {throw CancellationError()};throw error}
+    }
     func changeCaregiver(_ id: String, capabilities: ParentCapabilities) async -> Bool {
         guard isAdmin, !isStale else { return false }; let started = generation
         do { _ = try await api.changeMemberCapabilities(id, capabilities: capabilities); return started == generation }
