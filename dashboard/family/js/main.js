@@ -45,6 +45,10 @@ let queuedCalendar = null;
 let calendarGeneration = 0;
 let paintedView = null;
 let pointerActive = false;
+let pendingTaskDetails = false;
+const activePointers = new Set();
+const taskPointerIntents = new Map();
+const taskKeyIntents = new Map();
 const frameEvents = createFrameEventNotices(document.querySelector('#frame-event-notice'));
 function tickFrameEvents() {
   frameEvents.update({ session: S.booting ? null : S.session, calendar: S.frameCalendar, timezone: zone(),
@@ -106,7 +110,7 @@ function people() { return S.snapshot?.people || []; }
 function person(id) { return people().find(item => item.id === id); }
 function idPath(id) { return encodeURIComponent(id); }
 function errorMessage(error) { return error?.message || 'Something went wrong. Please try again.'; }
-function edited() { return pointerActive || dialog.open || !!document.activeElement?.closest('form') || !!document.querySelector('form[data-submitting]'); }
+function edited() { return pointerActive || taskKeyIntents.size > 0 || dialog.open || !!document.activeElement?.closest('form') || !!document.querySelector('form[data-submitting]'); }
 function toast(message) {
   clearTimeout(noticeTimer);
   notice.textContent = message;
@@ -196,6 +200,13 @@ function eventList(date, limit = Infinity) {
 
 function scheduledChores() { return scheduledItems(S.snapshot, zone()) || orderChores((S.snapshot?.chores || []).filter(chore => chore.weekdays.includes(weekday(S.snapshot.date))), S.snapshot?.date || today(), zone()); }
 function done(chore) { return chore.status ? chore.status === 'completed' : chore.completion?.date === S.snapshot?.date && chore.completion.completed === true; }
+function taskIntentAttributes(chore) {
+  return `data-task-date="${h(S.snapshot.date)}" data-task-version="${chore.status ? chore.version : chore.completion?.version || 0}" data-task-kind="${chore.status ? 'occurrence' : 'routine'}" data-task-completed="${chore.status !== 'submitted' && !done(chore)}"`;
+}
+function taskIntent(element) {
+  return { epoch:generation, id:element.dataset.id, date:element.dataset.taskDate,
+    version:Number(element.dataset.taskVersion), kind:element.dataset.taskKind, completed:element.dataset.taskCompleted === 'true' };
+}
 function choreRow(chore, showPerson = true, glance = false) {
   const key = `${chore.id}:${S.snapshot.date}`, pending = S.pending.has(key), conflict = S.conflicts.has(key), failure = S.failures.get(key);
   const historical = chore.status === 'skipped' || taskGroups([chore], S.snapshot?.schoolDay).history.length > 0;
@@ -203,7 +214,7 @@ function choreRow(chore, showPerson = true, glance = false) {
   const deadline = !historical && !done(chore) && chore.status !== 'submitted' && chore.dueTime ? `${urgency === 'overdue' ? 'Overdue · ' : urgency === 'soon' ? 'Due soon · ' : ''}Due ${timeLabel(chore.dueTime)}` : '';
   const status = historical ? 'Earlier schedule / excused' : completionLabel(chore);
   const secondary = !glance || historical || done(chore) || chore.status === 'submitted' || chore.required === false || deadline || chore.subtasks?.length;
-  return `<div class="chore-row compact-task ${done(chore) ? 'is-done' : ''} ${pending ? 'is-pending' : ''} ${chore.status === 'submitted' ? 'is-submitted' : ''} ${historical ? 'is-historical' : ''} is-${urgency}" data-key="chore-${h(key)}"><button type="button" class="chore-toggle" data-action="complete-chore" data-id="${h(chore.id)}" aria-pressed="${chore.status === 'submitted' || done(chore)}" aria-label="${chore.status === 'submitted' ? 'Withdraw submission for' : done(chore) ? 'Reopen' : chore.requiresApproval && !choreManager() ? 'Submit for approval:' : 'Complete'} ${h(chore.title)}${deadline ? `. ${h(deadline)}` : ''}" ${pending || historical ? 'aria-disabled="true"' : ''} ${pending ? 'aria-busy="true"' : ''}><span class="check-box" aria-hidden="true">${done(chore) ? '✓' : chore.status === 'submitted' ? '…' : historical ? '–' : ''}</span></button><button type="button" class="chore-open" data-action="task-details" data-id="${h(chore.id)}" aria-label="Details for ${h(chore.title)}"><strong>${h(chore.title)}</strong>${secondary ? `<small>${showPerson ? `${h(profileLabel(chore.personId))} · ` : ''}<span class="task-state">${h(status)}</span>${deadline ? ` · <span class="chore-deadline">${h(deadline)}</span>` : ''}${chore.subtasks?.length ? ` · ${chore.subtasks.filter(step => step.completed).length}/${chore.subtasks.length} steps` : ''}</small>` : ''}${pending ? '<small class="save-status">Saving…</small>' : ''}</button>${chore.status === 'submitted' && choreManager() ? button('Review', 'task-details', 'text-button', `data-id="${h(chore.id)}"`) : '<span class="row-chevron" aria-hidden="true">›</span>'}${conflict ? `<div class="write-feedback" role="alert">Changed on another device. The latest state is shown. ${button('Retry my change', 'retry-completion', 'text-button', `data-id="${h(chore.id)}"`)}</div>` : failure ? `<div class="write-feedback" role="alert">${h(failure)} ${button('Retry', 'retry-completion', 'text-button', `data-id="${h(chore.id)}"`)}</div>` : ''}</div>`;
+  return `<div class="chore-row compact-task ${done(chore) ? 'is-done' : ''} ${pending ? 'is-pending' : ''} ${chore.status === 'submitted' ? 'is-submitted' : ''} ${historical ? 'is-historical' : ''} is-${urgency}" data-key="chore-${h(key)}"><button type="button" class="chore-toggle" data-action="complete-chore" data-id="${h(chore.id)}" ${taskIntentAttributes(chore)} aria-pressed="${chore.status === 'submitted' || done(chore)}" aria-label="${chore.status === 'submitted' ? 'Withdraw submission for' : done(chore) ? 'Reopen' : chore.requiresApproval && !choreManager() ? 'Submit for approval:' : 'Complete'} ${h(chore.title)}${deadline ? `. ${h(deadline)}` : ''}" ${pending || historical ? 'aria-disabled="true"' : ''} ${pending ? 'aria-busy="true"' : ''}><span class="check-box" aria-hidden="true">${done(chore) ? '✓' : chore.status === 'submitted' ? '…' : historical ? '–' : ''}</span></button><button type="button" class="chore-open" data-action="task-details" data-id="${h(chore.id)}" aria-label="Details for ${h(chore.title)}"><strong>${h(chore.title)}</strong>${secondary ? `<small>${showPerson ? `${h(profileLabel(chore.personId))} · ` : ''}<span class="task-state">${h(status)}</span>${deadline ? ` · <span class="chore-deadline">${h(deadline)}</span>` : ''}${chore.subtasks?.length ? ` · ${chore.subtasks.filter(step => step.completed).length}/${chore.subtasks.length} steps` : ''}</small>` : ''}${pending ? '<small class="save-status">Saving…</small>' : ''}</button>${chore.status === 'submitted' && choreManager() ? button('Review', 'task-details', 'text-button', `data-id="${h(chore.id)}"`) : '<span class="row-chevron" aria-hidden="true">›</span>'}${conflict ? `<div class="write-feedback" role="alert">Changed on another device. The latest state is shown. ${button('Retry my change', 'retry-completion', 'text-button', `data-id="${h(chore.id)}"`)}</div>` : failure ? `<div class="write-feedback" role="alert">${h(failure)} ${button('Retry', 'retry-completion', 'text-button', `data-id="${h(chore.id)}"`)}</div>` : ''}</div>`;
 }
 
 function taskListMarkup(items, showPerson = true, profileId, limit = Infinity) {
@@ -237,10 +248,12 @@ function todayAgenda() {
 }
 function taskDetailContents(chore) {
   const historical = taskGroups([chore], S.snapshot?.schoolDay).history.length > 0;
-  return `<p class="supporting">${h(profileLabel(chore.personId))} · ${h(completionLabel(chore))}</p>${occurrenceDetails(chore,choreManager(),S.pending.has(`${chore.id}:${S.snapshot.date}`),S.snapshot.schoolDay)}${!historical && !(chore.status === 'submitted' && choreManager()) ? button(chore.status === 'submitted' ? 'Withdraw submission' : done(chore) ? 'Reopen task' : chore.requiresApproval && !choreManager() ? 'Submit for approval' : 'Mark task done','complete-chore','button',`data-id="${h(chore.id)}"`) : ''}${choreManager() ? button('Edit routine','edit-chore','text-button',`data-id="${h(chore.choreId || chore.id)}"`) : ''}`;
+  return `<p class="supporting">${h(profileLabel(chore.personId))} · ${h(completionLabel(chore))}</p>${occurrenceDetails(chore,choreManager(),S.pending.has(`${chore.id}:${S.snapshot.date}`),S.snapshot.schoolDay)}${!historical && !(chore.status === 'submitted' && choreManager()) ? button(chore.status === 'submitted' ? 'Withdraw submission' : done(chore) ? 'Reopen task' : chore.requiresApproval && !choreManager() ? 'Submit for approval' : 'Mark task done','complete-chore','button',`data-id="${h(chore.id)}" ${taskIntentAttributes(chore)}`) : ''}${choreManager() ? button('Edit routine','edit-chore','text-button',`data-id="${h(chore.choreId || chore.id)}"`) : ''}`;
 }
 function refreshTaskDetails() {
-  if (!dialog.open || !dialog.dataset.taskId) return;
+  if (!dialog.open || !dialog.dataset.taskId) { pendingTaskDetails = false; return; }
+  if (pointerActive || taskKeyIntents.size) { pendingTaskDetails = true; return; }
+  pendingTaskDetails = false;
   const chore = scheduledChores().find(item=>item.id===dialog.dataset.taskId);
   if (!chore) return;
   const body=dialog.querySelector('.dialog-body');
@@ -712,7 +725,7 @@ const forms = {
   'create-child-invite': async form => { S.generatedInvite = await request('/api/invites', { method: 'POST', body: { role: 'child', personId: form.get('personId'), email: form.get('email').trim() } }); toast('Child invitation created. Share the link privately.'); render(true); },
 };
 
-async function action(name, element) {
+async function action(name, element, activation) {
   const id = element.dataset.id;
   if (await workbench.action(name, element)) return;
   if (await internet.action(name, element)) return;
@@ -766,7 +779,15 @@ async function action(name, element) {
     const chore = scheduledChores().find(item => item.id === id);
     if (!chore) return;
     const key = `${id}:${S.snapshot.date}`;
-    const desired = name === 'retry-completion' ? (S.conflicts.has(key) ? S.conflicts.get(key) : S.attempts.get(key)?.completed) : chore.status === 'submitted' ? false : !done(chore);
+    const intent = name === 'complete-chore' ? activation || taskIntent(element) : null;
+    // Never turn a visibly requested Complete into Reopen (or vice versa), or
+    // borrow a newer version after a background read while the user is pressing.
+    if (intent && (intent.epoch !== generation || intent.id !== id || intent.date !== S.snapshot.date || intent.date !== today()
+      || intent.kind !== (chore.status ? 'occurrence' : 'routine')
+      || intent.version !== (chore.status ? chore.version : chore.completion?.version || 0))) {
+      toast('This task changed. Check its latest status before changing it.'); render(); refreshTaskDetails(); return;
+    }
+    const desired = intent ? intent.completed : (S.conflicts.has(key) ? S.conflicts.get(key) : S.attempts.get(key)?.completed);
     return saveCompletion(chore, desired);
   }
   if (name === 'delete-person') {
@@ -815,15 +836,51 @@ app.addEventListener('submit', event => { const run = forms[event.target.dataset
 document.addEventListener('click', event => {
   const element = event.target.closest('[data-action]');
   if (!element || element.disabled || element.getAttribute('aria-disabled') === 'true') return;
-  action(element.dataset.action, element).catch(error => toast(errorMessage(error)));
+  let activation;
+  if (element.dataset.action === 'complete-chore') {
+    const press = taskPointerIntents.get(event.pointerId);
+    taskPointerIntents.delete(event.pointerId);
+    if (press && press.element !== element) return;
+    activation = press?.intent || taskKeyIntents.get(element) || taskIntent(element);
+    taskKeyIntents.delete(element);
+  }
+  action(element.dataset.action, element, activation).catch(error => toast(errorMessage(error)));
 });
 dialog.addEventListener('close', () => { if (dialog.open) return; dialog.innerHTML = ''; if (pendingRender) render(); });
 document.addEventListener('focusout', () => setTimeout(() => { if (pendingRender && !edited()) render(); }, 150));
-document.addEventListener('pointerdown', event => { if (app.contains(event.target)) pointerActive = true; }, { passive: true });
-for (const name of ['pointerup', 'pointercancel']) document.addEventListener(name, () => {
-  pointerActive = false;
-  setTimeout(() => { if (pendingRender && !edited()) render(); }, 100);
+document.addEventListener('pointerdown', event => {
+  if (!app.contains(event.target) && !dialog.contains(event.target)) return;
+  activePointers.add(event.pointerId); pointerActive = true;
+  const element = event.target.closest('[data-action="complete-chore"]');
+  if (element) taskPointerIntents.set(event.pointerId, { element, intent:taskIntent(element) });
 }, { passive: true });
+for (const name of ['pointerup', 'pointercancel']) document.addEventListener(name, event => {
+  activePointers.delete(event.pointerId); pointerActive = activePointers.size > 0;
+  const press = taskPointerIntents.get(event.pointerId);
+  if (name === 'pointercancel') taskPointerIntents.delete(event.pointerId);
+  setTimeout(() => {
+    if (taskPointerIntents.get(event.pointerId) === press) taskPointerIntents.delete(event.pointerId);
+    if (pendingRender && !edited()) render(); if (pendingTaskDetails) refreshTaskDetails();
+  }, 100);
+}, { passive: true });
+document.addEventListener('keydown', event => {
+  const element = event.target.closest('[data-action="complete-chore"]');
+  if (!element || !['Enter',' '].includes(event.key)) return;
+  if (event.repeat) { event.preventDefault(); return; }
+  taskKeyIntents.set(element, taskIntent(element));
+});
+document.addEventListener('keyup', event => {
+  if (!['Enter',' '].includes(event.key)) return;
+  const presses = [...taskKeyIntents];
+  setTimeout(() => {
+    for (const [element,intent] of presses) if (taskKeyIntents.get(element) === intent) taskKeyIntents.delete(element);
+    if (pendingRender && !edited()) render(); if (pendingTaskDetails) refreshTaskDetails();
+  }, 100);
+});
+window.addEventListener('blur', () => {
+  activePointers.clear(); taskPointerIntents.clear(); taskKeyIntents.clear(); pointerActive = false;
+  if (pendingRender && !edited()) render(); if (pendingTaskDetails) refreshTaskDetails();
+});
 window.addEventListener('hashchange', () => {
   const next = location.hash.slice(1);
   if (!views.includes(next)) return;

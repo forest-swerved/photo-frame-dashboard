@@ -66,6 +66,45 @@ test('frame home keeps both children, individual counts, fixed device panels and
     await f.page.screenshot({path:'/tmp/family-frame-home-1280.png'});assert.deepEqual(f.state.errors,[]);
   }finally{await f.browser.close();}
 });
+for (const mode of ['pointer','keyboard','details']) test(`a completion arriving during a held Complete press cannot turn that press into Reopen (${mode})`, {skip:!base},async()=>{
+  const f=await fixture();try{
+    await f.page.clock.runFor(2000);
+    if(mode==='details') await f.page.getByRole('button',{name:'Details for Get dressed',exact:true}).first().click();
+    const target=mode==='details'?f.page.getByRole('button',{name:'Mark task done',exact:true}):f.page.getByRole('button',{name:'Complete Get dressed',exact:true}).first();
+    if(mode==='keyboard') {await target.focus();await f.page.keyboard.down('Space');}
+    else {const bounds=await target.boundingBox();await f.page.mouse.move(bounds.x+bounds.width/2,bounds.y+bounds.height/2);await f.page.mouse.down();}
+    const task=f.state.tasks[0];task.status='completed';task.version++;task.completion={date:task.date,completed:true,version:1};
+    f.state.revisions={household:'changed-while-pressed'};
+    const read=f.page.waitForResponse(r=>new URL(r.url()).pathname==='/api/household');
+    await f.page.clock.runFor(2000);await read;await f.page.clock.runFor(50);
+    if(mode==='details') assert.equal(await target.innerText(),'Mark task done');
+    else assert.equal(await target.getAttribute('aria-pressed'),'false','The visible button stays Complete until activation.');
+    if(mode==='keyboard') await f.page.keyboard.up('Space');else await f.page.mouse.up();
+    await f.page.clock.runFor(150);
+    await f.page.getByRole('button',{name:mode==='details'?'Reopen task':'Reopen Get dressed',exact:true}).waitFor();
+    assert.deepEqual(f.state.writes,[],'A stale Complete press must not submit an undo or borrow the newest version.');
+    assert.equal(task.status,'completed');assert.deepEqual(f.state.errors,[]);
+  }finally{await f.browser.close();}
+});
+
+test('a second finger keeps task rows steady when the first finger lifts', {skip:!base},async()=>{
+  const f=await fixture();try{
+    await f.page.clock.runFor(2000);
+    const targets=f.page.getByRole('button',{name:'Complete Get dressed',exact:true});
+    await targets.nth(0).dispatchEvent('pointerdown',{pointerId:11,pointerType:'touch'});
+    await targets.nth(1).dispatchEvent('pointerdown',{pointerId:12,pointerType:'touch'});
+    await targets.nth(0).dispatchEvent('pointerup',{pointerId:11,pointerType:'touch'});
+    const task=f.state.tasks.find(t=>t.personId==='frame-andre');task.status='completed';task.version++;task.completion={date:task.date,completed:true,version:1};
+    f.state.revisions={household:'changed-with-second-finger-down'};
+    const read=f.page.waitForResponse(r=>new URL(r.url()).pathname==='/api/household');
+    await f.page.clock.runFor(2000);await read;await f.page.clock.runFor(150);
+    assert.equal(await targets.count(),2,'A household refresh must wait until every finger has lifted.');
+    await targets.nth(1).dispatchEvent('pointercancel',{pointerId:12,pointerType:'touch'});
+    await f.page.clock.runFor(150);await f.page.getByRole('button',{name:'Reopen Get dressed',exact:true}).waitFor();
+    assert.deepEqual(f.state.writes,[]);assert.deepEqual(f.state.errors,[]);
+  }finally{await f.browser.close();}
+});
+
 test('each child completes independently and frame home ignores the Tasks profile filter', {skip:!base},async()=>{
   const f=await fixture();try{
     const stevie=f.page.locator('[data-person-id="frame-stevie"]'),andre=f.page.locator('[data-person-id="frame-andre"]');
