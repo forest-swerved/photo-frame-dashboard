@@ -70,7 +70,7 @@ test('private APNs mode includes only an opaque notification ID', () => {
   assert.deepEqual(Object.keys(payload).sort(), ['aps', 'notificationId']);
   assert.equal(payload.aps.alert.title, 'Family Frame');
   assert.equal(JSON.stringify(payload).includes('choreId'), false);
-  assert.deepEqual(notificationText({ type: 'chore_completed', payload: { title: 'Private chore title' } }), ['Task completed', 'Your child completed Private chore title.']);
+  assert.deepEqual(notificationText({ type: 'chore_completed', payload: { title: 'Private chore title' } }), ['Your child finished a task', "Private chore title · Marked done. Open Tasks to see today's progress."]);
 });
 
 test('APNs distinguishes provider acceptance from retries, invalid tokens, and exhausted attempts', () => {
@@ -205,12 +205,12 @@ test('daily task reminder slots follow school classification, local timezone and
 test('detailed push alerts identify the family action while navigation uses an opaque ID', () => {
   const event = { type: 'access_granted', payload: { actorName: 'Forest', personName: 'Andre', deviceName: 'PS5', minutes: 60 } };
   const detailed = lockScreenPayload('opaque-id', event);
-  assert.equal(detailed.aps.alert.body, 'Forest granted Andre 1 hour access to PS5. Access is being confirmed.');
+  assert.equal(detailed.aps.alert.body, 'Forest granted Andre 1 hour access to PS5. Network confirmation is pending.');
   assert.equal(detailed.notificationId, 'opaque-id');
-  assert.deepEqual(Object.keys(detailed).sort(), ['aps','notificationId']);
-  assert.match(notificationText({ type: 'chore_completed', payload: { personName: 'Andre', title: 'Dishes' } })[1], /Andre completed Dishes/);
-  assert.match(notificationText({ type: 'session_started', payload: { personName: 'Andre', deviceName: 'PS5', source: 'reward' } })[1], /Andre is using earned time on PS5/);
-  assert.match(notificationText({ type: 'access_requested', payload: { personName: 'Andre', deviceName: 'PS5', minutes: 45, reason: 'Play with friends' } })[1], /45 minutes access to PS5.*Play with friends/);
+  assert.deepEqual(Object.keys(detailed).sort(), ['aps','artwork','notificationId']);
+  assert.match(notificationText({ type: 'chore_completed', payload: { personName: 'Andre', title: 'Dishes' } })[1], /Dishes.*Marked done/);
+  assert.match(notificationText({ type: 'session_started', payload: { personName: 'Andre', deviceName: 'PS5', source: 'reward' } })[1], /PS5.*earned/);
+  assert.match(notificationText({ type: 'access_requested', payload: { personName: 'Andre', deviceName: 'PS5', minutes: 45, reason: 'Play with friends' } })[1], /PS5.*45 minutes.*Play with friends/);
   for (const key of ['showDetails','taskReminders','dailyCompleted','accessRequests']) {
     assert.equal(preferencesDto(null, 'America/Denver')[key], true);
     assert.equal(validatePreferences({ [key]: false }, preferencesDto(null, 'America/Denver'))[key], false);

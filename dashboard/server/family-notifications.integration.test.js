@@ -70,10 +70,10 @@ test('family reminder, approval and recipient workflows against isolated Postgre
       const at = new Date('2026-10-26T13:01Z');
       await setOccurrenceCompletion(db, accounts.child,row.id,{ completed:true,expectedVersion:row.version,mutationId:randomUUID() },{now:at,onChange:(c,event)=>syncChoreReward(c,event,{now:at})});
       await run(at);
-      assert.ok(send.every(s=>s.payload.aps.alert.title!=='You have tasks to complete'));
+      assert.ok(send.every(s=>s.payload.aps.category!=='FAMILY_TASK' || !s.payload.aps.alert.title.includes('tasks left')));
       for (const who of ['dad','mom']) {
         const entries=await inbox(who); assert.equal(entries.filter(x=>x.kind==='daily_tasks_completed').length,1);
-        assert.ok(entries.some(x=>x.body==='Andre completed Dishes.'));
+        assert.ok(entries.some(x=>x.title==='Andre finished a task' && /Dishes.*Marked done/.test(x.body)));
       }
       assert.equal((await inbox('child')).filter(x=>x.kind==='daily_tasks_completed').length,0);
       await internetSnapshot(db,accounts.child,{env,now:at}); await run('2026-10-26T22:00Z');
@@ -89,7 +89,7 @@ test('family reminder, approval and recipient workflows against isolated Postgre
       await assert.rejects(requestDeviceAccess(db,accounts.dad,body,{now:morning}),e=>e.status===403);
       await assert.rejects(requestDeviceAccess(db,accounts.child,{...body,minutes:0},{now:morning}),e=>e.code==='invalid_duration');
       await run('2026-10-26T13:01Z');
-      for (const who of ['dad','mom']) assert.ok((await inbox(who)).some(x=>x.body.includes('Andre requested 1 hour access to PS5. Reason: Play with friends')));
+      for (const who of ['dad','mom']) assert.ok((await inbox(who)).some(x=>x.title==='Andre requested device time' && /PS5.*1 hour.*Play with friends/.test(x.body)));
       assert.equal((await inbox('child')).length,0); assert.equal((await inbox('sibling')).length,0);
       assert.equal((await internetSnapshot(db,accounts.sibling,{env,now:morning})).requests.length,0);
       await assert.rejects(decideDeviceAccess(db,accounts.dad,request.id,{action:'approve',expectedVersion:1,mutationId:randomUUID()},{env,now:morning}),e=>e.code==='network_not_ready');

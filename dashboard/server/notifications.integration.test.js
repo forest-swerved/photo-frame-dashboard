@@ -8,6 +8,7 @@ import { createChore, householdSnapshot, setCompletion } from './household.js';
 import { authenticateMobile, createMobileSession, createMobilePair, redeemMobilePair } from './mobile.js';
 import { markNotificationRead, notificationInbox, notificationPreferences, processNotifications, registerPush, sendTestNotification } from './notifications.js';
 import { dispatch } from './app.js';
+import { notificationPreviewPayload } from './notification-content.js';
 
 const enabled = Boolean(process.env.FAMILY_RUN_DB_TESTS === '1' && process.env.DATABASE_URL);
 test('isolated PostgreSQL mobile notification authorization, outbox, and deadline races', { skip: !enabled, timeout: 360_000 }, async t => {
@@ -88,7 +89,7 @@ test('isolated PostgreSQL mobile notification authorization, outbox, and deadlin
       assert.equal((await response.json()).data.accepted, true);
       assert.equal(messages[0].token, 'b'.repeat(64));
       assert.equal(messages[0].environment, 'sandbox');
-      assert.deepEqual(messages[0].payload, { aps: { alert: { title: 'Family Frame test', body: 'Your test notification arrived successfully.' }, sound: 'default' } });
+      assert.deepEqual(messages[0].payload, notificationPreviewPayload());
       for (let i = 0; i < 2; i++) await sendTestNotification(db, principals.childA, options);
       await assert.rejects(sendTestNotification(db, principals.childA, options), error => error.status === 429);
       assert.equal(messages.length, 3);

@@ -7,6 +7,19 @@ extension Notification.Name {
     static let familyNotificationOpened = Notification.Name("FamilyFrame.notificationOpened")
 }
 
+enum FamilyNotificationCategories {
+    static let all: Set<UNNotificationCategory> = Set([
+        ("FAMILY_TASK", "View tasks"), ("FAMILY_INTERNET", "Manage time"),
+        ("FAMILY_ACCESS_REQUEST", "Review request"), ("FAMILY_REWARD", "View rewards"),
+        ("FAMILY_UPDATE", "Open Family Frame"), ("FAMILY_PREVIEW", "Open Family Frame")
+    ].map { identifier, title in
+        UNNotificationCategory(identifier: identifier, actions: [
+            // Every action opens the authenticated inbox. No lock-screen action can change a task or network rule.
+            UNNotificationAction(identifier: "FAMILY_OPEN", title: title, options: [.foreground, .authenticationRequired])
+        ], intentIdentifiers: [], options: [])
+    })
+}
+
 @MainActor
 final class NotificationController: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     static let shared = NotificationController()
@@ -21,6 +34,7 @@ final class NotificationController: NSObject, ObservableObject, UNUserNotificati
     }
     func prepare() {
         UNUserNotificationCenter.current().delegate = self
+        UNUserNotificationCenter.current().setNotificationCategories(FamilyNotificationCategories.all)
         Task { await refreshStatus() }
     }
     func refreshStatus() async {
