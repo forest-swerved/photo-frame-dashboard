@@ -51,7 +51,7 @@ struct PersonOccurrencesCard: View {
     private var personTitle: some View { Text(person?.name ?? "Family tasks").font(.title2.bold()).accessibilityAddTraits(.isHeader) }
     private func progress(_ required: [ChoreOccurrence]) -> some View {
         Text(required.isEmpty ? "No required tasks" : "\(required.filter(\.isDone).count)/\(required.count) required")
-            .font(.subheadline.weight(.semibold)).monospacedDigit().padding(.horizontal, 12).padding(.vertical, 6).background(Brand.mint, in: Capsule()).foregroundStyle(Brand.ink)
+            .font(.system(.subheadline,design:.monospaced).weight(.semibold)).monospacedDigit().padding(.vertical,4).foregroundStyle(Brand.ink)
     }
 }
 

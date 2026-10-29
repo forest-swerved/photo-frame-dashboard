@@ -11,7 +11,7 @@ import { createMobileSession, createMobilePair, redeemMobilePair, mobileSessionD
 import { registerPush, sendTestNotification, notificationPreferences, notificationInbox, markNotificationRead, markAllNotificationsRead, processNotifications } from './notifications.js';
 import { preflightApns } from './apns.js';
 import { setOccurrenceCompletion, changeChoreOccurrence, choreHistory, choreExceptions, createChoreException, revokeChoreException } from './chore-occurrences.js';
-import { parentCapabilities, changeMemberCapabilities, createFrameAccessCode, redeemFrameAccess, frameAuthorization, transferOwnership } from './capabilities.js';
+import { parentCapabilities, changeMemberCapabilities, createFrameAccessCode, redeemFrameAccess, frameAuthorization, transferOwnership, parentPinSettings, redeemParentPin } from './capabilities.js';
 import { deleteAccount } from './account-deletion.js';
 import { internetSnapshot, saveRewardPolicy, saveManagedDevice, changeDeviceAccess, startInternetSession, changeInternetSession, internetHistory, syncChoreReward, resolveRewardReview, requestDeviceAccess, decideDeviceAccess } from './internet.js';
 import { processInternetJobs } from './internet-worker.js';
@@ -54,6 +54,11 @@ export async function dispatch(request, db, principal, route, options = {}) {
   if (principal.role === 'member' && /^(household|chores|chore-occurrences|chore-exceptions|chore-history|school-calendar)(\/|$)/.test(route)) principal = { ...principal, verifiedCapabilities: await parentCapabilities(db, principal) };
   options = { ...options, choreOptions: { ...options.choreOptions, onChange: options.choreOptions?.onChange || ((client, change) => syncChoreReward(client, change)) } };
   if (route === 'frame-access-codes' && method === 'POST') return json(await createFrameAccessCode(db, principal, await readJson(request), options), 201);
+  if (route === 'parent-pin' && ['GET','PUT','DELETE'].includes(method)) return json(await parentPinSettings(db,principal,method==='GET'?undefined:method==='DELETE'?{remove:true}:await readJson(request),options));
+  if (route === 'frame-access/pin' && method==='POST') {
+    await enforcePairRateLimit(db,request,options.env);
+    return json(await redeemParentPin(db,principal,await readJson(request),options));
+  }
   if (route === 'frame-access/redeem' && method === 'POST') {
     await enforcePairRateLimit(db, request, options.env);
     return json(await redeemFrameAccess(db, principal, await readJson(request), options));

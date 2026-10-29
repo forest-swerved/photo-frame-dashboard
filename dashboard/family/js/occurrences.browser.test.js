@@ -19,7 +19,7 @@ async function fixture({ role = 'admin', frame = false, signedOut = false, width
     const body = ['POST', 'PUT', 'PATCH'].includes(method) ? req.postDataJSON() : null;
     state.calls.push({ path: url.pathname, method, body, headers: req.headers(), query: url.search });
     let data;
-    const activeRole = frame ? state.grant && req.headers()['x-family-authorization'] === 'fixture-private-grant' ? 'caregiver' : 'frame' : role;
+    const activeRole = frame ? state.grant && ['fixture-private-grant','fixture-pin-grant'].includes(req.headers()['x-family-authorization']) ? 'caregiver' : 'frame' : role;
     if (url.pathname === '/api/session') {
       if (signedOut) { await route.fulfill({ status: 401, contentType: 'application/json', body: '{"error":{"message":"Signed out"}}' }); return; }
       data = { authType: frame ? 'frame' : 'user', role: activeRole, personId: role === 'child' ? person.id : null, household: home, user: { id: 'fixture-user', name: 'Synthetic account' } };
@@ -47,6 +47,7 @@ async function fixture({ role = 'admin', frame = false, signedOut = false, width
     else if (url.pathname.endsWith('/read')) { state.notificationRead = true; data = { read: true }; }
     else if (url.pathname === '/api/notification-preferences') data = method === 'GET' ? { pushEnabled: true, choreCompleted: true, choreReopened: true, choreDueSoon: true, choreOverdue: true, rewards: true, internetSessions: true, calendarEvents: true, frameStatus: true, timezone: 'America/Denver', quietStart: null, quietEnd: null } : body;
     else if (url.pathname === '/api/frame-access-codes') data = { code: '123456', scope: body.scope, personId: body.personId || null, expiresAt: '2026-10-17T18:05:00Z' };
+    else if (url.pathname === '/api/frame-access/pin') { const body=req.postDataJSON();assert.deepEqual(body,{pin:'2468'});state.grant=true;data={token:'fixture-pin-grant',scope:'parent',personId:null,expiresAt:'2099-01-01T00:00:00Z'}; }
     else if (url.pathname === '/api/frame-access/redeem') { state.grant = true; data = { token: 'fixture-private-grant', scope: 'parent', personId: null, expiresAt: '2026-10-17T18:00:03Z' }; }
     else if (url.pathname.startsWith('/api/auth/')) data = { success: true };
     else throw new Error(`Missing fixture ${method} ${url.pathname}`);
@@ -142,7 +143,7 @@ test('frame approval lives only in memory and the private header, with timed loc
   try {
     await f.open('setup');
     await f.page.getByRole('button', { name: 'Enter unlock code', exact: true }).click();
-    await f.page.getByLabel('Unlock code', { exact: true }).fill('123456');
+    await f.page.getByRole('button',{name:'Use a temporary code',exact:true}).click();await f.page.getByLabel('Unlock code', { exact: true }).fill('123456');
     await f.page.getByRole('button', { name: 'Unlock controls', exact: true }).click();
     await f.page.getByText('Parent controls unlocked', { exact: true }).waitFor();
     assert.ok(f.state.calls.some(call => call.path === '/api/household' && call.headers['x-family-authorization'] === 'fixture-private-grant'));
@@ -277,4 +278,16 @@ test('a delayed task save cannot close or erase a different newly opened draft',
     assert.equal(await f.page.getByLabel('Task', { exact: true }).inputValue(), 'Keep this newer draft');
     assert.equal(await f.page.locator('dialog[open]').count(), 1); assert.deepEqual(f.state.errors, []);
   } finally { finish?.(); await f.browser.close(); }
+});
+
+test('a four-digit parent PIN identifies the parent without a name picker and stays out of browser storage',{skip:!base},async()=>{
+ const f=await fixture({frame:true});try {
+  await f.open('setup');await f.page.getByRole('button',{name:'Enter unlock code',exact:true}).click();
+  const pin=f.page.getByLabel('Parent PIN',{exact:true});await pin.fill('2468');assert.equal(await pin.getAttribute('maxlength'),'4');
+  assert.equal(await f.page.locator('dialog select[name="parentId"]').count(),0);
+  await f.page.getByRole('button',{name:'Unlock controls',exact:true}).click();await f.page.getByText('Parent controls unlocked',{exact:true}).waitFor();
+  assert.ok(f.state.calls.some(c=>c.path==='/api/household'&&c.headers['x-family-authorization']==='fixture-pin-grant'));
+  assert.equal((await f.page.locator('body').innerText()).includes('2468'),false);
+  assert.deepEqual(await f.page.evaluate(()=>({local:Object.keys(localStorage),session:Object.keys(sessionStorage)})),{local:[],session:[]});
+ }finally{await f.browser.close();}
 });

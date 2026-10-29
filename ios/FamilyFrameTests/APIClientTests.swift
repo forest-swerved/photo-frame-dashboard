@@ -318,6 +318,17 @@ final class APIClientTests: XCTestCase {
         _ = try await api.changeMemberCapabilities("test-member", capabilities: ParentCapabilities(manageChores: true, manageInternet: false))
         XCTAssertEqual(requests, 2)
     }
+    @MainActor func testParentPinUsesOwnAuthenticatedSettingsWithoutNamingAnotherAccount() async throws {
+        let api=client();var requests=0
+        MockProtocol.handler = { [self] request in
+            requests += 1;XCTAssertEqual(request.url?.path,"/api/parent-pin")
+            if requests==1 {XCTAssertEqual(request.httpMethod,"GET")}
+            else {XCTAssertEqual(request.httpMethod,"PUT");XCTAssertEqual(body(request)["pin"] as? String,"2468");XCTAssertEqual(body(request).count,1)}
+            return (200,Data(#"{"data":{"configured":true,"updatedAt":null}}"#.utf8))
+        }
+        let current=try await api.parentPin(pin:nil);XCTAssertTrue(current.configured)
+        let saved=try await api.parentPin(pin:"2468");XCTAssertTrue(saved.configured);XCTAssertEqual(requests,2)
+    }
     private var networkSessionJSON: String {
         #"{"id":"test-session","personId":"test-person","deviceId":"test-console","creditId":"test-credit","source":"reward","state":"starting","version":4,"desiredState":"allowed","observedState":"unknown","requestedAt":"2026-10-17T18:00:00Z","endsAt":null,"remainingSeconds":3600,"allDay":false}"#
     }

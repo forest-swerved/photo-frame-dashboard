@@ -7,20 +7,13 @@ struct TodayScreen: View {
         RewardAwareScroll(network: model.internet) {
             LazyVStack(alignment: .leading, spacing: 16) {
                 StaleBanner()
-                FrameCard(accent: Brand.primary) {
-                    Text(Dates.dayLabel(model.snapshot?.date ?? model.today).uppercased()).font(.caption.weight(.bold)).foregroundStyle(Brand.primary)
-                    HStack(alignment: .top) {
-                        Text(model.session?.household.title ?? "Our family").font(.title2.bold()).fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: 8)
-                        if !typeSize.isAccessibilitySize { BrandMark() }
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(Dates.dayLabel(model.snapshot?.date ?? model.today)).font(.subheadline).foregroundStyle(Brand.muted)
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .top, spacing: 16) { childProgress }
+                        VStack(alignment: .leading, spacing: 16) { childProgress }
                     }
-                    Text(model.requiredCount == 0 ? "No required tasks today" : "\(model.completedCount) of \(model.requiredCount) required tasks done")
-                        .font(.subheadline.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
-                    if model.requiredCount > 0 {
-                        ProgressView(value: Double(model.completedCount), total: Double(model.requiredCount)).tint(Brand.primary)
-                            .accessibilityLabel("Required tasks approved").accessibilityValue("\(model.completedCount) of \(model.requiredCount)")
-                    }
-                }
+                }.padding(.vertical, 8)
                 SchoolDayCard()
                 ApprovalQueue()
                 RewardHomeCard(network: model.internet).id("earned-reward")
@@ -56,6 +49,18 @@ struct TodayScreen: View {
         }.background(Brand.background).navigationTitle("Today")
             .refreshable { await model.refresh() }
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise") }.disabled(model.isLoading).accessibilityLabel("Refresh family dashboard") } }
+    }
+    @ViewBuilder private var childProgress: some View {
+        ForEach(model.chorePeople.filter { model.session?.isChild != true || $0.id == model.session?.personId }) { person in
+            let required = model.visibleOccurrences.filter { $0.personId == person.id && $0.required && !$0.isSkipped && model.isCurrentSchoolSchedule($0) }
+            VStack(alignment: .leading, spacing: 8) {
+                Text(person.name).font(.title3.weight(.semibold))
+                Text("\(required.filter(\.isDone).count) / \(required.count)").font(.system(.title2, design: .monospaced).weight(.semibold))
+                Text("required tasks done").font(.caption).foregroundStyle(Brand.muted)
+                ProgressView(value: Double(required.filter(\.isDone).count), total: Double(max(1,required.count))).tint(Brand.primary)
+            }.frame(minWidth: 100, maxWidth: .infinity, alignment: .leading).padding(14)
+                .overlay { RoundedRectangle(cornerRadius: 5).stroke(Brand.line) }
+        }
     }
     private var todayCalendarMessage: String {
         guard let calendar = model.calendar else { return "Calendar availability is not confirmed yet." }

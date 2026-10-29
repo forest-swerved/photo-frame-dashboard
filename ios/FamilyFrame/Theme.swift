@@ -1,11 +1,14 @@
 import SwiftUI
 
 enum Brand {
-    static let primary = Color(hex: "8a00c4")
-    static let primaryTint = Color(hex: "f3e8fb")
-    static let blue = Color(hex: "3bceff")
-    static let blueInk = Color(hex: "00536e")
-    static let mint = Color(hex: "00f5a0")
+    static let primary = Color(hex: "b026ff")
+    static let instrument = Color(hex: "071725")
+    static let instrumentMuted = Color(hex: "c5ced5")
+    static let actionInk = Color(hex: "8400c9")
+    static let primaryTint = Color(hex: "f1e7f7")
+    static let blue = Color(hex: "b026ff")
+    static let blueInk = Color(hex: "202725")
+    static let mint = Color(hex: "39ff14")
     static let successInk = Color(hex: "006b49")
     static let coral = Color(hex: "ff5c5c")
     static let attentionInk = Color(hex: "a32929")
@@ -17,10 +20,10 @@ enum Brand {
     static let lime = mint
     static let magenta = coral
     static let magentaInk = attentionInk
-    static let ink = Color(hex: "111111")
-    static let muted = Color(hex: "63636b")
-    static let background = Color(hex: "faf8fd")
-    static let line = Color(hex: "e4dfe9")
+    static let ink = Color(hex: "202725")
+    static let muted = Color(hex: "626963")
+    static let background = Color(hex: "f6f5f1")
+    static let line = Color(hex: "d8dbd5")
     @MainActor static func webSettings(_ section: String) -> URL {
         var parts = URLComponents(url: APIClient.configuredURL, resolvingAgainstBaseURL: false)!
         parts.path = "/family.html"
@@ -48,21 +51,24 @@ struct BrandMark: View {
     }
 }
 struct FrameCard<Content: View>: View {
-    var accent: Color = Brand.cyan
+    var accent: Color = Brand.primary
+    var instrument = false
     @ViewBuilder let content: Content
     var body: some View {
         VStack(alignment: .leading, spacing: 16) { content }
             .frame(maxWidth: .infinity, alignment: .leading).padding(20)
-            .background(.white, in: RoundedRectangle(cornerRadius: 20))
-            .overlay(alignment: .top) { Capsule().fill(accent).frame(height: 4).padding(.horizontal, 16) }
-            .overlay { RoundedRectangle(cornerRadius: 20).stroke(Brand.line, lineWidth: 1) }
+            .background(instrument ? Brand.instrument : Brand.background, in: RoundedRectangle(cornerRadius: 6))
+            .overlay(alignment: .top) { if instrument { Rectangle().fill(Brand.primary).frame(height: 3) } }
+            .overlay { RoundedRectangle(cornerRadius: 6).stroke(instrument ? Color.white.opacity(0.15) : Brand.line, lineWidth: 1) }
+            .foregroundStyle(instrument ? Color.white : Brand.ink)
+            .tint(instrument ? Color.white : Brand.actionInk)
     }
 }
 struct PrimaryButton: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(.headline).foregroundStyle(.white).frame(maxWidth: .infinity).padding(.vertical, 15)
-            .background(Brand.primary.opacity(configuration.isPressed ? 0.75 : 1), in: RoundedRectangle(cornerRadius: 13))
+            .background(Brand.primary.opacity(configuration.isPressed ? 0.75 : 1), in: RoundedRectangle(cornerRadius: 6))
             .opacity(isEnabled ? 1 : 0.45)
     }
 }

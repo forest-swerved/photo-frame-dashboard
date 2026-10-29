@@ -11,7 +11,7 @@ struct FamilyFrameApp: App {
             Group {
                 if model.session != nil { DashboardTabs() } else { WelcomeScreen() }
             }
-            .environmentObject(model).tint(Brand.primary).preferredColorScheme(.light)
+            .environmentObject(model).tint(Brand.actionInk).preferredColorScheme(.light)
             .task { await model.start() }
             .task(id: phase) {
                 guard phase == .active else { return }

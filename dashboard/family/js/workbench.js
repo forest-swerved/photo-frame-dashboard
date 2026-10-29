@@ -137,12 +137,30 @@ export function createWorkbench(ctx) {
   function unlockPanel() {
     if (ctx.frame()) {
       const access = frameAccessStatus();
-      return `<section class="panel setup-card"><h2>${access ? `${access.scope === 'parent' ? 'Parent' : person(access.personId)} controls unlocked` : 'Unlock private controls'}</h2><p class="supporting">${access ? `This approval expires at ${h(stamp(access.expiresAt))}. Lock the frame when you finish.` : 'Create a short-lived unlock code from your signed-in phone. A family profile alone cannot spend a reward or change Internet access.'}</p>${ctx.button(access ? 'Lock controls now' : 'Enter unlock code', access ? 'frame-lock' : 'frame-unlock', 'button button-secondary')}</section>`;
+      return `<section class="panel setup-card"><h2>${access ? `${access.scope === 'parent' ? h(access.parentName || 'Parent') : person(access.personId)} controls unlocked` : 'Unlock private controls'}</h2><p class="supporting">${access ? `This approval expires at ${h(stamp(access.expiresAt))}. Lock the frame when you finish.` : 'Create a short-lived unlock code from your signed-in phone. A family profile alone cannot spend a reward or change Internet access.'}</p>${ctx.button(access ? 'Lock controls now' : 'Enter unlock code', access ? 'frame-lock' : 'frame-unlock', 'button button-secondary')}</section>`;
     }
     const scopes = frameCodeScopes(ctx.session(), ctx.snapshot()?.capabilities);
-    return `<section class="panel setup-card"><h2>${scopes.length ? 'Notifications & frame access' : 'Notifications'}</h2><p class="supporting">Your inbox and preferences follow your family account. Frame unlock codes grant temporary, scoped access.</p><div class="form-stack">${ctx.button('Notification preferences', 'notification-preferences', 'button button-secondary')}${scopes.length ? ctx.button('Create frame unlock code', 'create-frame-access', 'button button-secondary') : ''}</div></section>`;
+    return `<section class="panel setup-card"><h2>${scopes.length ? 'Notifications & frame access' : 'Notifications'}</h2><p class="supporting">Your inbox and preferences follow your family account. Frame unlock codes grant temporary, scoped access.</p><div class="form-stack">${ctx.button('Notification preferences', 'notification-preferences', 'button button-secondary')}${scopes.includes('parent') ? ctx.button('Set or change parent PIN','parent-pin','button button-secondary') : ''}${scopes.length ? ctx.button('Create temporary unlock code', 'create-frame-access', 'button button-secondary') : ''}</div></section>`;
   }
   function unlock() {
+    setFrameAccess(null);state.access=null;if(ctx.session())ctx.session().personId=null;
+    ctx.openDialog('Unlock parent controls', `<p class="supporting">Enter your four-digit parent PIN. The frame identifies you automatically and unlocks your controls for ten minutes.</p><div class="form-stack">${ctx.field('Parent PIN','pin','',{type:'password',max:4,extra:'inputmode="numeric" pattern="[0-9]{4}" autocomplete="off"'})}<button type="submit" class="button">Unlock controls</button>${ctx.button('Use a temporary code','frame-temporary-unlock','text-button')}</div>`,async(form,element)=>{
+      const current=epoch();let data;
+      try {data=await request('/api/frame-access/pin',{method:'POST',body:{pin:form.get('pin')}});}
+      finally {element.querySelector('[name="pin"]').value='';form.delete('pin');}
+      if(current!==epoch() || !activeForm(element)) return;
+      setFrameAccess(data);state.access={scope:data.scope,personId:data.personId,parentName:data.parentName,expiresAt:data.expiresAt};ctx.session().personId=data.personId;
+      ctx.dialog.close();ctx.toast(`${data.parentName || 'Parent'} controls unlocked temporarily.`);await ctx.reload();
+    });
+  }
+  function parentPin() {
+    ctx.openDialog('Your parent PIN', `<p class="supporting">Use your unique four-digit PIN to unlock parent controls on the paired frame.</p><div class="form-stack">${ctx.field('New parent PIN','pin','',{type:'password',max:4,extra:'inputmode="numeric" pattern="[0-9]{4}" autocomplete="off"'})}<button type="submit" class="button">Save parent PIN</button></div>`,async(form,element)=>{
+      const current=epoch();try {await request('/api/parent-pin',{method:'PUT',body:{pin:form.get('pin')}});}
+      finally {element.querySelector('[name="pin"]').value='';form.delete('pin');}
+      if(current!==epoch() || !activeForm(element))return;ctx.dialog.close();ctx.toast('Your parent PIN was saved.');
+    });
+  }
+  function temporaryUnlock() {
     ctx.openDialog('Unlock frame controls', `<p class="supporting">On a signed-in phone, open Settings → Notifications & frame access → Create frame unlock code. Enter that six-digit code here.</p><div class="form-stack">${ctx.field('Unlock code', 'code', '', { max: 6, extra: 'inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code"' })}<button type="submit" class="button">Unlock controls</button></div>`, async (form, element) => {
       const started = epoch();
       let data;
@@ -202,6 +220,8 @@ export function createWorkbench(ctx) {
     }
     if (name === 'notification-preferences') { await preferences(); return true; }
     if (name === 'frame-unlock') { unlock(); return true; }
+    if(name==='frame-temporary-unlock') { temporaryUnlock();return true; }
+    if(name==='parent-pin') { parentPin();return true; }
     if (name === 'create-frame-access') { createAccess(); return true; }
     if (name === 'frame-lock') { setFrameAccess(null); state.access = null; await ctx.reboot(); return true; }
     if (name === 'member-capabilities') {
