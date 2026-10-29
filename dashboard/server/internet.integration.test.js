@@ -235,6 +235,11 @@ test('reward reservation, frame authorization and durable provider reconciliatio
       assert.equal(result.state, 'active'); assert.equal(calls.creates, 1); assert.equal(calls.allows, 1);
       const state = await snapshot(); assert.equal(state.credits[0].status, 'spent'); session = state.sessions[0]; assert.equal(session.observedState, 'allowed');
       assert.equal(session.endsAt, planned.ends_at.toISOString(), 'Ambiguous retry never extends the planned window.');
+      const alert=(await db.query("SELECT payload FROM family_notification_events WHERE type='session_started' AND payload->>'sessionId'=$1",[session.id])).rows[0].payload;
+      assert.equal(alert.deviceName,device.name);assert.equal(alert.timezone,'America/Denver');assert.equal(alert.minutes,60);
+      assert.equal(alert.endsAt,session.endsAt);assert.equal(alert.usageRemainingSeconds,3600);
+      assert.ok(alert.preparationSeconds>0 && alert.preparationSeconds<=300);
+
     });
     await t.test('pause retains credit, freezes after confirmed blocking, and resumes with a bounded window', async () => {
       const at = new Date(now.getTime() + 10 * 60_000);

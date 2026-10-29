@@ -45,11 +45,30 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SUPPORTS_MACCATALYST: NO
         SWIFT_EMIT_LOC_STRINGS: YES
+    dependencies:
+      - target: NotificationService
+  NotificationService:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: NotificationService
+      - path: FamilyFrame/Assets.xcassets
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(FAMILY_BUNDLE_ID).NotificationService
+        PRODUCT_NAME: NotificationService
+        MARKETING_VERSION: '1.0.0'
+        CURRENT_PROJECT_VERSION: '6'
+        INFOPLIST_FILE: NotificationService/Info.plist
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
   FamilyFrameTests:
     type: bundle.unit-test
     platform: iOS
     sources:
       - path: FamilyFrameTests
+      - path: NotificationService/NotificationService.swift
     dependencies:
       - target: FamilyFrame
     settings:

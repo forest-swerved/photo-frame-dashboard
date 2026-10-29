@@ -311,7 +311,7 @@ async function publishCommand(db, command, outcome, now) {
     const type = state === 'paused' ? 'session_paused' : state === 'ended' ? row.ends_at && new Date(row.ends_at) <= now ? 'session_expired' : 'session_ended'
       : row.started_at ? 'session_adjusted' : 'session_started';
     await internetEvent(client, { householdId: row.household_id, personId: row.person_id, sessionId: row.id, deviceId: row.device_id, type, actor: 'system:unifi', details: { observedState: outcome.observed, endsAt: updated.ends_at }, now });
-    await internetNotification(client, { householdId: row.household_id, personId: row.person_id, sessionId: row.id, type, key: `${type}:${row.id}:${updated.version}`, now });
+    await internetNotification(client, { householdId: row.household_id, personId: row.person_id, sessionId: row.id, type, key: `${type}:${row.id}:${updated.version}`, payload:{action:row.pending_action}, now });
     return state;
   });
 }

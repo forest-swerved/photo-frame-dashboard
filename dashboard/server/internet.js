@@ -116,12 +116,17 @@ async function notificationActor(client, principal) {
 }
 
 export async function internetNotification(client, { householdId, personId, type, key, sessionId, creditId, deviceId, actorName, excludeUserId, payload = {}, now = new Date() }) {
-  const context = await one(client, `SELECT p.name AS person_name,d.name AS device_name,s.source,s.remaining_seconds,s.allocated_seconds,s.all_day
-    FROM family_people p LEFT JOIN family_internet_sessions s ON s.household_id=p.household_id AND s.id=$3
+  const context = await one(client, `SELECT p.name AS person_name,d.name AS device_name,d.kind AS device_kind,s.source,s.state,s.ends_at,s.started_at,s.remaining_seconds,s.allocated_seconds,s.all_day,s.policy_snapshot,h.timezone
+    FROM family_people p JOIN family_households h ON h.id=p.household_id LEFT JOIN family_internet_sessions s ON s.household_id=p.household_id AND s.id=$3
     LEFT JOIN family_managed_devices d ON d.household_id=p.household_id AND d.id=coalesce($4::uuid,s.device_id)
     WHERE p.household_id=$1 AND p.id=$2`, [householdId, personId, sessionId || null, deviceId || null]);
-  payload = { personName: context?.person_name, deviceName: context?.device_name, source: context?.source,
-    minutes: context?.allocated_seconds / 60, allDay: context?.all_day, actorName, excludeUserId, ...payload };
+  const preparationSeconds = context ? preparationRemaining(context,now) : 0;
+  const totalRemaining = context?.state==='paused' ? context.remaining_seconds : context?.ends_at ? Math.max(0,Math.ceil((new Date(context.ends_at)-now)/1000)) : context?.remaining_seconds;
+  payload = { personName:context?.person_name, deviceName:context?.device_name, deviceKind:context?.device_kind,
+    source:context?.source, minutes:context?.allocated_seconds / 60, allDay:context?.all_day,
+    timezone:context?.timezone, endsAt:iso(context?.ends_at), startedAt:iso(context?.started_at),
+    usageRemainingSeconds:Math.max(0,(totalRemaining || 0)-preparationSeconds), preparationSeconds,
+    paused:context?.state==='paused', ...(deviceId ? {deviceId} : {}), actorName, excludeUserId, ...payload };
   await client.query(`INSERT INTO family_notification_events(id,household_id,event_key,type,person_id,payload,occurred_at,expires_at)
     VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,$8) ON CONFLICT(household_id,event_key) DO NOTHING`,
   [randomUUID(), householdId, key, type, personId, JSON.stringify({ ...payload, ...(sessionId ? { sessionId } : {}), ...(creditId ? { creditId } : {}) }), now, new Date(now.getTime() + 86400_000)]);

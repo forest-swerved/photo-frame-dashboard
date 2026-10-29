@@ -7,6 +7,7 @@ import { classifyApnsResult, preflightApns, sendApns } from './apns.js';
 import { activeMobileSessionSql as activeSession } from './mobile.js';
 import { ensureDailyOccurrences } from './chore-occurrences.js';
 import { schoolDayForDate } from './school-calendar.js';
+import { notificationContent, notificationCategory, notificationThread, notificationArtwork, notificationPreviewPayload } from './notification-content.js';
 
 const preferenceColumns = Object.freeze({ pushEnabled: 'push_enabled', choreCompleted: 'chore_completed', choreReopened: 'chore_reopened',
   choreDueSoon: 'chore_due_soon', choreOverdue: 'chore_overdue', calendarEvents: 'calendar_events', frameStatus: 'frame_status',
@@ -152,7 +153,7 @@ export async function sendTestNotification(db, principal, { env = process.env, n
     let result;
     try {
       result = await send({ token: credentials.token, environment: installation.environment, notificationId: randomUUID(),
-        expiresAt: new Date(now.getTime() + 300_000), payload: { aps: { alert: { title: 'Family Frame test', body: 'Your test notification arrived successfully.' }, sound: 'default' } } }, env);
+        expiresAt: new Date(now.getTime() + 300_000), payload: notificationPreviewPayload() }, env);
     } catch (error) {
       if (error instanceof ApiError && error.code === 'push_not_configured') throw error;
       throw new ApiError(502, 'push_test_unavailable', 'Apple could not be reached. Try again shortly.');
@@ -163,46 +164,17 @@ export async function sendTestNotification(db, principal, { env = process.env, n
 }
 
 export function notificationText(event) {
-  const task = String(event.payload?.title || 'A task').slice(0, 160);
-  const person = String(event.payload?.personName || 'Your child').slice(0, 100);
-  const device = String(event.payload?.deviceName || 'their device').slice(0, 100);
-  const actor = String(event.payload?.actorName || 'A parent').slice(0, 100);
-  const minutes = Math.max(1, Math.round(event.payload?.minutes || 1));
-  const duration = event.payload?.allDay ? 'all-day access' : event.payload?.indefinite ? 'Internet access' : `${minutes % 60 === 0 ? `${minutes / 60} hour${minutes === 60 ? '' : 's'}` : `${minutes} minute${minutes === 1 ? '' : 's'}`}${event.payload?.additional ? ' additional' : ''} access`;
-  const reason = event.payload?.reason ? ` Reason: ${String(event.payload.reason).slice(0, 500)}` : '';
-  const labels = {
-    chore_submitted: ['Ready for parent review', `${person} submitted ${task} for approval.`],
-    chore_completed: ['Task completed', `${person} completed ${task}.`], chore_reopened: ['Task reopened', `${task} was reopened.`],
-    chore_due_soon: ['Task due soon', `${task} is due soon.`], chore_overdue: ['Task overdue', `${task} has not been marked done.`],
-    calendar_upcoming: ['Calendar reminder', `${String(event.payload?.title || 'An event').slice(0, 160)} starts soon.`],
-    calendar_unavailable: ['Calendar needs attention', 'The calendar has not synced recently. Check its connection in Setup.'],
-    calendar_restored: ['Calendar restored', 'Your calendar is syncing again.'],
-    reward_earned: ['Internet time earned', 'Your required tasks are complete. Use your reward now or save it for later.'],
-    session_started: ['Internet session started', `${person} ${event.payload?.source === 'reward' ? 'is using earned time' : 'has access'} on ${device}.`],
-    session_warning: ['Internet time ending soon', 'Your access window will end soon.'],
-    session_expired: ['Internet time finished', 'Your access window has ended.'],
-    session_paused: ['Internet session paused', 'Your access window is paused.'],
-    session_ended: ['Internet session ended', 'A parent ended this access window.'],
-    session_adjusted: ['Internet time adjusted', 'A parent changed your access window.'],
-    enforcement_failed: ['Network control needs attention', 'A device access change could not be confirmed. Open Devices for its current status.'],
-    daily_tasks_reminder: ['You have tasks to complete', `${event.payload?.remaining || 'Some'} ${event.payload?.remaining === 1 ? 'task is' : 'tasks are'} still waiting for you today. Open Tasks to get started.`],
-    daily_tasks_completed: ["Today's tasks are complete", `${person} completed all ${event.payload?.total || ''} tasks for today.`],
-    access_requested: ['Device time requested', `${person} requested ${duration} to ${device}.${reason}`],
-    access_approved: ['Device time approved', `${actor} approved ${person}'s request for ${duration} to ${device}. Access is being confirmed.${reason}`],
-    access_declined: ['Device time declined', `${actor} declined ${person}'s request for ${duration} to ${device}.`],
-    access_granted: ['Device access granted', `${actor} granted ${person} ${duration} to ${device}. Access is being confirmed.`],
-    frame_offline: ['Frame may be offline', 'Your frame has not checked in recently.'], frame_online: ['Frame connected', 'Your frame is connected again.'],
-  };
-  return labels[event.type] || ['Family update', 'There is a new family update.'];
+  const {title,subtitle,body} = notificationContent(event);
+  return [title, subtitle ? `${subtitle} · ${body}` : body];
 }
 
 export async function notificationInbox(db, principal) {
   const account = await checkedAccount(db, principal);
-  const rows = (await db.query(`SELECT i.id,i.created_at,i.read_at,e.type,e.chore_id,e.date::text,e.payload || jsonb_build_object('personName',coalesce(e.payload->>'personName',(SELECT name FROM family_people WHERE household_id=e.household_id AND id=e.person_id))) AS payload FROM family_account_notification_inbox i
+  const rows = (await db.query(`SELECT i.id,i.created_at,i.read_at,e.type,e.chore_id,e.date::text,e.occurred_at,e.payload || jsonb_build_object('personName',coalesce(e.payload->>'personName',(SELECT name FROM family_people WHERE household_id=e.household_id AND id=e.person_id))) AS payload FROM family_account_notification_inbox i
     JOIN family_notification_events e ON e.id=i.event_id
     WHERE i.household_id=$1 AND i.user_id=$2 AND ($3::uuid IS NULL OR ${childEventScope('e', '$3')})
     ORDER BY i.created_at DESC,i.id DESC LIMIT 100`, [account.householdId, account.userId, account.personId])).rows;
-  return { notifications: rows.map(row => { const [title, body] = notificationText(row); return { id: row.id, kind: row.type, title, body,
+  return { notifications: rows.map(row => { const [title, body] = notificationText({...row,timezone:principal.household.timezone}); return { id: row.id, kind: row.type, title, body,
     choreId: row.chore_id || null, date: row.date || null, occurrenceId: uuidJson(row.payload?.occurrenceId),
     sessionId: uuidJson(row.payload?.sessionId), creditId: uuidJson(row.payload?.creditId),
     target: childNetworkKinds.includes(row.type) || ['enforcement_failed', 'access_requested'].includes(row.type) ? 'devices' : row.chore_id || childDailyKinds.includes(row.type) ? 'chores' : 'today',
@@ -415,14 +387,19 @@ async function claimDeliveries(db, now) {
 }
 
 export function lockScreenPayload(notificationId, event) {
-  // Private mode keeps all details in authenticated Activity. Detailed mode is an account preference.
-  const alert = event ? Object.fromEntries(['title','body'].map((key, i) => [key, notificationText(event)[i]])) : null;
-  return { aps: { alert: alert || { title: 'Family Frame', body: 'Your family has an update. Open Family Frame to see it.' }, sound: 'default', category: 'FAMILY_UPDATE', 'thread-id': 'family-frame' }, notificationId };
+  // Private mode has no family, category, artwork, or grouping details.
+  if (!event) return { aps: { alert: { title:'Family Frame', body:'Your family has an update. Open Family Frame to see it.' },
+    sound:'default', category:'FAMILY_UPDATE', 'thread-id':'family-frame' }, notificationId };
+  const category = notificationCategory(event.type), rich = category==='FAMILY_INTERNET' || category==='FAMILY_ACCESS_REQUEST';
+  return { aps: { alert:notificationContent(event), sound:'default', category, 'thread-id':notificationThread(event),
+    ...(rich && event.payload?.deviceName ? {'mutable-content':1} : {}) }, notificationId,
+    ...(rich && event.payload?.deviceName ? {artwork:notificationArtwork(event.payload.deviceKind,event.payload.deviceName)} : {}) };
+
 }
 
 async function deliver(db, lease, env, now, send) {
   return transaction(db, async client => {
-    const delivery = await one(client, `SELECT d.*,i.mobile_session_id,i.household_id,e.id AS event_id,e.type,e.person_id,e.chore_id,e.date::text,e.payload || jsonb_build_object('personName',coalesce(e.payload->>'personName',(SELECT name FROM family_people WHERE household_id=e.household_id AND id=e.person_id))) AS payload,e.expires_at,
+    const delivery = await one(client, `SELECT d.*,i.mobile_session_id,i.household_id,e.id AS event_id,e.type,e.person_id,e.chore_id,e.date::text,e.occurred_at,e.payload || jsonb_build_object('personName',coalesce(e.payload->>'personName',(SELECT name FROM family_people WHERE household_id=e.household_id AND id=e.person_id))) AS payload,e.expires_at,
       p.credentials,p.environment,p.registered_at::text AS registered_version,p.disabled_at,p.mobile_session_id AS installation_session,h.timezone,account_inbox.id AS account_notification_id FROM family_notification_deliveries d
       JOIN family_notification_inbox i ON i.id=d.inbox_id JOIN family_notification_events e ON e.id=i.event_id
       JOIN family_push_installations p ON p.id=d.installation_id JOIN family_households h ON h.id=i.household_id

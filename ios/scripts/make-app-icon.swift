@@ -6,8 +6,9 @@ let context = CGContext(data: nil, width: 1024, height: 1024, bitsPerComponent: 
                         space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
 func color(_ red: CGFloat, _ green: CGFloat, _ blue: CGFloat) -> CGColor { CGColor(red: red/255, green: green/255, blue: blue/255, alpha: 1) }
 func rounded(_ rect: CGRect, radius: CGFloat) -> CGPath { CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil) }
-context.setFillColor(color(255,255,255)); context.fill(CGRect(x: 0, y: 0, width: 1024, height: 1024))
-context.setFillColor(color(138,0,196)); context.addPath(rounded(CGRect(x: 80, y: 80, width: 864, height: 864), radius: 180)); context.fillPath()
+// iOS supplies the rounded mask. A full purple tile keeps the white/cyan mark
+// legible at notification-icon size without a second white border.
+context.setFillColor(color(138,0,196)); context.fill(CGRect(x: 0, y: 0, width: 1024, height: 1024))
 func frame(_ rectangle: CGRect, _ tint: CGColor) {
     context.setStrokeColor(tint); context.setLineWidth(29); context.addPath(rounded(rectangle, radius: 42)); context.strokePath()
 }
