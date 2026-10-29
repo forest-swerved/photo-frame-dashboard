@@ -387,8 +387,6 @@ dialog > form { display:flex; flex-direction:column; max-height:calc(100vh - 32p
 /* Mission Paper keeps task columns quiet and puts live time on instruments. */
 .panel,.welcome-strip,.setup-card { border-radius:6px; box-shadow:none; }
 .panel,.agenda-panel,.calendar-panel,.chores-panel,.person-lane,.all-chores,.setup-card { border-top-width:1px; }
-.brand-mark { font-style:normal; color:var(--ink); }
-.brand-mark span { color:var(--primary); opacity:1; }
 .nav-item { border-radius:4px; }
 .nav-item.active { background:transparent; color:var(--ink); box-shadow:inset 0 -3px var(--primary); }
 .welcome-strip { background:transparent; padding:18px 0; border:0; border-bottom:1px solid var(--line); }
@@ -420,8 +418,8 @@ dialog > form { display:flex; flex-direction:column; max-height:calc(100vh - 32p
 @media (min-width:1000px) {
  .frame-display .family-shell { grid-template-columns:minmax(0,1fr); grid-template-rows:68px minmax(0,1fr); }
  .frame-display .sidebar { flex-direction:row; align-items:center; gap:18px; padding:8px 24px; border-right:0; border-bottom:1px solid var(--line); background:var(--paper); }
- .frame-display .brand { padding:0; gap:0; margin-right:auto; }
- .frame-display .brand-mark { display:none; }
+ .frame-display .brand { padding:0; gap:10px; margin-right:auto; }
+ .frame-display .brand-mark { display:block; width:34px; height:34px; flex-basis:34px; }
  .frame-display .brand-name { display:block; font-size:19px; }
  .frame-display .brand-name small,.frame-display .sidebar-bottom { display:none; }
  .frame-display .sidebar nav { display:flex; gap:8px; }
