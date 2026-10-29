@@ -43,11 +43,10 @@ extension Color {
 
 struct BrandMark: View {
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 11).fill(Brand.primary)
-            RoundedRectangle(cornerRadius: 3).stroke(.white, lineWidth: 3).frame(width: 22, height: 27).rotationEffect(.degrees(-9)).offset(x: -3, y: 1)
-            RoundedRectangle(cornerRadius: 3).stroke(Brand.cyan, lineWidth: 3).frame(width: 22, height: 27).rotationEffect(.degrees(10)).offset(x: 4, y: -1)
-        }.frame(width: 48, height: 48).accessibilityHidden(true)
+        Image("BrandMark").resizable().interpolation(.high)
+            .frame(width: 48, height: 48)
+            .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .accessibilityHidden(true)
     }
 }
 struct FrameCard<Content: View>: View {

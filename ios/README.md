@@ -55,7 +55,7 @@ xcodebuild -project FamilyFrame.xcodeproj -scheme FamilyFrame \
 
 Use local ad-hoc simulator signing (`CODE_SIGN_IDENTITY=-`) for the tests: Keychain integration tests need an application identity even though they do not require an Apple Developer team.
 
-To regenerate the project after editing `project.yml`, run `xcodegen generate` from this folder. Regenerate the original vector app icon with `swift scripts/make-app-icon.swift FamilyFrame/Assets.xcassets/AppIcon.appiconset/AppIcon.png` on macOS.
+To regenerate the project after editing `project.yml`, run `xcodegen generate` from this folder. Regenerate the folded-home logo, opaque iOS app icon, native in-app mark, web SVG and web touch icons together with `swift scripts/make-app-icon.swift --all` on macOS. The single vector geometry source keeps the purple paper fold and green accent consistent at every size; iOS supplies the app icon's rounded mask.
 
 ## Authentication and local protection
 

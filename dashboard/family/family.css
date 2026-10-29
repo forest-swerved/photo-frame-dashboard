@@ -70,8 +70,7 @@ fieldset { min-width: 0; }
 .family-shell { display: grid; grid-template-columns: 200px minmax(0, 1fr); height: 100vh; min-height: 600px; }
 .sidebar { background: var(--surface); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 28px 16px 22px; }
 .brand { text-decoration: none; display: flex; align-items: center; gap: 11px; padding: 3px 8px 36px; }
-.brand-mark { color: var(--action); width: 38px; height: 43px; position: relative; font-family: Georgia, serif; font-size: 43px; font-style: italic; line-height: 1; }
-.brand-mark span { position: absolute; left: 14px; top: 5px; color: var(--magenta); opacity: .7; }
+.brand-mark { display: block; width: 40px; height: 40px; flex: 0 0 40px; }
 .brand-name { display: block; font-family: var(--font-display); font-weight: 700; font-size: 19px; overflow-wrap: anywhere; }
 .brand-name small { display: block; margin-top: 6px; font: 9px -apple-system, BlinkMacSystemFont, sans-serif; color: var(--muted); }
 .sidebar nav { display: grid; gap: 8px; }
@@ -269,7 +268,8 @@ fieldset { min-width: 0; }
 .banner .text-button { margin: -7px 0; }
 .entry-layout { min-height: 100vh; display: grid; grid-template-columns: 42% minmax(0, 1fr); }
 .entry-story { background: var(--surface); color: var(--ink); border-right: 1px solid var(--line); border-top: 5px solid var(--cyan); padding: 44px 54px; min-height: 100vh; display: flex; flex-direction: column; position: relative; overflow: hidden; }
-.entry-brand { font: 700 30px var(--font-display); text-decoration: none; position: relative; z-index: 1; }
+.entry-brand { display: flex; align-items: center; gap: 14px; font: 700 30px var(--font-display); text-decoration: none; position: relative; z-index: 1; }
+.entry-brand img, .simple-brand img { flex-shrink: 0; }
 .entry-brand span { display: block; font: 10px -apple-system, BlinkMacSystemFont, sans-serif; margin-top: 8px; opacity: .68; letter-spacing: 1px; }
 .entry-clock { margin-top: 65px; display: grid; gap: 9px; position: relative; z-index: 1; }
 .entry-clock .live-time { font-size: 44px; font-weight: 300; letter-spacing: -2px; font-variant-numeric: tabular-nums; }
@@ -293,7 +293,7 @@ fieldset { min-width: 0; }
 .pair-entry > p { color: var(--muted); font-size: 12px; line-height: 1.6; margin-top: 15px; }
 .pair-entry [name='code'] { letter-spacing: 7px; font-size: 25px; }
 .membership-layout { max-width: 1100px; margin: auto; padding: 40px; }
-.simple-brand { font: 700 25px var(--font-display); }
+.simple-brand { display: flex; align-items: center; gap: 12px; font: 700 25px var(--font-display); }
 .membership-intro { max-width: 570px; padding: 55px 0 25px; }
 .membership-intro h1 { font-size: 60px; line-height: 1.03; margin: 15px 0 20px; }
 .membership-intro > p:not(.eyebrow) { color: var(--muted); line-height: 1.6; }
