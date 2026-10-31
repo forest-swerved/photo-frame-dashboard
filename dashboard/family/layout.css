@@ -1,4 +1,4 @@
-/* Shared hierarchy; the frame gets its own 1280 × 800 first-screen budget. */
+/* Shared hierarchy, with compact and large landscape frame layouts. */
 .heading-actions { display:flex; align-items:center; gap:16px; }
 .settings-shortcut { display:none; }
 .sidebar-settings { margin-top:auto; }
@@ -292,6 +292,8 @@ dialog > form { display:flex; flex-direction:column; max-height:calc(100vh - 32p
 
 /* The frame's home is a persistent task board, with one lane per child. */
 .frame-home { display:flex; flex-direction:column; gap:10px; min-height:0; }
+.frame-home-layout { display:flex; flex:1; min-height:0; }
+.frame-home-overview { display:none; }
 .frame-task-board { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; min-height:0; }
 .frame-person-card { background:var(--surface); border:1px solid var(--line); border-top:5px solid var(--person); border-radius:18px; padding:10px 16px; min-width:0; min-height:0; display:flex; flex-direction:column; }
 .frame-person-card:only-child { grid-column:1/-1; }
@@ -436,3 +438,78 @@ dialog > form { display:flex; flex-direction:column; max-height:calc(100vh - 32p
  .frame-device-time { min-height:100px; }
 }
 @media (max-width:700px) { .frame-person-card + .frame-person-card { border-left:0; border-top:1px solid var(--line); padding-top:18px; } }
+
+/* FRAME156: 1920×1080 at 170 Android dpi gives about 1807×1016 CSS pixels.
+   Use available CSS space rather than a model name or physical pixel count.
+   Shorter windows retain the compact board and its independent task scrolling. */
+@media (min-width:1600px) and (min-height:900px) {
+ .frame-display .family-shell { grid-template-rows:76px minmax(0,1fr); }
+ .frame-display .sidebar { padding:10px 32px; }
+ .frame-display .brand-name { font-size:23px; }
+ .frame-display .brand-mark { width:40px; height:40px; flex-basis:40px; }
+ .frame-display .nav-item { min-height:50px; padding:10px 20px; font-size:18px; }
+ .frame-display .nav-item svg { width:22px; height:22px; }
+ .frame-display .main-content { padding:22px 32px; }
+ .frame-display .frame-home-content { padding:16px 28px; gap:16px; }
+ .frame-display .frame-home-content > .page-heading { padding:0 18px 12px; }
+ .frame-home-content > .page-heading h1 { font-size:30px; }
+ .frame-home-content > .page-heading .live-time { font-size:36px; }
+ .frame-home-content > .page-heading .live-date { font-size:18px; }
+ .frame-home-content .frame-day-type { font-size:16px; }
+ .frame-display .frame-home-layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(340px,.32fr); gap:24px; }
+ .frame-display .frame-task-board { gap:18px; }
+ .frame-display .frame-person-card { padding:10px 18px 0; }
+ .frame-display .frame-person-heading h2 { font-size:40px; }
+ .frame-display .frame-person-heading p { font-size:17px; }
+ .frame-display .frame-person-count small { font-size:14px; }
+ .frame-display .frame-person-card .compact-task { min-height:52px; }
+ .frame-display .frame-person-card .compact-task .chore-toggle,.frame-display .frame-person-card .chore-open { min-height:52px; }
+ .frame-display .frame-person-card .chore-open strong { font-size:24px; }
+ .frame-display .frame-person-card .chore-open small { font-size:15px; }
+ .frame-display .frame-person-card .task-section-heading { font-size:18px; margin:10px 0 4px; }
+ .frame-display .frame-device-time { min-height:116px; padding:12px 16px; }
+ .frame-display .frame-device-name strong { font-size:21px; }
+ .frame-display .frame-device-name span,.frame-display .frame-device-name small { font-size:14px; }
+ .frame-display .frame-device-time .text-button { min-height:48px; }
+ .frame-display .frame-home-overview { display:flex; flex-direction:column; gap:24px; min-height:0; min-width:0; overflow-y:auto; overscroll-behavior:contain; border-left:1px solid var(--line); padding:10px 0 4px 24px; }
+ .frame-home-overview .section-heading { margin-bottom:8px; }
+ .frame-display .frame-home-overview h2 { font-size:28px; }
+ .frame-home-overview .eyebrow { font-size:12px; margin-bottom:8px; }
+ .frame-display .frame-home-overview .event-card { grid-template-columns:92px minmax(0,1fr); gap:12px; padding:18px 0; }
+ .frame-display .frame-home-overview .event-date span { font-size:14px; }
+ .frame-display .frame-home-overview .event-date strong { font-size:22px; }
+ .frame-display .frame-home-overview .event-card h3 { font-size:21px; }
+ .frame-display .frame-home-overview .event-time,.frame-display .frame-home-overview .event-card p { font-size:15px; }
+ .frame-display .frame-home-overview .event-open { min-height:44px; font-size:15px; }
+ .frame-home-overview .calendar-meta { margin:8px 0; }
+ .frame-shared-tasks { padding-top:18px; border-top:1px solid var(--line); }
+ .frame-display .frame-shared-tasks .chore-open strong { font-size:20px; }
+ .frame-display .frame-home-bottom { padding:8px 18px 0; min-height:52px; justify-content:flex-end; }
+ .frame-display .frame-home-bottom .frame-home-calendar { display:none; }
+ .frame-display .frame-home-bottom .text-button { min-height:44px; font-size:16px; }
+ .frame-display .focused-tasks { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); column-gap:36px; align-items:start; }
+ .frame-display .focused-tasks > header,.frame-display .focused-tasks > .quiet-empty { grid-column:1/-1; }
+ .frame-display .focused-tasks > .task-section { margin:16px 0 0; }
+ .frame-display .focused-tasks > .task-section:nth-child(2):last-child { grid-column:1/-1; }
+ .frame-display .focused-tasks .chore-open strong { font-size:22px; }
+ .frame-display .focused-tasks .chore-open small { font-size:16px; }
+ .frame-display .focused-tasks .compact-task { min-height:68px; }
+ .frame-display .filter-pill { font-size:17px; min-height:48px; }
+ .frame-display .week-agenda { grid-template-columns:repeat(7,minmax(0,1fr)); gap:20px; }
+ .frame-display .week-agenda .event-card { display:flex; flex-direction:column; align-items:stretch; }
+ .frame-display .calendar-month { display:grid; grid-template-columns:minmax(0,1fr) 340px; column-gap:28px; align-items:start; }
+ .frame-display .calendar-month > .calendar-toolbar,.frame-display .calendar-month > .calendar-meta,.frame-display .calendar-month > .calendar-legend,.frame-display .calendar-month > .status-note,.frame-display .calendar-month > .footnote { grid-column:1/-1; }
+ .frame-display .calendar-month .selected-day-agenda { margin:0; padding:0 0 0 24px; border-top:0; border-left:1px solid var(--line); min-width:0; }
+ .frame-display .calendar-month .selected-day-agenda .event-card { display:flex; flex-direction:column; }
+ .frame-display .month-day { min-height:96px; }
+ .frame-display .month-event { font-size:16px; }
+ .frame-display .month-weekday { font-size:16px; }
+ .frame-display .session-grid,.frame-display .device-grid { grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:24px; }
+ .frame-display .device-card-labels h3 { font-size:26px; }
+ .frame-display .device-card-labels .soft-label,.frame-display .managed-device .supporting { font-size:17px; }
+ .frame-display .frame-settings { max-width:1000px; padding:32px; }
+ .frame-display .frame-settings p { font-size:20px; }
+ .frame-display dialog { width:min(800px,calc(100vw - 64px)); }
+ .frame-display .dialog-heading h2 { font-size:30px; }
+ .frame-display .dialog-body { font-size:18px; }
+}

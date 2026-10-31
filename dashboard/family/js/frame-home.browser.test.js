@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 const base = process.env.FAMILY_UI_TEST_URL;
-async function fixture({ off = false, extra = 0, empty = false, paired = true, manager = false } = {}) {
+async function fixture({ off = false, extra = 0, empty = false, paired = true, manager = false, viewport = { width:1280, height:800 } } = {}) {
   const origin = new URL(base); assert.ok(['localhost','127.0.0.1'].includes(origin.hostname));
   const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
-  const browser = await chromium.launch({headless:true}), page = await browser.newPage({viewport:{width:1280,height:800}});
+  const browser = await chromium.launch({headless:true}), page = await browser.newPage({viewport});
   page.setDefaultTimeout(8000); await page.clock.install({time:new Date('2026-10-27T18:00:00Z')});
   await page.addInitScript(()=>{
     const original=window.fetch.bind(window);
@@ -300,5 +300,56 @@ test('a signed-in web client using the frame display query never auto-returns', 
   const f=await fixture({paired:false});try{
     await f.page.getByRole('link',{name:'Calendar',exact:true}).click();await f.page.clock.runFor(91_000);
     assert.ok(f.page.url().endsWith('#calendar'));assert.deepEqual(f.state.errors,[]);
+  }finally{await f.browser.close();}
+});
+
+for (const viewport of [{width:1807,height:1016},{width:1920,height:1080}]) {
+  test(`large frame uses its extra space across all views at ${viewport.width}×${viewport.height}`, {skip:!base}, async()=>{
+    const f=await fixture({viewport});try{
+      const geometry=await f.page.evaluate(()=>({width:document.documentElement.scrollWidth,main:document.querySelector('.main-content').scrollHeight,nav:document.querySelector('.sidebar').getBoundingClientRect().height,
+        bottom:document.querySelector('.frame-home-bottom').getBoundingClientRect().bottom,
+        board:document.querySelector('.frame-task-board').getBoundingClientRect().right,agenda:document.querySelector('.frame-home-overview').getBoundingClientRect().left,
+        lists:[...document.querySelectorAll('.frame-person-tasks')].map(e=>({height:e.clientHeight,bottom:e.getBoundingClientRect().bottom})),font:getComputedStyle(document.querySelector('.frame-person-card .chore-open strong')).fontSize}));
+      assert.equal(geometry.width,viewport.width);assert.equal(geometry.main+geometry.nav,viewport.height,JSON.stringify(geometry));
+      assert.ok(geometry.bottom<=viewport.height);assert.ok(geometry.agenda>geometry.board);assert.equal(geometry.font,'24px');
+      assert.ok(geometry.lists.every(l=>l.height>500&&l.bottom<viewport.height),JSON.stringify(geometry));
+      assert.equal(await f.page.locator('.frame-person-card').count(),2);assert.equal(await f.page.locator('.frame-device-time').count(),2);
+      await f.page.getByRole('heading',{name:'Coming up',exact:true}).waitFor();
+      await f.page.getByRole('button',{name:'Details for Family dinner',exact:true}).click();await f.page.getByRole('dialog').waitFor();await f.page.keyboard.press('Escape');
+      await f.page.screenshot({path:`/tmp/frame156-today-${viewport.width}.png`});
+      await f.page.getByRole('link',{name:'Tasks',exact:true}).click();await f.page.locator('.focused-tasks > .task-section').first().waitFor();
+      const sections=await f.page.locator('.focused-tasks > .task-section').evaluateAll(nodes=>nodes.map(n=>({x:n.getBoundingClientRect().x,y:n.getBoundingClientRect().y})));
+      assert.ok(sections.length>=2);assert.ok(sections[1].x>sections[0].x);assert.equal(sections[1].y,sections[0].y);
+      await f.page.getByRole('link',{name:'Calendar',exact:true}).click();await f.page.getByRole('button',{name:'Week',exact:true}).click();
+      assert.equal(await f.page.locator('.week-agenda').evaluate(e=>getComputedStyle(e).gridTemplateColumns.split(' ').length),7);
+      await f.page.getByRole('button',{name:'Month',exact:true}).click();
+      const month=await f.page.locator('.calendar-month').evaluate(e=>({grid:e.querySelector('.month-grid').getBoundingClientRect().right,agenda:e.querySelector('.selected-day-agenda').getBoundingClientRect().left}));
+      assert.ok(month.agenda>month.grid);await f.page.screenshot({path:`/tmp/frame156-calendar-${viewport.width}.png`});
+      await f.page.getByRole('link',{name:'Devices',exact:true}).click();await f.page.getByRole('heading',{name:'Devices',level:1,exact:true}).waitFor();
+      await f.page.getByRole('link',{name:'Settings',exact:true}).click();await f.page.getByRole('heading',{name:'Your frame is paired.',exact:true}).waitFor();
+      assert.equal(await f.page.evaluate(()=>document.documentElement.scrollWidth),viewport.width);assert.deepEqual(f.state.errors,[]);assert.deepEqual(f.state.writes,[]);
+      await f.page.setViewportSize({width:1280,height:800});await f.page.getByRole('link',{name:'Today',exact:true}).click();await f.page.locator('.frame-home-calendar').waitFor();
+      assert.equal(await f.page.locator('.frame-home-overview').isVisible(),false);assert.equal(await f.page.locator('.frame-home-calendar').isVisible(),true);
+    }finally{await f.browser.close();}
+  });
+}
+
+test('large-frame agenda shows distinct upcoming events, retains sync warnings and keeps all views within the display', {skip:!base}, async()=>{
+  const f=await fixture({viewport:{width:1807,height:1016}});try{
+    f.state.calendar={status:'stale',error:{message:'Calendar update delayed'},events:[
+      {id:'past',calendarId:'cal',title:'Earlier appointment',startAt:'2026-10-27T14:00:00Z',endAt:'2026-10-27T15:00:00Z'},
+      {id:'trip',calendarId:'cal',title:'School spirit week',allDay:true,startDate:'2026-10-27',endDateExclusive:'2026-10-30'},
+      {id:'dinner',calendarId:'cal',title:'Family dinner',startAt:'2026-10-27T23:30:00Z',endAt:'2026-10-28T00:30:00Z',location:'At home'},
+      {id:'practice',calendarId:'cal',title:'Soccer practice',startAt:'2026-10-28T22:00:00Z',endAt:'2026-10-28T23:00:00Z',location:'Community park'},
+      {id:'library',calendarId:'cal',title:'Library afternoon',startAt:'2026-10-29T22:00:00Z',endAt:'2026-10-29T23:00:00Z'},
+      {id:'later',calendarId:'cal',title:'Weekend picnic',startAt:'2026-10-31T18:00:00Z',endAt:'2026-10-31T19:00:00Z'}
+    ],calendars:[],coverage:{startDate:'2026-10-27',endDateExclusive:'2026-11-04',complete:true,truncated:false},lastSuccessfulSyncAt:'2026-10-27T17:00:00Z'};
+    await f.page.reload();await f.page.getByRole('heading',{name:'Coming up',exact:true}).waitFor();
+    const rail=f.page.locator('.frame-home-overview');
+    assert.deepEqual(await rail.locator('.event-card h3').allTextContents(),['School spirit week','Family dinner','Soccer practice','Library afternoon']);
+    assert.equal(await rail.locator('.status-warning').isVisible(),true);
+    assert.equal(await f.page.evaluate(()=>document.documentElement.scrollWidth),1807);
+    await f.page.screenshot({path:'/tmp/frame156-agenda-1807.png'});
+    assert.deepEqual(f.state.errors,[]);assert.deepEqual(f.state.writes,[]);
   }finally{await f.browser.close();}
 });
