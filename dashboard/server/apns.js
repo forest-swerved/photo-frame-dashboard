@@ -64,10 +64,12 @@ export function classifyApnsResult(result, attempt = 1) {
   return { state: 'pending', reason, retrySeconds, disable: false };
 }
 
-export async function sendApns({ token, environment, notificationId, expiresAt, payload }, env = process.env) {
+export async function sendApns({ token, environment, notificationId, expiresAt, payload, pushType = 'alert' }, env = process.env) {
   requireValue(Object.hasOwn(APNS_HOSTS, environment) && typeof token === 'string' && /^[0-9a-f]{64,400}$/i.test(token) && token.length % 2 === 0,
     422, 'invalid_push_device', 'This push installation is invalid.');
   const config = apnsConfiguration(env, environment);
+  requireValue(['alert','background'].includes(pushType),422,'invalid_push_payload','Invalid push type.');
+  requireValue(pushType!=='background'||(payload?.aps?.['content-available']===1&&Object.keys(payload.aps).length===1),422,'invalid_push_payload','Background updates must be silent.');
   const encoded = JSON.stringify(payload);
   requireValue(Buffer.byteLength(encoded) <= 4096, 422, 'invalid_push_payload', 'This notification is too large.');
   const jwt = await providerToken(env, new Date(), environment);
@@ -90,7 +92,7 @@ export async function sendApns({ token, environment, notificationId, expiresAt, 
       client.on('error', () => finish({ accepted: false, status: 0, reason: 'transport_error' }));
       client.on('goaway', () => finish({ accepted: false, status: 0, reason: 'transport_error' }));
       stream = client.request({ ':method': 'POST', ':path': `/3/device/${token.toLowerCase()}`, authorization: `bearer ${jwt}`,
-        'apns-topic': config.topic, 'apns-push-type': 'alert', 'apns-priority': '10', 'apns-id': notificationId,
+        'apns-topic': config.topic, 'apns-push-type': pushType, 'apns-priority': pushType==='background'?'5':'10', 'apns-id': notificationId,
         'apns-collapse-id': notificationId, 'apns-expiration': String(Math.floor(new Date(expiresAt).getTime() / 1000)), 'content-type': 'application/json' });
       let headers = {};
       let body = '';

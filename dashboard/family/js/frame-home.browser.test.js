@@ -24,6 +24,12 @@ async function fixture({ off = false, extra = 0, empty = false, paired = true, m
   const home={id:'frame-fixture-home',title:'Synthetic family',timezone:'America/Denver'}, state={people,tasks,writes:[],errors:[],reads:[],conflict:null,locations:{parents},internet:{devices:[],sessions:[],credits:[]}};
   page.on('pageerror',e=>state.errors.push(e.message));
   await page.route('https://maps.googleapis.com/**',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800"><rect width="1280" height="800" fill="#1e4242"/><path d="M0 380h1280M640 0v800" stroke="#c4d2a7" stroke-width="24"/><circle cx="640" cy="400" r="24" fill="#aa29dc"/></svg>'}));
+  await page.route('https://maps.googleapis.com/maps/api/js?**',route=>route.fulfill({contentType:'text/javascript',body:`
+    window.mapInstances=[];
+    window.google={maps:{RenderingType:{RASTER:'RASTER'},LatLng:class{constructor(lat,lng){this.lat=lat;this.lng=lng}},
+      Map:class{constructor(node,options){this.node=node;this.options=options;window.mapInstances.push(this);node.style.background='#253d3f'}panTo(center){this.center=center}},
+      OverlayView:class{setMap(map){if(map){this.map=map;this.onAdd();this.draw()}else this.onRemove()}getProjection(){return this.map?{fromLatLngToDivPixel:position=>({x:this.map.node.clientWidth/2,y:this.map.node.clientHeight/2})}:null}getPanes(){return{floatPane:this.map.node}}},
+      event:{addListenerOnce(map,event,fn){fn()},clearInstanceListeners(){}}}};window.familyMapsReady();` }));
   await page.route(new URL('/api/**',origin).href,async route=>{
     const req=route.request(),path=new URL(req.url()).pathname;state.reads.push(path);
     if(path==='/api/household'&&state.holdHousehold) await new Promise(resolve=>{state.releaseHousehold=resolve;});
@@ -42,6 +48,7 @@ async function fixture({ off = false, extra = 0, empty = false, paired = true, m
       if(state.conflict===task.id){state.conflict=null;await route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({error:{code:'version_conflict',message:'Changed on another device',details:{current:task}}})});return;}
       task.status=body.completed?'completed':'pending';task.completion={date:task.date,completed:body.completed,version:task.version};data=task;
     } else if (path === '/api/locations') data = state.locations;
+    else if (path === '/api/locations/refresh') {state.writes.push({parentId:req.postDataJSON().parentId});data={requested:true};}
     else if (path === '/api/locations/map-url') data = {url:'https://maps.googleapis.com/maps/api/staticmap?key=synthetic&markers=first&markers=second'};
     else if (path === '/api/media') data = { media: [] };
     else if(path==='/api/notifications') data={notifications:[]};
@@ -369,21 +376,22 @@ for(const viewport of [{width:1808,height:1017},{width:1280,height:800}]) test(`
     const geometry=await f.page.evaluate(()=>{const r=document.querySelector('.frame-day-type').getBoundingClientRect(),chips=[...document.querySelectorAll('.parent-location-chip')].map(n=>{const b=n.getBoundingClientRect();return{x:b.x,right:b.right,y:b.y,bottom:b.bottom}});return{badgeRight:r.right,badgeTop:r.top,badgeBottom:r.bottom,chips,width:document.documentElement.scrollWidth,clockLeft:document.querySelector('.heading-actions').getBoundingClientRect().left}});
     assert.equal(geometry.width,viewport.width);assert.ok(geometry.chips.every(c=>c.x>=geometry.badgeRight&&c.right<=geometry.clockLeft&&c.y<geometry.badgeBottom&&c.bottom>geometry.badgeTop),JSON.stringify(geometry));
     await f.page.screenshot({path:`/tmp/frame-parent-header-${viewport.width}.png`});
-    await dad.click();await f.page.getByRole('heading',{name:'Dad · Satellite map',exact:true}).waitFor();
-    const img=f.page.locator('[data-parent-map-image]');await img.waitFor({state:'visible'});
-    let url=new URL(await img.getAttribute('src'));assert.equal(url.searchParams.get('maptype'),'hybrid');assert.equal(url.searchParams.get('center'),'39.7,-105');assert.equal(url.searchParams.getAll('markers').length,1);
-    assert.match(await f.page.locator('[data-parent-map-update]').innerText(),/Updated.*AM.*Accuracy about 12 m/);
-    const fits=await f.page.locator('#family-dialog').evaluate(d=>{const r=d.getBoundingClientRect(),button=d.querySelector('[data-map-zoom="1"]').getBoundingClientRect();return r.x>=0&&r.right<=innerWidth&&r.y>=0&&r.bottom<=innerHeight&&button.bottom<=r.bottom});assert.equal(fits,true);
-    await f.page.getByRole('button',{name:'Zoom in',exact:true}).click();assert.equal(new URL(await img.getAttribute('src')).searchParams.get('zoom'),'18');await img.waitFor({state:'visible'});
+    await dad.click();await f.page.locator('.map-pin-drop').waitFor();
+    const canvas=f.page.locator('[data-parent-map-canvas]');
+    const options=await f.page.evaluate(()=>window.mapInstances[0].options);assert.equal(options.mapTypeId,'satellite');assert.equal(options.disableDefaultUI,true);assert.equal(options.gestureHandling,'greedy');assert.deepEqual(options.center,{lat:39.7,lng:-105});
+    const bounds=await canvas.boundingBox();assert.deepEqual(bounds,{x:0,y:0,width:viewport.width,height:viewport.height});
+    assert.equal(await f.page.getByRole('button',{name:'Zoom in',exact:true}).count(),0);
+    assert.match(await canvas.getAttribute('aria-label'),/Updated.*AM.*Accuracy about 12 m/);
+    await f.page.getByRole('button',{name:'Refresh parent location'}).click();await f.page.getByText('Requested from phone · waiting for a fresh location',{exact:true}).waitFor();assert.deepEqual(f.state.writes,[{parentId:'dad'}]);
+    parents[0]={...parents[0],latitude:39.8,place:'Golden, CO',recordedAt:'2026-10-27T18:00:05Z'};
+    await f.page.clock.runFor(6000);await f.page.waitForFunction(()=>document.querySelector('[data-parent-map-canvas]')?.getAttribute('aria-label').includes('Golden, CO'));
+    assert.equal(await f.page.getByRole('button',{name:'Refresh parent location'}).isEnabled(),true);
+    assert.deepEqual(await f.page.evaluate(()=>window.mapInstances[0].center),{lat:39.8,lng:-105});
     await f.page.screenshot({path:`/tmp/frame-parent-satellite-${viewport.width}.png`});
-    parents[0]={...parents[0],latitude:39.8,place:'Golden, CO',recordedAt:'2026-10-27T18:00:20Z'};
-    await f.page.clock.runFor(30000);await f.page.waitForFunction(()=>document.querySelector('[data-parent-map-place]')?.textContent==='Golden, CO');
-    assert.equal(new URL(await img.getAttribute('src')).searchParams.get('center'),'39.8,-105');
-    await f.page.getByRole('button',{name:'Zoom out',exact:true}).click();
-    f.state.locations={parents:[parents[1]]};await f.page.clock.runFor(30000);await f.page.getByRole('heading',{name:'Location unavailable',exact:true}).waitFor();
-    assert.equal(await img.getAttribute('src'),null);assert.equal(await img.isVisible(),false);
+    f.state.locations={parents:[parents[1]]};await f.page.clock.runFor(30000);await f.page.waitForFunction(()=>document.querySelector('#dialog-title')?.textContent==='Location unavailable');
+    assert.equal(await f.page.locator('.parent-map-pin').count(),0);
     await f.page.getByRole('button',{name:'Close dialog',exact:true}).click();await f.page.getByRole('button',{name:'View Mom on satellite map'}).click();
-    await f.page.getByRole('heading',{name:'Mom · Satellite map',exact:true}).waitFor();assert.equal(new URL(await img.getAttribute('src')).searchParams.get('center'),'40,-105.2');
+    await f.page.locator('.map-pin-drop').waitFor();assert.deepEqual(await f.page.evaluate(()=>window.mapInstances.at(-1).options.center),{lat:40,lng:-105.2});
     await f.page.keyboard.press('Escape');assert.equal(await f.page.locator('#family-dialog').isVisible(),false);assert.deepEqual(f.state.errors,[]);
   }finally{await f.browser.close();}
 });

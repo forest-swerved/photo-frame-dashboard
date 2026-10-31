@@ -18,6 +18,7 @@
 <key>FamilyAPNSEnvironment</key><string>$(APNS_ENVIRONMENT)</string>
 <key>NSLocationWhenInUseUsageDescription</key><string>Share your latest location and place name with your household’s family frame, only when you choose to enable sharing.</string>
 <key>NSLocationAlwaysAndWhenInUseUsageDescription</key><string>Keep your family frame updated with your latest location while Family Frame is in the background. You can stop sharing at any time.</string>
-<key>UIBackgroundModes</key><array><string>location</string></array>
+<key>UIBackgroundModes</key><array><string>location</string>
+        <string>remote-notification</string></array>
 <key>ITSAppUsesNonExemptEncryption</key><false/>
 </dict></plist>

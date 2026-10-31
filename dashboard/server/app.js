@@ -1,4 +1,4 @@
-import { locations, changeLocationSharing, reportLocation, locationMap, cleanupLocations } from './locations.js';
+import { locations, changeLocationSharing, reportLocation, locationMap, cleanupLocations, locationHistory, changeLocationHistory, deleteLocationHistory, refreshParentLocation } from './locations.js';
 import { listMedia, mediaContent, uploadPhoto, reserveVideo, finishVideo, removeMedia, cleanupMedia } from './media.js';
 import { randomUUID } from 'node:crypto';
 import { ApiError, json, readJson, requireValue, textField, timezoneField, uuidField, versionField } from './errors.js';
@@ -53,6 +53,10 @@ export async function dispatch(request, db, principal, route, options = {}) {
   requireHousehold(principal);
   if (route === 'locations' && method === 'GET') return json(await locations(db, principal));
   if (route === 'locations/sharing' && method === 'PUT') return json(await changeLocationSharing(db, principal, await readJson(request)));
+  if (route === 'locations/history' && method === 'GET') return json(await locationHistory(db, principal));
+  if (route === 'locations/history' && method === 'PUT') return json(await changeLocationHistory(db, principal, await readJson(request)));
+  if (route === 'locations/history' && method === 'DELETE') return json(await deleteLocationHistory(db, principal));
+  if (route === 'locations/refresh' && method === 'POST') return json(await refreshParentLocation(db, principal, await readJson(request), options.notificationOptions || {env:options.env}));
   if (route === 'locations/map-url' && method === 'GET') return json(await locationMap(db, principal, options));
   if (route === 'media' && method === 'GET') return json(await listMedia(db, principal));
   const mediaRoute = /^media\/([^/]+)(?:\/(content|video|complete))?$/.exec(route);

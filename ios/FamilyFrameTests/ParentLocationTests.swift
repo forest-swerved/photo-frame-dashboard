@@ -60,4 +60,24 @@ import XCTest
         await model.change(enabled:true,label:"Dad");result.resolve(ParentLocationSnapshot(sharing:.off));await read.value
         XCTAssertTrue(model.sharing.enabled);XCTAssertEqual(reporter.clears,0)
     }
+    func testHistoryRequiresSeparateConsentAndUsesCurrentVersion() async {
+        let(model,api,_)=fixture();api.locationsHandler={ParentLocationSnapshot(sharing:self.enabled.sharing)}
+        var writes=0;api.historyHandler={draft in writes += 1;XCTAssertTrue(draft.enabled);XCTAssertEqual(draft.expectedVersion,1);return LocationHistoryChange(sharing:ParentLocationSharing(enabled:true,version:2,label:"Dad",thisPhone:true,historyEnabled:true))}
+        await model.refresh();XCTAssertEqual(writes,0);await model.setHistory(true);XCTAssertEqual(writes,1);XCTAssertEqual(model.sharing.historyEnabled,true)
+    }
+    func testHistoryResponseCannotCrossSignOut() async {
+        let(model,api,_)=fixture();api.locationsHandler={ParentLocationSnapshot(sharing:self.enabled.sharing)};await model.refresh()
+        let result=Deferred<LocationHistoryChange>();api.historyHandler={_ in try await result.wait()}
+        let task=Task{await model.setHistory(true)};while !result.waiting{await Task.yield()}
+        model.bind(nil);result.resolve(LocationHistoryChange(sharing:ParentLocationSharing(enabled:true,version:2,label:"Dad",thisPhone:true,historyEnabled:true)));await task.value
+        XCTAssertFalse(model.sharing.enabled);XCTAssertNil(model.sharing.historyEnabled)
+    }
+    func testDeletingHistoryUsesOwnAPIAndRefreshesConsent() async {
+        let(model,api,_)=fixture();var deletes=0;api.historyDeleteHandler={deletes += 1};await model.deleteHistory()
+        XCTAssertEqual(deletes,1);XCTAssertEqual(model.historyCount,0);XCTAssertFalse(model.sharing.historyEnabled == true)
+    }
+    func testBackgroundRefreshWithoutExistingGrantDoesNotEnableSharing() async {
+        let reporter=ParentLocationReporter();let sent=await reporter.refreshFromPush();XCTAssertFalse(sent);XCTAssertFalse(reporter.isSharing)
+    }
+
 }
