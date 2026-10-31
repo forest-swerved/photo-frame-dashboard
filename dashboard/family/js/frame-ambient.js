@@ -92,8 +92,8 @@ export function createFrameAmbient(root, { state, media, readMediaURL, onWake, o
         }).join('') || '<p class="ambient-empty">No family profiles yet.</p>'}</div></div>`;
       }
       if (type === 'locations') content = `<div class="ambient-content"><p class="ambient-kicker">A little closer, wherever we are</p><h1>Mom & Dad.</h1><div class="ambient-location-layout"><div class="ambient-location-map">${locationMapMarkup(s.locations)}</div><div class="ambient-location-people">${locationCards({ ...s.locations, parents:s.locations.parents.slice((cycle % Math.ceil(s.locations.parents.length / 4)) * 4, (cycle % Math.ceil(s.locations.parents.length / 4)) * 4 + 4) }, s.timezone)}${s.locations.offline ? '<p class="ambient-status">Location updates are reconnecting.</p>' : ''}</div></div></div>`;
-      if (type === 'photo' || type === 'video') content = `<div class="ambient-photo">${type === 'video' ? '<video playsinline preload="auto" muted aria-label="Family video"></video><button type="button" class="ambient-video-sound" data-video-sound aria-label="Unmute video" aria-pressed="false"></button>' : '<img alt="A photo from your family collection" decoding="async">'}<p class="ambient-photo-label">Our moments <span>${photoIndex % available.length + 1} / ${available.length}</span></p></div>`;
-      root.innerHTML = `<header class="ambient-header"><span><img src="/brand/folded-home.svg" alt="">Family Frame</span><time data-ambient-small-time></time></header>${content}<footer class="ambient-footer"><span>${h(s.title)}${s.stale ? ' · Reconnecting to live updates' : ''}</span><span>Touch anywhere to return Home <b aria-hidden="true">↗</b></span></footer>`;
+      if (type === 'photo' || type === 'video') content = `<div class="ambient-photo">${type === 'video' ? '<video playsinline preload="auto" muted aria-label="Family video"></video><button type="button" class="ambient-video-sound" data-video-sound aria-label="Unmute video" aria-pressed="false"></button>' : '<img alt="A photo from your family collection" decoding="async">'}</div>`;
+      root.innerHTML = ['photo','video'].includes(type) ? `${content}<aside class="ambient-media-clock" aria-label="Date and time"><time data-ambient-small-time></time><span data-ambient-weekday></span><span data-ambient-media-date></span></aside>` : `<header class="ambient-header"><span><img src="/brand/folded-home.svg" alt="">Family Frame</span><time data-ambient-small-time></time></header>${content}<footer class="ambient-footer"><span>${h(s.title)}${s.stale ? ' · Reconnecting to live updates' : ''}</span><span>Touch anywhere to return Home <b aria-hidden="true">↗</b></span></footer>`;
       fitLists();
       if (type === 'photo' || type === 'video') {
         const version = mediaEpoch, element = root.querySelector(type === 'video' ? 'video' : '.ambient-photo img');
@@ -123,6 +123,7 @@ export function createFrameAmbient(root, { state, media, readMediaURL, onWake, o
     write('[data-ambient-seconds]', format({ second: '2-digit' }).padStart(2, '0'));
     write('[data-ambient-date]', format({ weekday: 'long', month: 'long', day: 'numeric' }));
     write('[data-ambient-small-time]', format({ hour: 'numeric', minute: '2-digit', hour12: true }));
+    write('[data-ambient-media-date]', format({ month: 'short', day: 'numeric', year: 'numeric' }));
     write('[data-ambient-month]', format({ month: 'long' })); write('[data-ambient-day]', format({ day: 'numeric' }));
     write('[data-ambient-weekday]', format({ weekday: 'long' })); write('[data-ambient-year]', format({ year: 'numeric' }));
   }

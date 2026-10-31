@@ -43,8 +43,14 @@ test('ambient clock/date/agenda/tasks fit the FRAME156 and first touch returns H
 });
 test('media segments last at least 60 seconds, finish a video begun at 50 seconds, preserve sound within a session, and reuse device cache',{skip:!base},async()=>{
  const f=await fixture({withMedia:true});try{
+  await f.page.emulateMedia({reducedMotion:'reduce'});
   await f.page.evaluate(()=>{ambient.start();step(20000)});await f.page.waitForFunction(()=>document.querySelector('.ambient-photo img')?.complete);
   assert.equal(await f.page.locator('#frame-ambient').getAttribute('data-view'),'photo');assert.match(await f.page.locator('.ambient-photo img').getAttribute('src'),/^blob:/);
+  assert.equal(await f.page.locator('.ambient-header,.ambient-footer,.ambient-photo-label').count(),0);
+  assert.match(await f.page.locator('.ambient-media-clock').textContent(),/(AM|PM).*(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday).*20[0-9]{2}/);
+  assert.equal(await f.page.locator('.ambient-media-clock').evaluate(n=>n.getBoundingClientRect().right<=innerWidth && n.getBoundingClientRect().top>=0),true);
+  assert.deepEqual(await f.page.locator('.ambient-photo').evaluate(n=>{const r=n.getBoundingClientRect();return [r.x,r.y,r.width,r.height]}),[0,0,1808,1017]);
+  await f.page.screenshot({path:'/tmp/frame-media-fullscreen.png',animations:'disabled'});
   await f.page.evaluate(()=>step(19999));assert.equal(await f.page.locator('#frame-ambient').getAttribute('data-view'),'photo');
   await f.page.evaluate(()=>step(1));assert.equal(await f.page.locator('#frame-ambient').getAttribute('data-view'),'video');
   await f.page.waitForFunction(()=>document.querySelector('video')?.readyState>=2);
