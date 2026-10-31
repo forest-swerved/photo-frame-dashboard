@@ -31,7 +31,8 @@ for (const [role,width,height] of [['frame',1280,800],['admin',390,844],['child'
         else if(path==='/api/household') data={household:home,role,date:'2026-10-26',people:role==='child'?[people[0]]:people,chores:[],routines:[],occurrences,schoolDay:{date:'2026-10-26',type:'school_day',label:'School day'},capabilities:{manageChores:role==='admin',manageInternet:role==='admin'}};
         else if(path==='/api/calendar') data={status:'ready',events:[],calendars:[],coverage:{startDate:'2026-10-26',endDateExclusive:'2026-11-02',complete:true,truncated:false},lastSuccessfulSyncAt:'2026-10-26T18:00:00Z'};
         else if(path==='/api/internet') data={serverTime:'2026-10-26T18:00:00Z',timezone:home.timezone,role,capabilities:{manageInternet:role==='admin'},integration:{state:'ready'},devices:[{id:'layout-device',name:'Synthetic iPad',personIds:[people[0].id],defaultAccess:'blocked',controlState:'ready',version:1,observedAccess:'allowed',desiredAccess:'allowed'}],sessions:[session],credits:[],policies:[],progress:[]};
-        else if (path === '/api/media') data = { media: [] };
+        else if (path === '/api/locations') data = { parents: [] };
+    else if (path === '/api/media') data = { media: [] };
     else if(path==='/api/notifications') data={notifications:[]};
         else if(path==='/api/calendar/connection') data={connected:false,calendars:[]};
         else if(path==='/api/devices') data={devices:[]};

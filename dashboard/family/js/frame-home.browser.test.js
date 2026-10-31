@@ -40,7 +40,8 @@ async function fixture({ off = false, extra = 0, empty = false, paired = true, m
       task.version++;
       if(state.conflict===task.id){state.conflict=null;await route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({error:{code:'version_conflict',message:'Changed on another device',details:{current:task}}})});return;}
       task.status=body.completed?'completed':'pending';task.completion={date:task.date,completed:body.completed,version:task.version};data=task;
-    } else if (path === '/api/media') data = { media: [] };
+    } else if (path === '/api/locations') data = { parents: [] };
+    else if (path === '/api/media') data = { media: [] };
     else if(path==='/api/notifications') data={notifications:[]};
     else throw new Error(`Unexpected synthetic frame route ${path}`);
     await route.fulfill({contentType:'application/json',body:JSON.stringify(path.startsWith('/api/auth/')?data:{data})});

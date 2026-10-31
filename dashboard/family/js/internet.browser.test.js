@@ -47,6 +47,7 @@ async function fixture({ role = 'admin', frame = false, ready = true, allDayRead
       state.deleted = true; data = { deleted: true };
     } else if (url.pathname === '/api/account/transfer-ownership') data = { transferred: true, userId: body.userId };
     else if (url.pathname.startsWith('/api/auth/')) data = { success: true };
+    else if (url.pathname === '/api/locations') data = { parents: [] };
     else if (url.pathname === '/api/media') data = { media: [] };
     else if (url.pathname === '/api/notifications') data = { notifications: [] };
     else throw new Error(`Missing synthetic route ${method} ${url.pathname}`);

@@ -26,6 +26,7 @@ async function fixture({frame=true,reduced=false,blockedStorage=false}={}) {
       const from=url.searchParams.get('from'),to=url.searchParams.get('to'),coversToday=from<='2026-10-27' && to>'2026-10-27';
       data={status:state.status,events:coversToday?state.events:[],lastSuccessfulSyncAt:'2026-10-27T18:00Z',coverage:{timeZone:home.timezone,startDate:from,endDateExclusive:to,complete:true,truncated:false}};
     }
+    else if (url.pathname === '/api/locations') data = { parents: [] };
     else if (url.pathname === '/api/media') data = { media: [] };
     else if(url.pathname==='/api/notifications') data={notifications:[]};
     else throw new Error(`Unexpected fixture route ${url.pathname}`);

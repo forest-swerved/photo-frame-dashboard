@@ -15,6 +15,7 @@ struct FamilyFrameApp: App {
             .task { await model.start() }
             .task(id: phase) {
                 guard phase == .active else { return }
+                ParentLocationReporter.shared.resume()
                 await NotificationController.shared.refreshStatus()
                 while !Task.isCancelled {
                     if model.session != nil { await model.refresh() }
@@ -44,12 +45,19 @@ private struct DashboardTabContent: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var network: InternetModel
     var body: some View {
-        TabView(selection: $model.selectedTab) {
-            NavigationStack { TodayScreen().modifier(SettingsToolbar()) }.tabItem { Label("Today", systemImage: "house.fill") }.tag(0)
-            NavigationStack { ChoresScreen().modifier(SettingsToolbar()) }.tabItem { Label("Tasks", systemImage: "checklist") }.tag(1)
-            NavigationStack { CalendarScreen().modifier(SettingsToolbar()) }.tabItem { Label("Calendar", systemImage: "calendar") }.tag(2)
-            NavigationStack { DevicesScreen().modifier(SettingsToolbar()) }.tabItem { Label("Devices", systemImage: "gamecontroller.fill") }.tag(3)
-            NavigationStack { ActivityScreen().modifier(SettingsToolbar()) }.tabItem { Label("Activity", systemImage: "bell.fill") }.badge(model.unreadCount).tag(4)
+        ZStack {
+            page(0) {TodayScreen()}
+            page(1) {ChoresScreen()}
+            page(2) {CalendarScreen()}
+            page(3) {DevicesScreen()}
+            page(4) {ActivityScreen()}
+            page(5) {MediaLibraryScreen()}
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            HStack(spacing: 0) {
+                tab("Today", "house.fill", 0); tab("Tasks", "checklist", 1); tab("Calendar", "calendar", 2)
+                tab("Library", "photo.on.rectangle.angled", 5); tab("Devices", "gamecontroller.fill", 3); tab("Activity", "bell.fill", 4)
+            }.padding(.top, 10).padding(.bottom, 4).background(.bar)
         }
         .task(id: model.selectedTab) {
             guard model.selectedTab == 4 else { return }
@@ -58,12 +66,27 @@ private struct DashboardTabContent: View {
         .sheet(item: $model.openedOccurrence) { OccurrenceDetailScreen(original: $0) }
         .sheet(item: $network.openedSession) { item in NavigationStack { InternetSessionDetail(network: network, original: item) } }
     }
+    private func page<Content:View>(_ id:Int,@ViewBuilder content:()->Content)->some View {
+        NavigationStack {content().modifier(SettingsToolbar())}
+            .opacity(model.selectedTab == id ? 1 : 0).allowsHitTesting(model.selectedTab == id)
+            .accessibilityHidden(model.selectedTab != id).zIndex(model.selectedTab == id ? 1 : 0)
+    }
+    private func tab(_ title: String, _ icon: String, _ id: Int) -> some View {
+        Button { model.selectedTab = id } label: {
+            VStack(spacing: 4) {
+                Image(systemName: icon).font(.system(size: 20)).overlay(alignment: .topTrailing) {
+                    if id == 4 && model.unreadCount > 0 { Text(model.unreadCount > 99 ? "99+" : String(model.unreadCount)).font(.system(size: 9,weight: .bold)).foregroundStyle(.white).padding(.horizontal,4).frame(minWidth:15,minHeight:15).background(Brand.red,in:Capsule()).offset(x: 10,y: -5) }
+                }
+                Text(title).font(.system(size: 10,weight: .medium))
+            }.frame(maxWidth: .infinity,minHeight: 44).contentShape(Rectangle())
+        }.buttonStyle(.plain).foregroundStyle(model.selectedTab == id ? Brand.actionInk : Brand.muted)
+            .accessibilityLabel(title).accessibilityAddTraits(model.selectedTab == id ? .isSelected : [])
+    }
 }
 private struct SettingsToolbar: ViewModifier {
     func body(content: Content) -> some View {
         content.toolbar {
             ToolbarItem(placement: .topBarLeading) { NavigationLink { SettingsScreen() } label: { Label("Settings", systemImage: "gearshape").labelStyle(.iconOnly) } }
-            ToolbarItem(placement: .topBarTrailing) { NavigationLink { MediaLibraryScreen() } label: { Label("Photos & videos", systemImage: "photo.on.rectangle.angled") } }
         }
     }
 }

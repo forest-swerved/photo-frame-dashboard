@@ -1,3 +1,4 @@
+import { locationCards, locationMapMarkup } from './parent-locations.js';
 import { escapeHtml as h, color, dateInZone, dateFormatter } from './model.js';
 import { createFrameMediaCache } from './frame-media-cache.js';
 import { frameTaskLanes } from './frame-home.js';
@@ -13,6 +14,7 @@ export function ambientEvents(calendar, timezone, now = Date.now()) {
 export function createFrameAmbient(root, { state, media, readMediaURL, onWake, onAuthFailure = () => {}, now = () => performance.now() }) {
   let active = false, scope, started = 0, index = 0, photoIndex = 0, bank = [], fetchedAt = -Infinity, loading = false, epoch = 0, painted = '';
   let taskStarts = new Map(), taskShown = new Map(), calendarStart = 0, calendarShown = 0, calendarTotal = 0;
+  let mediaStarted = 0;
   let swallowUntil = 0, muted = true, mediaURL = null, mediaEpoch = 0, failedMedia = new Set(), playing = false, lastProgress = 0;
   const mediaCache = createFrameMediaCache({ readURL: readMediaURL, onAuthFailure });
   const app = document.querySelector('#family-app');
@@ -58,9 +60,11 @@ export function createFrameAmbient(root, { state, media, readMediaURL, onWake, o
     const date = new Date(), format = options => dateFormatter({ timeZone: s.timezone, ...options }).format(date);
     const available = bank.filter(item => mediaCache.has(item.id) && !failedMedia.has(item.id));
     const photo = available[photoIndex % available.length];
-    const type = photo && index % 2 ? photo.kind : ['clock', 'date', 'calendar', 'tasks'][Math.floor(index / 2) % 4];
+    const views = ['clock', 'date', 'calendar', 'tasks', ...(s.locations?.parents?.length ? ['locations'] : [])];
+    const cycle = Math.floor(index / (views.length * 2));
+    const type = photo && index % 2 ? photo.kind : views[Math.floor(index / 2) % views.length];
     if (type === 'video' ? playing && now() - lastProgress > 15_000 || now() - started > 330_000 : now() - started >= 20_000) { advance(); return; }
-    const key = JSON.stringify([type, photo?.id, Math.floor(index / 8), type === 'tasks' ? s.tasks : type === 'calendar' ? s.calendar : null, ['photo','video'].includes(type) ? null : s.stale]);
+    const key = JSON.stringify([type, photo?.id, cycle, type === 'tasks' ? s.tasks : type === 'calendar' ? s.calendar : type === 'locations' ? s.locations : null, ['photo','video'].includes(type) ? null : s.stale]);
     if (key !== painted) {
       mediaEpoch++; root.querySelector('video')?.pause(); if (mediaURL) URL.revokeObjectURL(mediaURL); mediaURL = null; playing = false;
       painted = key; root.dataset.view = type;
@@ -80,15 +84,16 @@ export function createFrameAmbient(root, { state, media, readMediaURL, onWake, o
       }
       if (type === 'tasks') {
         taskShown.clear();
-        const lanes = frameTaskLanes(s.people, s.tasks, s.schoolDay), page = Math.floor(index / 8) % Math.max(1, Math.ceil(lanes.length / 4));
+        const lanes = frameTaskLanes(s.people, s.tasks, s.schoolDay), page = cycle % Math.max(1, Math.ceil(lanes.length / 4));
         content = `<div class="ambient-content"><p class="ambient-kicker">One little win at a time</p><h1>Still to do.</h1>${s.schoolDay?.type === 'unknown' ? '<p class="ambient-status">School schedule is unconfirmed. Check Home for details.</p>' : ''}<div class="ambient-task-grid">${lanes.slice(page * 4, page * 4 + 4).map(({ profile, groups, overview }) => {
           const start = (taskStarts.get(profile.id) || 0) < groups.todo.length ? taskStarts.get(profile.id) || 0 : 0;
           taskStarts.set(profile.id, start);
           return `<article style="--person:${color(profile.color)}" data-fit-person="${h(profile.id)}" data-task-total="${groups.todo.length}"><div class="ambient-person"><span>${h(profile.name?.slice(0, 1))}</span><h2>${h(profile.name)}</h2></div><p class="ambient-task-count">${overview.completed}<small> / ${overview.total} required done</small></p><div class="ambient-progress"><i style="width:${overview.total ? overview.completed / overview.total * 100 : 0}%"></i></div><ul>${groups.todo.slice(start, start + 5).map(task => `<li>${h(task.title)}</li>`).join('')}</ul><p class="ambient-page-note" data-task-page></p>${groups.submitted.length ? `<p class="ambient-status">${groups.submitted.length} waiting for a parent</p>` : ''}${!groups.todo.length && !groups.submitted.length ? '<p class="ambient-task-done">You’re all set ✓</p>' : ''}</article>`;
         }).join('') || '<p class="ambient-empty">No family profiles yet.</p>'}</div></div>`;
       }
-      if (type === 'photo' || type === 'video') content = `<div class="ambient-photo">${type === 'video' ? '<video playsinline preload="auto" muted aria-label="Family video"></video><button type="button" class="ambient-video-sound" data-video-sound aria-label="Unmute video" aria-pressed="false"></button>' : '<img alt="A photo from your family collection" decoding="async">'}<p class="ambient-photo-label">Our moments <span>${photoIndex % available.length + 1} / ${available.length}</span></p></div>`;
-      root.innerHTML = `<header class="ambient-header"><span><img src="/brand/folded-home.svg" alt="">Family Frame</span><time data-ambient-small-time></time></header>${content}<footer class="ambient-footer"><span>${h(s.title)}${s.stale ? ' · Reconnecting to live updates' : ''}</span><span>Touch anywhere to return Home <b aria-hidden="true">↗</b></span></footer>`;
+      if (type === 'locations') content = `<div class="ambient-content"><p class="ambient-kicker">A little closer, wherever we are</p><h1>Mom & Dad.</h1><div class="ambient-location-layout"><div class="ambient-location-map">${locationMapMarkup(s.locations)}</div><div class="ambient-location-people">${locationCards({ ...s.locations, parents:s.locations.parents.slice((cycle % Math.ceil(s.locations.parents.length / 4)) * 4, (cycle % Math.ceil(s.locations.parents.length / 4)) * 4 + 4) }, s.timezone)}${s.locations.offline ? '<p class="ambient-status">Location updates are reconnecting.</p>' : ''}</div></div></div>`;
+      if (type === 'photo' || type === 'video') content = `<div class="ambient-photo">${type === 'video' ? '<video playsinline preload="auto" muted aria-label="Family video"></video><button type="button" class="ambient-video-sound" data-video-sound aria-label="Unmute video" aria-pressed="false"></button>' : '<img alt="A photo from your family collection" decoding="async">'}</div>`;
+      root.innerHTML = ['photo','video'].includes(type) ? `${content}<aside class="ambient-media-clock" aria-label="Date and time"><time data-ambient-small-time></time><span data-ambient-weekday></span><span data-ambient-media-date></span></aside>` : `<header class="ambient-header"><span><img src="/brand/folded-home.svg" alt="">Family Frame</span><time data-ambient-small-time></time></header>${content}<footer class="ambient-footer"><span>${h(s.title)}${s.stale ? ' · Reconnecting to live updates' : ''}</span><span>Touch anywhere to return Home <b aria-hidden="true">↗</b></span></footer>`;
       fitLists();
       if (type === 'photo' || type === 'video') {
         const version = mediaEpoch, element = root.querySelector(type === 'video' ? 'video' : '.ambient-photo img');
@@ -118,6 +123,7 @@ export function createFrameAmbient(root, { state, media, readMediaURL, onWake, o
     write('[data-ambient-seconds]', format({ second: '2-digit' }).padStart(2, '0'));
     write('[data-ambient-date]', format({ weekday: 'long', month: 'long', day: 'numeric' }));
     write('[data-ambient-small-time]', format({ hour: 'numeric', minute: '2-digit', hour12: true }));
+    write('[data-ambient-media-date]', format({ month: 'short', day: 'numeric', year: 'numeric' }));
     write('[data-ambient-month]', format({ month: 'long' })); write('[data-ambient-day]', format({ day: 'numeric' }));
     write('[data-ambient-weekday]', format({ weekday: 'long' })); write('[data-ambient-year]', format({ year: 'numeric' }));
   }
@@ -148,7 +154,14 @@ export function createFrameAmbient(root, { state, media, readMediaURL, onWake, o
   function advance() {
     if (root.dataset.view === 'tasks') for (const [id, { count, total }] of taskShown) taskStarts.set(id, ((taskStarts.get(id) || 0) + count) % (total || 1));
     if (root.dataset.view === 'calendar') calendarStart = (calendarStart + calendarShown) % (calendarTotal || 1);
-    if (index % 2) photoIndex++; index += bank.some(item => mediaCache.has(item.id) && !failedMedia.has(item.id)) ? 1 : 2; started = now(); painted = ''; paint(); }
+    const hasMedia = bank.some(item => mediaCache.has(item.id) && !failedMedia.has(item.id));
+    if (index % 2) {
+      photoIndex++;
+      // Stay in the collection for at least a minute. A clip already in
+      // progress keeps its full duration; the deadline never cuts it off.
+      if (hasMedia && now() - mediaStarted < 60_000) { started = now(); painted = ''; paint(); return; }
+    }
+    index += hasMedia ? 1 : 2; started = now(); if (index % 2) mediaStarted = started; painted = ''; paint(); }
   return {
     active: () => active, sync,
     status: () => ({ cached: mediaCache.count(), total: bank.length }),

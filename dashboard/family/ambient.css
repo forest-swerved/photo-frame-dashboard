@@ -54,3 +54,11 @@
 .ambient-agenda h2 { display:block; overflow:visible; overflow-wrap:anywhere; font-size:1em; -webkit-line-clamp:unset; }
 .ambient-agenda p { font-size:.62em; overflow-wrap:anywhere; }
 .ambient-agenda+.ambient-page-note { margin-top:1em; }
+
+/* Let family media use every pixel; preserve its original aspect ratio. */
+.frame-ambient[data-view="photo"],.frame-ambient[data-view="video"] { background:#000; }
+.ambient-photo { inset:0; }
+.ambient-photo>img,.ambient-photo>video { border-radius:0; }
+
+.ambient-media-clock { position:absolute; z-index:2; top:3%; right:3%; display:flex; flex-direction:column; align-items:flex-end; gap:.2em; color:white; padding:.7em 1em; border-radius:16px; background:#0007; text-shadow:0 2px 7px #0009; font-size:clamp(16px,1.4vw,28px); line-height:1.2; pointer-events:none; }
+.ambient-media-clock time { font-size:clamp(32px,3vw,58px); font-weight:650; font-variant-numeric:tabular-nums; }

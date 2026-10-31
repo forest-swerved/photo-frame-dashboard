@@ -1,3 +1,4 @@
+import { createParentLocations, locationCards, locationMapMarkup } from './parent-locations.js';
 import { request, setFrameMode, frameAccessStatus } from './api.js';
 import { authClient, clearAuthCache } from './auth.js';
 import { escapeHtml as h, color, dateInZone, dateFormatter, addDays, dateLabel, weekday, calendarRange, calendarEventsByDay, calendarDayIsKnown, timeLabel, choreUrgency, orderChores, completionBody, mergeCompletion, reconcileHousehold, mutationId } from './model.js';
@@ -75,11 +76,12 @@ const liveUpdates = createLiveUpdates({
     if(S.liveIssue!==message) { S.liveIssue=message;render(); }
   },
 });
+const parentLocations = createParentLocations({ read: request, scope: () => !S.booting && frame() && S.session?.household ? `${generation}:${S.session.household.id}:${S.session.user.id}` : null, onChange: () => render(), onAuthFailure: dataFailure });
 const ambient = createFrameAmbient(document.querySelector('#frame-ambient'), {
   state: () => ({ enabled: frame() && !!S.session?.household && !S.booting,
     cacheScope: `${S.session?.household?.id}:${S.session?.user?.id}`, purge: !S.booting && (!frame() || !S.session?.household),
     scope: `${generation}:${S.session?.household?.id}:${JSON.stringify(frameAccessStatus())}`,
-    timezone: zone(), title: title(), calendar: S.frameCalendar, people: people(),
+    timezone: zone(), title: title(), calendar: S.frameCalendar, people: people(), locations: parentLocations.snapshot(),
     tasks: S.snapshot ? scheduledChores() : [], schoolDay: S.snapshot?.schoolDay,
     stale: !!S.liveIssue || !!S.error || S.snapshot?.date !== today() }),
   media: () => request('/api/media'), readMediaURL: id => request(`/api/media/${id}/content`), onAuthFailure: dataFailure,
@@ -319,7 +321,7 @@ function frameHomeOverview(shared) {
     }
   }
   const sharedTasks = [...shared.todo, ...shared.submitted];
-  return `<aside class="frame-home-overview" data-key="frame-home-overview" aria-label="Family day at a glance"><section class="frame-upcoming"><div class="section-heading"><div><p class="eyebrow">The family schedule</p><h2>Coming up</h2></div><a href="#calendar" class="text-button" aria-label="Open full calendar">↗</a></div>${calendarStatus()}<div class="frame-upcoming-events">${upcoming.length ? upcoming.slice(0, 4).map(({ date, event }) => eventCard(event, true, date)).join('') : `<p class="quiet-empty">${calendarDayIsKnown(S.calendar, today()) ? 'The rest of today is clear.' : 'Upcoming events are not confirmed yet.'}</p>`}</div><a href="#calendar" class="more-link">Open calendar →</a></section>${sharedTasks.length ? `<section class="frame-shared-tasks"><div class="section-heading"><h2>For anyone</h2><a href="#chores" data-action="open-shared-tasks" class="text-button">${sharedTasks.length} tasks ↗</a></div>${sharedTasks.slice(0, 3).map(item => choreRow(item, false, true)).join('')}</section>` : ''}</aside>`;
+  return `<aside class="frame-home-overview" data-key="frame-home-overview" aria-label="Family day at a glance"><section class="frame-upcoming"><div class="section-heading"><div><p class="eyebrow">The family schedule</p><h2>Coming up</h2></div><a href="#calendar" class="text-button" aria-label="Open full calendar">↗</a></div>${calendarStatus()}<div class="frame-upcoming-events">${upcoming.length ? upcoming.slice(0, 4).map(({ date, event }) => eventCard(event, true, date)).join('') : `<p class="quiet-empty">${calendarDayIsKnown(S.calendar, today()) ? 'The rest of today is clear.' : 'Upcoming events are not confirmed yet.'}</p>`}</div><a href="#calendar" class="more-link">Open calendar →</a></section>${sharedTasks.length ? `<section class="frame-shared-tasks"><div class="section-heading"><h2>For anyone</h2><a href="#chores" data-action="open-shared-tasks" class="text-button">${sharedTasks.length} tasks ↗</a></div>${sharedTasks.slice(0, 3).map(item => choreRow(item, false, true)).join('')}</section>` : ''}${parentLocations.snapshot().parents.length ? `<section class="parent-location-panel" data-key="parent-locations"><h2>Mom & Dad</h2>${locationMapMarkup(parentLocations.snapshot())}${locationCards(parentLocations.snapshot(), zone())}${parentLocations.snapshot().offline ? '<p class="parent-location-note">Location updates are reconnecting.</p>' : ''}</section>` : ''}</aside>`;
 }
 function frameHomeView() {
   const tasks = scheduledChores(), lanes = frameTaskLanes(people(), tasks, S.snapshot?.schoolDay);
@@ -415,6 +417,7 @@ function joinView() {
 }
 
 function render(force = false) {
+  parentLocations.sync();
   ambient.sync();
   tickFrameEvents();
   if (!force && edited()) { pendingRender = true; return; }
@@ -974,6 +977,7 @@ window.addEventListener('hashchange', () => {
 window.addEventListener('online', () => { liveUpdates.tick(true);refresh(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { sounds.stop(); sounds.resetTimers(); } tickFrameEvents(); if (!document.hidden && S.session?.household) { liveUpdates.tick(true);refresh(); } });
 setInterval(() => {
+  parentLocations.tick();
   ambient.tick();
   frameIdle.tick();
   paintClock();
