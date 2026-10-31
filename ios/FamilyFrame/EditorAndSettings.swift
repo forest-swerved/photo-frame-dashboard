@@ -299,6 +299,7 @@ struct SettingsScreen: View {
     @State private var testNotificationMessage: String?
     var body: some View {
         List {
+            if model.session?.isChild == false { Section("Family map") { NavigationLink("Location sharing") { ParentLocationSettings() } } }
             Section("Frame collection") { NavigationLink("Photos & videos") { MediaLibraryScreen() } }
             Section {
                 HStack(spacing: 14) {

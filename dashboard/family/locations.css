@@ -1,0 +1,12 @@
+.parent-location-panel { border-top:1px solid var(--line); padding-top:20px; }
+.parent-location-panel h2 { margin:0 0 12px; }
+.parent-map-image { display:block; width:100%; height:auto; border-radius:12px; background:#eef1f2; }
+.parent-location { display:flex; gap:12px; align-items:flex-start; margin:16px 0; }
+.parent-location>div { min-width:0; }.parent-location h3 { margin:0; font-size:20px; }.parent-location p { margin:3px 0; font-size:16px; overflow-wrap:anywhere; }.parent-location small { color:var(--muted,#8993a9); font-size:13px; }
+.parent-location-pin { flex-shrink:0; display:grid; place-items:center; width:30px; height:30px; border-radius:50%; background:#00748c; color:white; font-weight:700; }.parent-location:nth-child(even) .parent-location-pin { background:#8c62c8; }
+.parent-map-empty { display:grid; place-items:center; min-height:120px; padding:24px; background:#ffffff08; color:var(--muted,#b9c1d4); border-radius:12px; }
+.parent-location-note { font-size:13px; color:var(--muted,#b9c1d4); }
+.ambient-location-layout { display:grid; grid-template-columns:minmax(0,1.8fr) minmax(0,1fr); gap:3vw; flex:1; min-height:0; }
+.ambient-location-map { display:flex; min-height:0; align-items:center; }.ambient-location-map .parent-map-image { height:100%; object-fit:contain; border-radius:0; }
+.ambient-location-people { display:flex; flex-direction:column; justify-content:center; gap:1vh; min-height:0; }
+.ambient-location-people .parent-location { margin:1vh 0; gap:1vw; }.ambient-location-people h3 { font-size:2.4vw; }.ambient-location-people p { font-size:1.7vw; }.ambient-location-people small { font-size:1.1vw; }.ambient-location-people .parent-location-pin { width:2.5vw; height:2.5vw; font-size:1.4vw; }

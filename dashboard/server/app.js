@@ -1,3 +1,4 @@
+import { locations, changeLocationSharing, reportLocation, locationMap, cleanupLocations } from './locations.js';
 import { listMedia, mediaContent, uploadPhoto, reserveVideo, finishVideo, removeMedia, cleanupMedia } from './media.js';
 import { randomUUID } from 'node:crypto';
 import { ApiError, json, readJson, requireValue, textField, timezoneField, uuidField, versionField } from './errors.js';
@@ -50,6 +51,9 @@ export async function dispatch(request, db, principal, route, options = {}) {
   if (route === 'claim' && method === 'POST') return json(await claimHousehold(db, principal, await readJson(request), options.env));
   if (route === 'join' && method === 'POST') return json(await joinHousehold(db, principal, await readJson(request), { getVerifiedEmail: () => confirmedAccountEmail(request, principal, options) }));
   requireHousehold(principal);
+  if (route === 'locations' && method === 'GET') return json(await locations(db, principal));
+  if (route === 'locations/sharing' && method === 'PUT') return json(await changeLocationSharing(db, principal, await readJson(request)));
+  if (route === 'locations/map-url' && method === 'GET') return json(await locationMap(db, principal, options));
   if (route === 'media' && method === 'GET') return json(await listMedia(db, principal));
   const mediaRoute = /^media\/([^/]+)(?:\/(content|video|complete))?$/.exec(route);
   if (mediaRoute) {
@@ -225,6 +229,7 @@ export async function handleRequest(request, options = {}) {
       const env = options.env || process.env;
       requireValue(typeof env.CRON_SECRET === 'string' && env.CRON_SECRET.length >= 32, 503, 'media_jobs_unconfigured', 'Media cleanup is not configured.');
       requireValue(digest(request.headers.get('authorization') || '') === digest(`Bearer ${env.CRON_SECRET}`), 401, 'unauthenticated', 'Unauthorized.');
+      await cleanupLocations(db);
       return json(await cleanupMedia(db, { env }));
     }
     if (route === 'calendar/jobs/sync' && request.method === 'GET') {
@@ -255,6 +260,7 @@ export async function handleRequest(request, options = {}) {
       if (token) await db.query('UPDATE family_devices SET revoked_at=now() WHERE token_hash=$1', [digest(token)]);
       return json({ deleted: true }, 200, { 'Set-Cookie': `${FRAME_COOKIE}=; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` });
     }
+    if (route === 'location-reports' && ['POST','DELETE'].includes(request.method)) return json(await reportLocation(db, request, await readJson(request)));
     if (!options.authenticate && request.headers.get('authorization')?.startsWith('Bearer ') && !['GET', 'HEAD'].includes(request.method)) authContext = (options.createAuthContext || createAuthContext)(request, options);
     let principal = await (options.authenticate || authenticate)(request, db, { ...options, authContext });
     if (request.headers.has('x-family-authorization')) principal = await frameAuthorization(db, principal, request.headers.get('x-family-authorization'));

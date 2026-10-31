@@ -88,6 +88,7 @@ final class NotificationController: NSObject, ObservableObject, UNUserNotificati
 final class FamilyAppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         NotificationController.shared.prepare()
+        ParentLocationReporter.shared.resume()
         return true
     }
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) { NotificationController.shared.registered(deviceToken) }

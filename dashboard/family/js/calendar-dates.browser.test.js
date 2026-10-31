@@ -46,7 +46,8 @@ for (const { frame, width, height } of [
         else if (url.pathname === '/api/auth/token') data = { token: 'fixture.transient.token' };
         else if (url.pathname === '/api/household') data = { household, role, date, people: [], chores: [] };
         else if (url.pathname === '/api/calendar') data = { status: 'ready', events, calendars, coverage: { startDate: '2026-10-19', endDateExclusive: '2026-10-27', complete: true, truncated: false }, lastSuccessfulSyncAt: clock };
-        else if (url.pathname === '/api/media') data = { media: [] };
+        else if (url.pathname === '/api/locations') data = { parents: [] };
+    else if (url.pathname === '/api/media') data = { media: [] };
     else if (url.pathname === '/api/notifications') data = { notifications: [] };
     else throw new Error(`Unexpected synthetic route ${req.method()} ${url.pathname}`);
         await route.fulfill({ contentType: 'application/json', body: JSON.stringify(url.pathname.startsWith('/api/auth/') ? data : { data }) });

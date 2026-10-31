@@ -17,7 +17,7 @@ async function fixture({withMedia=false}={}){
  const video=withMedia?await readFile(videoPath):Buffer.alloc(0);let downloads=0;
  const bank=withMedia?[{id:'11111111-1111-4111-8111-111111111111',kind:'photo',bytes:photo.length},...['22222222-2222-4222-8222-222222222222','33333333-3333-4333-8333-333333333333'].map(id=>({id,kind:'video',bytes:video.length,duration:8}))]:[];
  await page.route('**/fixture-media/*',async route=>{downloads++;const isPhoto=route.request().url().endsWith(bank[0].id);await route.fulfill({contentType:isPhoto?'image/jpeg':'video/mp4',body:isPhoto?photo:video});});
- await page.route('**/ambient-test',route=>route.fulfill({contentType:'text/html',body:`<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/family/ambient.css"><div id="family-app"><button id="under">Home task</button></div><section id="frame-ambient" class="frame-ambient" hidden></section><script type="module">
+ await page.route('**/ambient-test',route=>route.fulfill({contentType:'text/html',body:`<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/family/ambient.css"><link rel="stylesheet" href="/family/locations.css"><div id="family-app"><button id="under">Home task</button></div><section id="frame-ambient" class="frame-ambient" hidden></section><script type="module">
  import {createFrameAmbient} from '/family/js/frame-ambient.js';
  window.time=0;window.wakes=0;window.writes=0;window.state={enabled:true,purge:false,scope:'authorized:frame',cacheScope:'fixture:frame',timezone:'America/Denver',title:'Synthetic family',people:[{id:'kid',name:'Stevie',color:'#9070b5'}],tasks:[],schoolDay:{type:'school_day'},calendar:{status:'ready',coverage:{complete:true},events:[]}};
  document.querySelector('#under').onclick=()=>window.writes++;
@@ -41,19 +41,24 @@ test('ambient clock/date/agenda/tasks fit the FRAME156 and first touch returns H
   assert.equal(await f.page.locator('#family-app').getAttribute('aria-hidden'),null);assert.deepEqual(f.errors,[]);
  }finally{await f.browser.close();}
 });
-test('photos use 20 seconds, videos advance on ended, sound persists only within one ambient session, and media survives reload in device cache',{skip:!base},async()=>{
+test('media segments last at least 60 seconds, finish a video begun at 50 seconds, preserve sound within a session, and reuse device cache',{skip:!base},async()=>{
  const f=await fixture({withMedia:true});try{
   await f.page.evaluate(()=>{ambient.start();step(20000)});await f.page.waitForFunction(()=>document.querySelector('.ambient-photo img')?.complete);
   assert.equal(await f.page.locator('#frame-ambient').getAttribute('data-view'),'photo');assert.match(await f.page.locator('.ambient-photo img').getAttribute('src'),/^blob:/);
   await f.page.evaluate(()=>step(19999));assert.equal(await f.page.locator('#frame-ambient').getAttribute('data-view'),'photo');
-  await f.page.evaluate(()=>step(1));assert.equal(await f.page.locator('#frame-ambient').getAttribute('data-view'),'date');
-  await f.page.evaluate(()=>step(20000));await f.page.waitForFunction(()=>document.querySelector('video')?.readyState>=2);
+  await f.page.evaluate(()=>step(1));assert.equal(await f.page.locator('#frame-ambient').getAttribute('data-view'),'video');
+  await f.page.waitForFunction(()=>document.querySelector('video')?.readyState>=2);
   assert.equal(await f.page.locator('video').evaluate(v=>v.muted),true);
   await f.page.getByRole('button',{name:'Unmute video',exact:true}).click();assert.equal(await f.page.locator('video').evaluate(v=>v.muted),false);assert.equal(await f.page.evaluate(()=>wakes),0);
-  await f.page.locator('video').evaluate(v=>v.dispatchEvent(new Event('ended')));assert.equal(await f.page.locator('#frame-ambient').getAttribute('data-view'),'calendar');
-  await f.page.evaluate(()=>step(20000));await f.page.waitForFunction(()=>document.querySelector('video')?.readyState>=2);assert.equal(await f.page.locator('video').evaluate(v=>v.muted),false);
+  await f.page.evaluate(()=>{time+=30000;document.querySelector('video').dispatchEvent(new Event('timeupdate'));ambient.tick()});
+  await f.page.locator('video').evaluate(v=>v.dispatchEvent(new Event('ended')));
+  await f.page.waitForFunction(()=>document.querySelector('video')?.readyState>=2);assert.equal(await f.page.locator('video').evaluate(v=>v.muted),false);
+  await f.page.evaluate(()=>{time+=20000;document.querySelector('video').dispatchEvent(new Event('timeupdate'));ambient.tick()});
+  assert.equal(await f.page.locator('#frame-ambient').getAttribute('data-view'),'video','60-second media deadline must not cut off the clip that began at 50 seconds');
+  await f.page.locator('video').evaluate(v=>v.dispatchEvent(new Event('ended')));
+  assert.equal(await f.page.locator('#frame-ambient').getAttribute('data-view'),'date');
   await f.page.locator('#frame-ambient').click({position:{x:900,y:200}});assert.equal(await f.page.evaluate(()=>wakes),1);
-  await f.page.evaluate(()=>{step(700);ambient.start();step(20000)});await f.page.waitForFunction(()=>document.querySelector('video')?.readyState>=2);assert.equal(await f.page.locator('video').evaluate(v=>v.muted),true);
+  await f.page.evaluate(()=>{step(700);ambient.start();step(20000);step(20000)});await f.page.waitForFunction(()=>document.querySelector('video')?.readyState>=2);assert.equal(await f.page.locator('video').evaluate(v=>v.muted),true);
   assert.equal(f.downloads(),3);await f.page.reload();await f.page.waitForFunction(()=>window.ready);await f.page.evaluate(()=>ambient.start());assert.equal(f.downloads(),3,'reload reuses the local bank');
   await f.page.evaluate(()=>{state.enabled=false;state.purge=true;ambient.sync()});await f.page.waitForFunction(async()=>!(await caches.keys()).some(key=>key.startsWith('family-frame-media')));
   assert.equal(await f.page.locator('#frame-ambient').isVisible(),false);assert.deepEqual(f.errors,[]);
@@ -87,3 +92,22 @@ for (const viewport of [{width:1808,height:1017},{width:1280,height:800}]) {
   }finally {await f.browser.close();}
  });
 }
+
+test('shared parent map and update labels fit the ambient screen and expired coordinates disappear',{skip:!base},async()=>{
+ const f=await fixture();try {
+  const map=await sharp({create:{width:1280,height:800,channels:3,background:'#bed8c7'}}).png().toBuffer();
+  await f.page.route('https://maps.googleapis.com/**',route=>route.fulfill({contentType:'image/png',body:map}));
+  await f.page.emulateMedia({reducedMotion:'reduce'});
+  await f.page.evaluate(()=>{
+   state.locations={parents:[{id:'mom',label:'Mom',marker:'A',latitude:39.74,longitude:-104.99,accuracy:80,place:'North neighborhood, Denver, Colorado',recordedAt:new Date().toISOString()},{id:'dad',label:'Dad',marker:'B',latitude:39.75,longitude:-105,accuracy:200,place:'Community center, Denver, Colorado',recordedAt:new Date(Date.now()-600000).toISOString()}],mapURL:'https://maps.googleapis.com/maps/api/staticmap?key=fixture'};
+   ambient.start();for(let i=0;i<4;i++)step(20000);
+  });
+  assert.equal(await f.page.locator('#frame-ambient').getAttribute('data-view'),'locations');
+  assert.match(await f.page.locator('.ambient-location-people').textContent(),/Mom.*Dad.*May have moved/s);
+  assert.equal(await f.page.locator('.parent-map-image').evaluate(n=>n.src.startsWith('https://maps.googleapis.com/')),true);
+  await f.page.screenshot({path:'/tmp/frame-ambient-parent-map.png',animations:'disabled'});
+  assert.equal(await f.page.locator('.ambient-location-people').evaluate(n=>n.getBoundingClientRect().bottom<=document.querySelector('.ambient-footer').getBoundingClientRect().top),true);
+  await f.page.evaluate(()=>{state.locations.parents.forEach(p=>p.recordedAt='2000-01-01');ambient.tick()});
+  assert.equal(await f.page.locator('.parent-map-image').count(),0);assert.match(await f.page.locator('.ambient-location-people').textContent(),/No recent update/);assert.deepEqual(f.errors,[]);
+ }finally {await f.browser.close();}
+});

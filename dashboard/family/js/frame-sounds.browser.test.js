@@ -28,6 +28,7 @@ async function fixture({paired=true,approval=false,manager=false}={}) {
     else if(path==='/api/calendar')data={status:'ready',events:[],calendars:[],coverage:{startDate:'2026-10-27',endDateExclusive:'2026-11-04',complete:true,timeZone:home.timezone},lastSuccessfulSyncAt:'2026-10-27T18:00:00Z'};
     else if(path==='/api/internet')data={serverTime:'2026-10-27T18:00:00Z',timezone:home.timezone,role:'frame',integration:{state:'ready'},devices:[],sessions:[],credits:[],policies:[],progress:[]};
     else if(path==='/api/live-status')data={household:String(state.revision)};
+    else if (path === '/api/locations') data = { parents: [] };
     else if (path === '/api/media') data = { media: [] };
     else if(path==='/api/notifications')data={notifications:[]};
     else if(path.endsWith('/actions')){

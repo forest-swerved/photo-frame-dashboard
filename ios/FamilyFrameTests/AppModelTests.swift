@@ -33,6 +33,10 @@ final class Deferred<Value> {
 
 @MainActor
 final class DashboardAPI: FamilyAPI {
+    var locationsHandler: (() async throws -> ParentLocationSnapshot)?
+    var locationChangeHandler: ((LocationSharingDraft) async throws -> LocationSharingResult)?
+    func parentLocations() async throws -> ParentLocationSnapshot { try await locationsHandler?() ?? ParentLocationSnapshot(sharing:.off) }
+    func changeLocationSharing(_ draft:LocationSharingDraft) async throws -> LocationSharingResult { guard let locationChangeHandler else {throw unexpected};return try await locationChangeHandler(draft) }
     var mediaHandler: (() async throws -> MediaList)?
     func mediaList() async throws -> MediaList { if let mediaHandler { return try await mediaHandler() }; return MediaList(media: [], maxBytes: 1_073_741_824, maxItems: 200) }
     func removeMedia(id: String) async throws {}
@@ -654,6 +658,11 @@ final class AppModelTests: XCTestCase {
         XCTAssertNotNil(model.snapshot); XCTAssertTrue(model.isStale); XCTAssertFalse(model.canChange)
         delayed.resolve(api.data); await start.value
         XCTAssertTrue(model.canChange)
+    }
+    func testLibraryBottomNavigationAndLocationSettingsLayout() async {
+        let (model, _, _, _) = fixture(); await model.start();model.selectedTab=5
+        await attachLayout(DashboardTabs().environmentObject(model),name:"Library bottom navigation")
+        await attachLayout(NavigationStack {ParentLocationSettings()}.environmentObject(model),name:"Adult location consent")
     }
     func testSyntheticAuthenticatedLayoutsAtLargeTextSizes() async {
         let (model, api, _, _) = fixture()

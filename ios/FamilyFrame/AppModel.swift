@@ -27,6 +27,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var hasLoadedActivity = false
     @Published var selectedTab = 0
     @Published var openedOccurrence: ChoreOccurrence?
+    let locations: ParentLocationModel
     let media: MediaLibraryModel
     let internet: InternetModel
     private let api: any FamilyAPI
@@ -86,7 +87,7 @@ final class AppModel: ObservableObject {
          cache: any DashboardCaching = DashboardCache(), now: @escaping () -> Date = Date.init,
          observesPush: Bool = true) {
         let client = api ?? APIClient()
-        self.media = MediaLibraryModel(api: client); self.api = client; self.internet = InternetModel(api: client); self.keychain = keychain; self.cache = cache; self.now = now
+        self.locations = ParentLocationModel(api: client); self.media = MediaLibraryModel(api: client); self.api = client; self.internet = InternetModel(api: client); self.keychain = keychain; self.cache = cache; self.now = now
         self.media.authenticationFailed = { [weak self] reason in await self?.forgetSession(reason: reason) }
         self.internet.authenticationFailed = { [weak self] reason in await self?.forgetSession(reason: reason) }
         if observesPush { NotificationController.shared.onToken = { [weak self] token in await self?.registerPush(token) } }
@@ -192,6 +193,7 @@ final class AppModel: ObservableObject {
             session = current
             internet.bind(current)
             media.bind(current)
+            locations.bind(current)
             if var credential, credential.session != current { credential.session = current; try keychain.save(credential); self.credential = credential }
         } catch { await failedHouseholdRefresh(error, generation: started); return }
         // Each pane publishes independently. A slow calendar never gates fresh chores.
@@ -641,6 +643,7 @@ final class AppModel: ObservableObject {
         activityReadTask?.cancel(); activityReadTask = nil
         internet.bind(nil)
         media.bind(nil)
+        locations.bind(nil)
         accountDeletionNeedsReview = false
         snapshot = nil; calendar = nil; calendarAgenda = []; agendaCache = CalendarAgendaCache(); calendarReadAt = nil; confirmedOccurrences = [:]; openedOccurrence = nil; notifications = []; preferences = nil; deliveryStatus = nil; lastUpdated = nil
         hasRequestedPreferences = false; hasRequestedStatus = false

@@ -193,7 +193,7 @@ private struct MediaLibraryContent: View {
         List {
             Section {
                 Text("Your family’s moments, on the big screen.").font(.title2.bold())
-                Text("Photos stay for 20 seconds. Videos play to the end, starting muted each time the frame goes idle. The frame keeps a private local copy for smooth playback.").font(.subheadline).foregroundStyle(Brand.muted)
+                Text("Each collection segment lasts at least a minute. Photos stay for 20 seconds. Videos play to the end, starting muted each time the frame goes idle. The frame keeps a private local copy for smooth playback.").font(.subheadline).foregroundStyle(Brand.muted)
                 if canManage {
                     PhotosPicker(selection: $selection, maxSelectionCount: 20, matching: .any(of: [.images, .videos]), photoLibrary: .shared()) {
                         Label("Add photos and videos", systemImage: "plus.circle.fill")

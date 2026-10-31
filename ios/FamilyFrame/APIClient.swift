@@ -79,6 +79,8 @@ protocol FamilyAPI: AnyObject {
     func internetHistory() async throws -> [InternetHistoryItem]
     func deleteAccount(password: String) async throws
     func transferOwnership(userID: String) async throws
+    func parentLocations() async throws -> ParentLocationSnapshot
+    func changeLocationSharing(_ draft: LocationSharingDraft) async throws -> LocationSharingResult
     func mediaList() async throws -> MediaList
     func uploadPhoto(id: String, data: Data) async throws -> FamilyMedia
     func reserveVideo(id: String, draft: VideoDraft) async throws -> VideoReservation
@@ -340,6 +342,8 @@ final class APIClient: FamilyAPI {
         guard result.transferred, result.userId == userID else { throw APIError(status: 0, code: "transfer_unconfirmed", message: "Ownership transfer was not confirmed. Refresh family access before trying again.") }
     }
 
+    func parentLocations() async throws -> ParentLocationSnapshot { try await send("/api/locations") }
+    func changeLocationSharing(_ draft: LocationSharingDraft) async throws -> LocationSharingResult { try await send("/api/locations/sharing", method:"PUT", body:encoded(draft)) }
     func mediaList() async throws -> MediaList { try await send("/api/media") }
     func uploadPhoto(id: String, data: Data) async throws -> FamilyMedia {
         let result: MediaResult = try await send("/api/media/\(id)", method: "PUT", body: data, contentType: "image/jpeg"); return result.media
