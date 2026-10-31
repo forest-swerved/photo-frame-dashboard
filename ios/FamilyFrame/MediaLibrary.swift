@@ -34,11 +34,14 @@ extension FamilyAPI {
 struct PickedMedia: Transferable {
     let url: URL
     static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(importedContentType: .image) { received in try copy(received.file) }
-        FileRepresentation(importedContentType: .movie) { received in try copy(received.file) }
+        FileRepresentation(importedContentType: .image) { received in try copy(received.file, fallbackExtension: "jpg") }
+        FileRepresentation(importedContentType: .movie) { received in try copy(received.file, fallbackExtension: "mov") }
     }
-    private static func copy(_ source: URL) throws -> Self {
-        let target = FileManager.default.temporaryDirectory.appendingPathComponent("family-media-\(UUID().uuidString).source")
+    static func copy(_ source: URL, fallbackExtension: String) throws -> Self {
+        // AVFoundation uses the container extension when opening local movies.
+        // A generic .source suffix makes valid MOV/MP4 clips fail with -11828.
+        let suffix = source.pathExtension.isEmpty ? fallbackExtension : source.pathExtension
+        let target = MediaPreparation.temporary(suffix)
         try FileManager.default.copyItem(at: source, to: target)
         try FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: target.path)
         return Self(url: target)

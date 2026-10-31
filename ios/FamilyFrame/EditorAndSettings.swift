@@ -299,6 +299,7 @@ struct SettingsScreen: View {
     @State private var testNotificationMessage: String?
     var body: some View {
         List {
+            Section("Frame collection") { NavigationLink("Photos & videos") { MediaLibraryScreen() } }
             Section {
                 HStack(spacing: 14) {
                     BrandMark()
@@ -352,7 +353,6 @@ struct SettingsScreen: View {
             }
             if model.canManageChores { Section("Task routines") { NavigationLink("Holidays and task breaks") { ChoreBreaksScreen() } } }
             if model.canManageChores || model.canManageInternet || model.session?.isChild == true { Section("Shared frame") { NavigationLink("Create a frame unlock code") { FrameAccessScreen() } } }
-            Section("Frame collection") { NavigationLink("Photos & videos") { MediaLibraryScreen() } }
             Section("Your household") {
                 NavigationLink("School calendar") { SchoolCalendarScreen() }
                 LabeledContent("Timezone", value: model.session?.household.timezone ?? "")

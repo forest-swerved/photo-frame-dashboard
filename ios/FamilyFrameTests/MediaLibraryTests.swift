@@ -1,6 +1,7 @@
 import XCTest
 import UIKit
 import ImageIO
+import AVFoundation
 import UniformTypeIdentifiers
 @testable import FamilyFrame
 
@@ -29,6 +30,41 @@ import UniformTypeIdentifiers
         let read = Task { await model.refresh() }; while !deferred.waiting { await Task.yield() }
         await model.remove(photo); deferred.resolve(MediaList(media: [photo], maxBytes: 1000, maxItems: 200)); await read.value
         XCTAssertTrue(model.items.isEmpty)
+    }
+    func testImportedMOVAndMP4RemainReadableAndPrepareForFrame() async throws {
+        for suffix in ["mov", "mp4"] {
+            let source = MediaPreparation.temporary(suffix)
+            defer { try? FileManager.default.removeItem(at: source) }
+            let writer = try AVAssetWriter(outputURL: source, fileType: suffix == "mov" ? .mov : .mp4)
+            let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 320, AVVideoHeightKey: 180])
+            let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB, kCVPixelBufferWidthKey as String: 320, kCVPixelBufferHeightKey as String: 180])
+            writer.add(input); XCTAssertTrue(writer.startWriting()); writer.startSession(atSourceTime: .zero)
+            var buffer: CVPixelBuffer?
+            XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, 320, 180, kCVPixelFormatType_32ARGB, nil, &buffer), kCVReturnSuccess)
+            let pixels = try XCTUnwrap(buffer)
+            CVPixelBufferLockBaseAddress(pixels, [])
+            memset(CVPixelBufferGetBaseAddress(pixels), 128, CVPixelBufferGetDataSize(pixels))
+            CVPixelBufferUnlockBaseAddress(pixels, [])
+            for frame in 0..<3 {
+                while !input.isReadyForMoreMediaData { try await Task.sleep(nanoseconds: 10_000_000) }
+                XCTAssertTrue(adaptor.append(pixels, withPresentationTime: CMTime(value: Int64(frame), timescale: 2)))
+            }
+            input.markAsFinished(); await writer.finishWriting(); XCTAssertEqual(writer.status, .completed)
+            let picked = try PickedMedia.copy(source, fallbackExtension: "mov")
+            defer { try? FileManager.default.removeItem(at: picked.url) }
+            // The Photos provider can discard its original immediately after transfer.
+            try FileManager.default.removeItem(at: source)
+            let prepared = try await MediaPreparation.video(picked.url)
+            defer { try? FileManager.default.removeItem(at: prepared.url) }
+            XCTAssertEqual(picked.url.pathExtension, suffix)
+            XCTAssertEqual(prepared.url.pathExtension, "mp4")
+            XCTAssertGreaterThan(prepared.duration ?? 0, 0); XCTAssertGreaterThan(prepared.bytes, 0)
+            XCTAssertLessThan(prepared.bytes, 52_428_800)
+            let tracks = try await AVURLAsset(url: prepared.url).loadTracks(withMediaType: .video)
+            XCTAssertEqual(tracks.count, 1)
+            let formats = try await XCTUnwrap(tracks.first).load(.formatDescriptions)
+            XCTAssertEqual(CMFormatDescriptionGetMediaSubType(try XCTUnwrap(formats.first)), kCMVideoCodecType_H264)
+        }
     }
     func testPhotoPreparationResizesAndDropsLocationMetadata() throws {
         let image = UIGraphicsImageRenderer(size: CGSize(width: 3000, height: 1800)).image { context in UIColor.purple.setFill(); context.fill(CGRect(x: 0, y: 0, width: 3000, height: 1800)) }
