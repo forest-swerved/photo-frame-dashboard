@@ -1,3 +1,4 @@
+import { createFrameVideoPreloader } from './frame-video-preload.js';
 import { locationCards, locationMapMarkup } from './parent-locations.js';
 import { escapeHtml as h, color, dateInZone, dateFormatter } from './model.js';
 import { createFrameMediaCache } from './frame-media-cache.js';
@@ -17,8 +18,10 @@ export function createFrameAmbient(root, { state, media, readMediaURL, onWake, o
   let mediaStarted = 0;
   let swallowUntil = 0, muted = true, mediaURL = null, mediaEpoch = 0, failedMedia = new Set(), playing = false, lastProgress = 0;
   const mediaCache = createFrameMediaCache({ readURL: readMediaURL, onAuthFailure });
+  const videoPreloader = createFrameVideoPreloader(item => mediaCache.url(item));
   const app = document.querySelector('#family-app');
   function hide() {
+    videoPreloader.clear();
     mediaEpoch++; root.querySelector('video')?.pause(); if (mediaURL) URL.revokeObjectURL(mediaURL); mediaURL = null; muted = true; playing = false;
     active = false; root.hidden = true; root.replaceChildren(); painted = '';
     app.inert = false; app.removeAttribute('aria-hidden');
@@ -96,7 +99,9 @@ export function createFrameAmbient(root, { state, media, readMediaURL, onWake, o
       root.innerHTML = ['photo','video'].includes(type) ? `${content}<aside class="ambient-media-clock" aria-label="Date and time"><time data-ambient-small-time></time><span data-ambient-weekday></span><span data-ambient-media-date></span></aside>` : `<header class="ambient-header"><span><img src="/brand/folded-home.svg" alt="">Family Frame</span><time data-ambient-small-time></time></header>${content}<footer class="ambient-footer"><span>${h(s.title)}${s.stale ? ' · Reconnecting to live updates' : ''}</span><span>Touch anywhere to return Home <b aria-hidden="true">↗</b></span></footer>`;
       fitLists();
       if (type === 'photo' || type === 'video') {
-        const version = mediaEpoch, element = root.querySelector(type === 'video' ? 'video' : '.ambient-photo img');
+        const version = mediaEpoch, prepared = type === 'video' ? videoPreloader.take(photo.id) : null;
+        let element = root.querySelector(type === 'video' ? 'video' : '.ambient-photo img');
+        if (prepared) { element.replaceWith(prepared.element); element = prepared.element; }
         const skip = () => { if (version === mediaEpoch) { failedMedia.add(photo.id); advance(); } };
         element.addEventListener('error', skip, { once: true });
         if (type === 'video') {
@@ -107,15 +112,16 @@ export function createFrameAmbient(root, { state, media, readMediaURL, onWake, o
             event.preventDefault(); event.stopPropagation(); muted = !muted; element.muted = muted; updateSoundButton();
           });
         }
-        mediaCache.url(photo).then(url => {
+        (prepared ? Promise.resolve(prepared.url) : mediaCache.url(photo)).then(url => {
           if (version !== mediaEpoch) { if (url) URL.revokeObjectURL(url); return; }
           if (!url) { skip(); return; }
-          mediaURL = url; element.src = url; started = now();
+          mediaURL = url; if (element.src !== url) element.src = url; started = now();
           if (type === 'video') { playing = true; lastProgress = now(); element.play().catch(skip); }
         }).catch(skip);
       }
 
     }
+    videoPreloader.warm(available[(photoIndex + (['photo','video'].includes(type) ? 1 : 0)) % available.length]);
     const write = (selector, value) => { const node = root.querySelector(selector); if (node && node.textContent !== value) node.textContent = value; };
     const clockParts = dateFormatter({ timeZone: s.timezone, hour: 'numeric', minute: '2-digit', hour12: true }).formatToParts(date);
     write('[data-ambient-time]', clockParts.filter(part => ['hour','minute','literal'].includes(part.type)).map(part => part.value).join('').trim());
