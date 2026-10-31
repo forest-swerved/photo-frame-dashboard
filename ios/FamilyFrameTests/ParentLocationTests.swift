@@ -2,10 +2,11 @@ import XCTest
 @testable import FamilyFrame
 @MainActor private final class FakeLocationReporter:LocationReporting {
     var tokens:[String]=[],stops:[Bool]=[],clears=0,alwaysRequests=0
-    func activate(token:String,identity:String)throws{tokens.append(token)}
+    var isSharing=false
+    func activate(token:String,identity:String)throws{tokens.append(token);isSharing=true}
     func bind(_ session:MobileSession?){}
-    func stop(sendNow:Bool){stops.append(sendNow)}
-    func forgetConfirmedStop(){clears += 1}
+    func stop(sendNow:Bool){stops.append(sendNow);isSharing=false}
+    func forgetConfirmedStop(){clears += 1;isSharing=false}
     func requestAlways(){alwaysRequests += 1}
 }
 @MainActor final class ParentLocationTests:XCTestCase {
@@ -24,6 +25,29 @@ import XCTest
         let(model,api,reporter)=fixture(),result=Deferred<LocationSharingResult>();api.locationChangeHandler={_ in try await result.wait()}
         let task=Task{await model.change(enabled:true,label:"Dad")};while !result.waiting {await Task.yield()}
         model.bind(nil);result.resolve(enabled);await task.value;XCTAssertTrue(reporter.tokens.isEmpty);XCTAssertFalse(model.sharing.enabled)
+    }
+    func testRepeatedSharingDoesNotRotateCredentialOrEraseStationaryLocation() async {
+        let(model,api,reporter)=fixture();var writes=0
+        api.locationChangeHandler={_ in writes += 1;return self.enabled}
+        await model.change(enabled:true,label:"Dad")
+        api.locationsHandler={ParentLocationSnapshot(sharing:self.enabled.sharing)}
+        await model.change(enabled:true,label:"Dad")
+        XCTAssertEqual(writes,1);XCTAssertEqual(reporter.tokens.count,1);XCTAssertTrue(model.sharing.enabled)
+    }
+    func testMissingLocalCredentialCanRecoverAnExistingGrant() async {
+        let(model,api,reporter)=fixture();var writes=0
+        api.locationsHandler={ParentLocationSnapshot(sharing:self.enabled.sharing)}
+        api.locationChangeHandler={_ in writes += 1;return self.enabled}
+        await model.refresh();await model.change(enabled:true,label:"Dad")
+        XCTAssertEqual(writes,1);XCTAssertEqual(reporter.tokens.count,1)
+    }
+    func testChangingMapNameStillReactivatesWithNewName() async {
+        let(model,api,reporter)=fixture();var names:[String]=[]
+        api.locationChangeHandler={draft in names.append(draft.label);return self.enabled}
+        await model.change(enabled:true,label:"Dad")
+        api.locationsHandler={ParentLocationSnapshot(sharing:self.enabled.sharing)}
+        await model.change(enabled:true,label:"Forest")
+        XCTAssertEqual(names,["Dad","Forest"]);XCTAssertEqual(reporter.tokens.count,2)
     }
     func testStopHaltsAcquisitionBeforeNetworkAndClearsAfterConfirmation() async {
         let(model,api,reporter)=fixture();api.locationChangeHandler={draft in XCTAssertEqual(reporter.stops,[false]);XCTAssertFalse(draft.enabled);return LocationSharingResult(sharing:.off,reportToken:nil)}
