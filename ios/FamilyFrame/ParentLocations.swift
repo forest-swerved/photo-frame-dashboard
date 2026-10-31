@@ -46,6 +46,7 @@ private final class LocationNoRedirect: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
 }
 @MainActor protocol LocationReporting: AnyObject {
+    var isSharing: Bool { get }
     func activate(token:String,identity:String) throws
     func bind(_ session:MobileSession?)
     func stop(sendNow:Bool)
@@ -64,7 +65,9 @@ private final class LocationNoRedirect: NSObject, URLSessionTaskDelegate {
         return URLSession(configuration:config,delegate:redirect,delegateQueue:nil)
     }()
     private var credential: LocationReportCredential?
+    var isSharing: Bool { credential != nil && credential?.stopping == false }
     private var sending = false, started = false
+    private var pendingLocation: CLLocation?
     private var lastAttempt = Date.distantPast
     private var lastPlaceLocation: CLLocation?, place = ""
     private var generation = 0
@@ -80,20 +83,20 @@ private final class LocationNoRedirect: NSObject, URLSessionTaskDelegate {
     func requestAlways() { manager.requestAlwaysAuthorization() }
     func activate(token:String,identity:String) throws {
         let value=LocationReportCredential(token:token,identity:identity)
-        try store.save(value);generation += 1;credential=value;message=nil;lastAttempt = .distantPast;configure()
+        try store.save(value);generation += 1;credential=value;message=nil;lastSent=nil;pendingLocation=nil;lastAttempt = .distantPast;configure(refresh:true)
     }
     func bind(_ session:MobileSession?) {
         guard let saved=credential else { return }
         if session?.cacheIdentity != saved.identity || session?.isChild == true { stop() }
     }
     func stop(sendNow:Bool = true) {
-        generation += 1;manager.stopUpdatingLocation();manager.stopMonitoringSignificantLocationChanges();started=false
+        generation += 1;pendingLocation=nil;manager.stopUpdatingLocation();manager.stopMonitoringSignificantLocationChanges();started=false
         guard var saved=credential else { return };saved.stopping=true;credential=saved
         do { try store.save(saved) } catch { message=error.localizedDescription }
         if sendNow {Task { await sendStop() }}
     }
     func forgetConfirmedStop() {
-        generation += 1;manager.stopUpdatingLocation();manager.stopMonitoringSignificantLocationChanges();started=false;credential=nil
+        generation += 1;pendingLocation=nil;manager.stopUpdatingLocation();manager.stopMonitoringSignificantLocationChanges();started=false;credential=nil
         try? store.clear()
     }
     private func sendStop() async {
@@ -102,7 +105,7 @@ private final class LocationNoRedirect: NSObject, URLSessionTaskDelegate {
         catch let error as APIError where error.status==401 { if credential?.token==saved.token {forgetConfirmedStop()} }
         catch {message="Sharing stopped on this phone. Reconnect to remove the last shared location; it expires after 24 hours."}
     }
-    private func configure() {
+    private func configure(refresh:Bool = false) {
         authorization=manager.authorizationStatus
         guard let saved=credential else{return}
         if saved.stopping { Task {await sendStop()};return }
@@ -110,6 +113,8 @@ private final class LocationNoRedirect: NSObject, URLSessionTaskDelegate {
             if authorization == .denied || authorization == .restricted {stop()};return
         }
         manager.allowsBackgroundLocationUpdates=authorization == .authorizedAlways
+        // A new grant must get an initial fix even when the phone has not moved.
+        if refresh && started {manager.stopUpdatingLocation();started=false}
         if !started { started=true;manager.startUpdatingLocation();if CLLocationManager.significantLocationChangeMonitoringAvailable(){manager.startMonitoringSignificantLocationChanges()} }
     }
     nonisolated func locationManagerDidChangeAuthorization(_ manager:CLLocationManager) { Task { @MainActor in self.configure() } }
@@ -121,12 +126,17 @@ private final class LocationNoRedirect: NSObject, URLSessionTaskDelegate {
     }
     private func receive(_ locations:[CLLocation]) {
         guard let location=locations.last,location.horizontalAccuracy>=0,abs(location.timestamp.timeIntervalSinceNow)<900,
-              let saved=credential,!saved.stopping,!sending,Date().timeIntervalSince(lastAttempt)>30 else{return}
+              let saved=credential,!saved.stopping else{return}
+        if sending {pendingLocation=location;return}
+        guard Date().timeIntervalSince(lastAttempt)>30 else{return}
         lastAttempt=Date();sending=true;let epoch=generation
         Task {
             var background=UIBackgroundTaskIdentifier.invalid
             background=UIApplication.shared.beginBackgroundTask(withName:"Share parent location") { if background != .invalid {UIApplication.shared.endBackgroundTask(background);background = .invalid} }
-            defer {sending=false;if background != .invalid {UIApplication.shared.endBackgroundTask(background)}}
+            defer {
+                sending=false;if background != .invalid {UIApplication.shared.endBackgroundTask(background)}
+                if let pending=pendingLocation {pendingLocation=nil;receive([pending])}
+            }
             do {
                 if lastPlaceLocation == nil || location.distance(from:lastPlaceLocation!)>250 {
                     if let address=try? await geocoder.reverseGeocodeLocation(location).first {
@@ -178,7 +188,11 @@ private extension Array where Element: Hashable { func uniqued()->[Element] {var
         do {
             // Read the latest consent version, including a completed scoped stop.
             let current=try await api.parentLocations();guard epoch==generation else{return}
-            let result=try await api.changeLocationSharing(LocationSharingDraft(enabled:enabled,label:label.isEmpty ? session.user.name : label,expectedVersion:current.sharing.version))
+            let name=label.isEmpty ? session.user.name : label
+            if enabled,current.sharing.enabled,current.sharing.thisPhone,current.sharing.label==name,reporter.isSharing {
+                sharing=current.sharing;return
+            }
+            let result=try await api.changeLocationSharing(LocationSharingDraft(enabled:enabled,label:name,expectedVersion:current.sharing.version))
             guard epoch==generation else{return};sharing=result.sharing
             if enabled,let token=result.reportToken {
                 do {try reporter.activate(token:token,identity:session.cacheIdentity);reporter.requestAlways()}
@@ -211,7 +225,7 @@ private struct ParentLocationSettingsContent: View {
                 LabeledContent("Location access",value:reporter.authorization == .authorizedAlways ? "Always" : allowed ? "While Using" : "Not enabled")
                 if !allowed {Button("Allow location access") {reporter.requestPermission()}}
                 if allowed && reporter.authorization != .authorizedAlways {Button("Allow Always access") {reporter.requestAlways()};Text("Choose Always to update the family frame while this app is in the background. If iOS does not show a prompt, use Settings → Family Frame → Location → Always.").font(.footnote)}
-                Button {Task {await location.change(enabled:true,label:label)}} label:{Text(location.sharing.enabled ? "Share from this phone" : "Start sharing my location")}.disabled(!allowed || location.busy || label.trimmingCharacters(in:.whitespaces).isEmpty)
+                Button {Task {await location.change(enabled:true,label:label)}} label:{Text(location.sharing.enabled && location.sharing.thisPhone ? "Update map name" : location.sharing.enabled ? "Share from this phone" : "Start sharing my location")}.disabled(!allowed || location.busy || label.trimmingCharacters(in:.whitespaces).isEmpty || location.sharing.enabled && location.sharing.thisPhone && label==location.sharing.label && reporter.isSharing)
                 if location.sharing.enabled {Button("Stop sharing my location",role:.destructive){Task{await location.change(enabled:false,label:label)}}.disabled(location.busy)}
                 Button("Open iOS Settings") {if let url=URL(string:UIApplication.openSettingsURLString){UIApplication.shared.open(url)}}
                 if let date=reporter.lastSent {LabeledContent("Last sent",value:date.formatted(date:.omitted,time:.shortened))}
