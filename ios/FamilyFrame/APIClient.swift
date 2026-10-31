@@ -79,6 +79,13 @@ protocol FamilyAPI: AnyObject {
     func internetHistory() async throws -> [InternetHistoryItem]
     func deleteAccount(password: String) async throws
     func transferOwnership(userID: String) async throws
+    func mediaList() async throws -> MediaList
+    func uploadPhoto(id: String, data: Data) async throws -> FamilyMedia
+    func reserveVideo(id: String, draft: VideoDraft) async throws -> VideoReservation
+    func uploadVideo(file: URL, signedURL: String) async throws
+    func finishVideo(id: String) async throws -> FamilyMedia
+    func removeMedia(id: String) async throws
+    func mediaPhoto(id: String) async throws -> Data
 }
 
 @MainActor
@@ -86,6 +93,11 @@ final class APIClient: FamilyAPI {
     let baseURL: URL
     private let session: URLSession
     private let redirectDelegate = NoRedirectDelegate()
+    private lazy var mediaSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral; config.urlCache = nil
+        config.httpCookieStorage = nil; config.timeoutIntervalForRequest = 300; config.timeoutIntervalForResource = 600
+        return URLSession(configuration: config, delegate: redirectDelegate, delegateQueue: nil)
+    }()
     var mobileToken: String?
     nonisolated static var configuredURL: URL {
         guard let raw = Bundle.main.object(forInfoDictionaryKey: "FamilyAPIBaseURL") as? String,
@@ -108,7 +120,7 @@ final class APIClient: FamilyAPI {
         session = URLSession(configuration: configuration, delegate: redirectDelegate, delegateQueue: nil)
     }
     private func send<T: Decodable>(_ path: String, method: String = "GET", body: Data? = nil,
-                                     authorization: String? = nil, wrapped: Bool = true, authenticated: Bool = true) async throws -> T {
+                                     authorization: String? = nil, wrapped: Bool = true, authenticated: Bool = true, contentType: String = "application/json") async throws -> T {
         guard path.hasPrefix("/api/"), !path.contains(".."), let url = URL(string: path, relativeTo: baseURL)?.absoluteURL,
               url.host == baseURL.host, url.scheme == baseURL.scheme else {
             throw APIError(status: 0, code: "invalid_endpoint", message: "The app configuration is invalid.")
@@ -118,7 +130,7 @@ final class APIClient: FamilyAPI {
         request.mainDocumentURL = baseURL
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(baseURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")), forHTTPHeaderField: "Origin")
-        if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+        if body != nil { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
         if let authorization { request.setValue(authorization, forHTTPHeaderField: "Authorization") }
         else if authenticated, let mobileToken { request.setValue("FamilyMobile \(mobileToken)", forHTTPHeaderField: "Authorization") }
         do {
@@ -326,6 +338,35 @@ final class APIClient: FamilyAPI {
         struct Transferred: Decodable { let transferred: Bool; let userId: String }
         let result: Transferred = try await send("/api/account/transfer-ownership", method: "POST", body: encoded(["userId": userID]))
         guard result.transferred, result.userId == userID else { throw APIError(status: 0, code: "transfer_unconfirmed", message: "Ownership transfer was not confirmed. Refresh family access before trying again.") }
+    }
+
+    func mediaList() async throws -> MediaList { try await send("/api/media") }
+    func uploadPhoto(id: String, data: Data) async throws -> FamilyMedia {
+        let result: MediaResult = try await send("/api/media/\(id)", method: "PUT", body: data, contentType: "image/jpeg"); return result.media
+    }
+    func reserveVideo(id: String, draft: VideoDraft) async throws -> VideoReservation { try await send("/api/media/\(id)/video", method: "POST", body: encoded(draft)) }
+    func finishVideo(id: String) async throws -> FamilyMedia { let result: MediaResult = try await send("/api/media/\(id)/complete", method: "POST"); return result.media }
+    func removeMedia(id: String) async throws { let _: Acknowledgement = try await send("/api/media/\(id)", method: "DELETE") }
+    nonisolated static func mediaURL(_ raw: String) -> URL? {
+        guard let url = URL(string: raw), url.scheme == "https", url.host?.hasSuffix(".supabase.co") == true,
+              url.user == nil, url.password == nil, url.port == nil, url.fragment == nil,
+              url.path.hasPrefix("/storage/v1/object/") else { return nil }; return url
+    }
+    func uploadVideo(file: URL, signedURL: String) async throws {
+        guard let url = Self.mediaURL(signedURL) else { throw MediaPreparation.invalid("The upload link is invalid.") }
+        var request = URLRequest(url: url); request.httpMethod = "PUT"; request.timeoutInterval = 300
+        request.setValue("video/mp4", forHTTPHeaderField: "Content-Type"); request.setValue("0", forHTTPHeaderField: "cache-control")
+        // Deliberately no FamilyMobile Authorization header on a Storage request.
+        let (_, response) = try await mediaSession.upload(for: request, fromFile: file)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw APIError(status: 503, code: "video_upload_failed", message: "The video upload did not finish. Refresh the collection before trying again.") }
+    }
+    func mediaPhoto(id: String) async throws -> Data {
+        let link: MediaDownload = try await send("/api/media/\(id)/content")
+        guard let url = Self.mediaURL(link.url) else { throw MediaPreparation.invalid("The photo link is invalid.") }
+        let (data, response) = try await session.data(for: URLRequest(url: url))
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200, data.count <= 3_000_000,
+              http.value(forHTTPHeaderField: "Content-Type")?.hasPrefix("image/jpeg") == true else { throw MediaPreparation.invalid("The photo preview could not be loaded.") }
+        return data
     }
 
 }

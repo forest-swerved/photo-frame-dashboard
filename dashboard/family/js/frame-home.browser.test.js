@@ -40,7 +40,8 @@ async function fixture({ off = false, extra = 0, empty = false, paired = true, m
       task.version++;
       if(state.conflict===task.id){state.conflict=null;await route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({error:{code:'version_conflict',message:'Changed on another device',details:{current:task}}})});return;}
       task.status=body.completed?'completed':'pending';task.completion={date:task.date,completed:body.completed,version:task.version};data=task;
-    } else if(path==='/api/notifications') data={notifications:[]};
+    } else if (path === '/api/media') data = { media: [] };
+    else if(path==='/api/notifications') data={notifications:[]};
     else throw new Error(`Unexpected synthetic frame route ${path}`);
     await route.fulfill({contentType:'application/json',body:JSON.stringify(path.startsWith('/api/auth/')?data:{data})});
   });
@@ -271,13 +272,14 @@ test('calendar background updates stay quiet on frame Home and Calendar while fa
   }finally{await f.browser.close();}
 });
 
-test('paired frame returns to Today after sixty idle seconds despite polling and dismisses read-only details', {skip:!base},async()=>{
+test('paired frame returns to Today after 45 idle seconds despite polling and dismisses read-only details', {skip:!base},async()=>{
   const f=await fixture();try{
     await f.page.getByRole('link',{name:'Calendar',exact:true}).click();
-    await f.page.clock.runFor(59_000);assert.ok(f.page.url().endsWith('#calendar'));
+    await f.page.clock.runFor(44_000);assert.ok(f.page.url().endsWith('#calendar'));
     await f.page.clock.runFor(1100);await f.page.locator('.frame-person-card').first().waitFor();assert.ok(f.page.url().endsWith('#today'));
+    await f.page.locator('#frame-ambient').click(); await f.page.clock.runFor(700);
     await f.page.getByRole('button',{name:'Details for Family dinner',exact:true}).click();
-    await f.page.locator('dialog[open]').waitFor();await f.page.clock.runFor(61_000);
+    await f.page.locator('dialog[open]').waitFor();await f.page.clock.runFor(46_000);
     assert.equal(await f.page.locator('dialog[open]').count(),0);assert.equal(await f.page.locator('.frame-person-card').count(),2);
     assert.deepEqual(f.state.errors,[]);
   }finally{await f.browser.close();}
@@ -286,9 +288,10 @@ test('paired frame returns to Today after sixty idle seconds despite polling and
 test('frame activity restarts the idle deadline and unfinished parent task forms remain intact', {skip:!base},async()=>{
   const f=await fixture({manager:true});try{
     await f.page.getByRole('link',{name:'Calendar',exact:true}).click();
-    await f.page.clock.runFor(59_000);await f.page.keyboard.press('Shift');
-    await f.page.clock.runFor(59_000);assert.ok(f.page.url().endsWith('#calendar'));
+    await f.page.clock.runFor(44_000);await f.page.keyboard.press('Shift');
+    await f.page.clock.runFor(44_000);assert.ok(f.page.url().endsWith('#calendar'));
     await f.page.clock.runFor(1100);await f.page.locator('.frame-person-card').first().waitFor();
+    await f.page.locator('#frame-ambient').click(); await f.page.clock.runFor(700);
     await f.page.getByRole('link',{name:'Tasks',exact:true}).click();await f.page.getByRole('button',{name:'+ Add a task',exact:true}).click();
     await f.page.getByLabel('Task',{exact:true}).fill('Unfinished parent draft');
     await f.page.clock.runFor(91_000);assert.equal(await f.page.getByLabel('Task',{exact:true}).inputValue(),'Unfinished parent draft');

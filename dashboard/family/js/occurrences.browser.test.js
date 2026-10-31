@@ -43,6 +43,7 @@ async function fixture({ role = 'admin', frame = false, signedOut = false, width
       data = occurrence;
     } else if (url.pathname === '/api/chore-history') data = { history: [{ id: 'fixture-history', occurrenceId: occurrence.id, title: occurrence.title, personName: person.name, type: 'submitted', actorName: 'Synthetic child', reason: null, createdAt: '2026-10-17T18:00:00Z' }] };
     else if (url.pathname === '/api/chore-exceptions') data = method === 'GET' ? { exceptions: [] } : { id: 'fixture-break', ...body, version: 1 };
+    else if (url.pathname === '/api/media') data = { media: [] };
     else if (url.pathname === '/api/notifications') data = { notifications: [{ id: 'fixture-notification', kind: 'chore_submitted', title: 'Task ready for approval', body: 'Synthetic child submitted a chore.', target: 'chores', readAt: state.notificationRead ? '2026-10-17T18:00:00Z' : null, createdAt: '2026-10-17T18:00:00Z' }] };
     else if (url.pathname.endsWith('/read')) { state.notificationRead = true; data = { read: true }; }
     else if (url.pathname === '/api/notification-preferences') data = method === 'GET' ? { pushEnabled: true, choreCompleted: true, choreReopened: true, choreDueSoon: true, choreOverdue: true, rewards: true, internetSessions: true, calendarEvents: true, frameStatus: true, timezone: 'America/Denver', quietStart: null, quietEnd: null } : body;

@@ -1,0 +1,37 @@
+.frame-ambient[hidden] { display:none; }
+.frame-ambient { position:fixed; inset:0; z-index:80; overflow:hidden; color:#f8f7ff; background:radial-gradient(ellipse at 18% 85%,#273342 0,transparent 54%),radial-gradient(ellipse at 90% 12%,#342e57 0,transparent 52%),#101621; font-family:var(--font-body, system-ui,sans-serif); touch-action:none; user-select:none; }
+.ambient-header,.ambient-footer { position:absolute; left:4.5%; right:4.5%; display:flex; align-items:center; justify-content:space-between; z-index:2; }
+.ambient-header { top:4%; font-size:clamp(16px,1.55vw,29px); font-weight:600; }
+.ambient-header>span { display:flex; gap:.6em; align-items:center; }
+.ambient-header img { width:1.7em; height:1.7em; }
+.ambient-header time { font-variant-numeric:tabular-nums; }
+.ambient-footer { bottom:4%; font-size:clamp(13px,1.1vw,21px); color:#c1c6d7; }
+.ambient-footer b { margin-left:1em; color:#aaf2cd; }
+.ambient-kicker { text-transform:uppercase; letter-spacing:.2em; color:#aaf2cd; font-size:clamp(16px,1.5vw,28px); }
+.ambient-clock,.ambient-date-card { position:absolute; inset:16% 5% 13%; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; }
+.ambient-time { font-size:clamp(100px,22vw,420px); line-height:1.2; font-weight:650; letter-spacing:-.07em; font-variant-numeric:tabular-nums; position:relative; z-index:1; }
+.ambient-seconds { display:inline-block; font-size:.19em; letter-spacing:0; color:#aaf2cd; margin-left:.5em; width:1.3em; }
+.ambient-clock-date { font-size:clamp(22px,2.7vw,52px); font-weight:350; margin:0; color:#d5d7e3; }
+.ambient-orbit { position:absolute; height:76vh; width:76vh; border:1px solid #b4b7e21c; border-radius:50%; transform:rotate(-30deg); }
+.ambient-orbit:after { content:''; position:absolute; inset:-7%; border:1px solid #b4b7e20d; border-radius:50%; }
+.ambient-orbit i { display:block; width:12px; height:12px; border-radius:50%; background:#aaf2cd; margin:0 auto; box-shadow:0 0 30px #aaf2cd88; }
+.ambient-date-number { font-size:clamp(150px,28vh,330px); line-height:1; font-weight:700; letter-spacing:-.06em; color:#bcb0ee; }
+.ambient-date-card h1 { font-size:clamp(45px,7vw,135px); letter-spacing:-.06em; margin:.1em 0 0; line-height:1.15; }
+.ambient-date-year { color:#abb2c8; font-size:3vw; margin:.3em; }
+.ambient-content { position:absolute; inset:16% 6% 12%; }
+.ambient-content h1 { margin:.2em 0 .6em; font-size:clamp(38px,5vw,96px); letter-spacing:-.05em; line-height:1; }
+.ambient-agenda { display:grid; gap:1.5vh; }
+.ambient-agenda article { display:flex; align-items:center; gap:3vw; padding:1.5vh 2vw; border:1px solid #ffffff13; border-radius:20px; background:#ffffff06; }
+.ambient-agenda article>div { min-width:10vw; display:flex; flex-direction:column; color:#aaf2cd; }
+.ambient-agenda strong { font-size:2.2vw; }.ambient-agenda small { color:#bbc1d5; font-size:1.2vw; }
+.ambient-agenda h2 { font-size:2.2vw; margin:0; line-height:1.2; overflow:hidden; display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; }
+.ambient-agenda p { font-size:1.3vw; margin:.3em 0 0; color:#b8c1d3; }.ambient-agenda section { min-width:0; }
+.ambient-status { color:#c1c6d7; font-size:1.2vw; margin:.5em 0; }.ambient-empty { color:#c1c6d7; font-size:3vw; line-height:1.4; }
+.ambient-task-grid { display:flex; gap:1.5vw; }.ambient-task-grid>article { flex:1; min-width:0; border:1px solid #ffffff13; background:#ffffff06; border-radius:24px; padding:2vw; }
+.ambient-person { display:flex; align-items:center; gap:1vw; }.ambient-person>span { display:grid; place-items:center; width:3vw; height:3vw; border-radius:50%; background:var(--person); color:#fff; font-size:1.5vw; }.ambient-person h2 { font-size:2vw; overflow:hidden; text-overflow:ellipsis; margin:0; }
+.ambient-task-count { font-size:3vw; margin:.6em 0 .2em; }.ambient-task-count small { font-size:1.1vw; color:#c1c6d7; }.ambient-progress { height:5px; background:#ffffff15; border-radius:10px; }.ambient-progress i { height:100%; display:block; background:var(--person); border-radius:inherit; }
+.ambient-task-grid ul { list-style:none; padding:0; margin:1.3vw 0; }.ambient-task-grid li { position:relative; padding:.5em 0 .5em 1em; font-size:1.5vw; line-height:1.3; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }.ambient-task-grid li:before { content:'○'; color:#aaf2cd; position:absolute; left:0; }.ambient-task-done { font-size:2vw; color:#aaf2cd; }
+.ambient-photo { position:absolute; inset:12% 4.5% 11%; display:flex; align-items:center; justify-content:center; }.ambient-photo>img,.ambient-photo>video { width:100%; height:100%; object-fit:contain; border-radius:12px; }.ambient-photo-label { position:absolute; bottom:0; right:0; margin:0; padding:1em; border-radius:0 12px 0 0; background:#101621cc; font-size:1.3vw; }.ambient-photo-label span { color:#adb6cc; margin-left:1em; }
+@media (prefers-reduced-motion:no-preference) { .frame-ambient>div { animation:ambient-arrive .8s ease-out both; } @keyframes ambient-arrive { from { opacity:0; transform:translateY(12px); } to { opacity:1; transform:translateY(0); } } }
+
+.ambient-video-sound { position:absolute; bottom:16px; left:16px; z-index:3; display:grid; place-items:center; width:68px; height:68px; border-radius:50%; border:1px solid #ffffff66; color:white; background:#101621d9; cursor:pointer; }.ambient-video-sound svg { width:30px; height:30px; }.ambient-video-sound:focus-visible { outline:3px solid #aaf2cd; outline-offset:4px; }

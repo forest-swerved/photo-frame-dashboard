@@ -57,7 +57,8 @@ async function fixture({ frame = true, width = 1280, height = 800 } = {}) {
       const chore = chores.find(item => url.pathname.includes(`/${item.id}/`));
       chore.completion = { date, completed: body.completed, version: body.expectedVersion + 1 };
       data = { choreId: chore.id, ...chore.completion, mutationId: body.mutationId };
-    } else if (url.pathname === '/api/notifications') data = { notifications: [] };
+    } else if (url.pathname === '/api/media') data = { media: [] };
+    else if (url.pathname === '/api/notifications') data = { notifications: [] };
     else throw new Error(`Unexpected fixture path ${url.pathname}`);
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(url.pathname.startsWith('/api/auth/') ? data : { data }) });
   });

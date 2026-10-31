@@ -1,3 +1,4 @@
+import { listMedia, mediaContent, uploadPhoto, reserveVideo, finishVideo, removeMedia, cleanupMedia } from './media.js';
 import { randomUUID } from 'node:crypto';
 import { ApiError, json, readJson, requireValue, textField, timezoneField, uuidField, versionField } from './errors.js';
 import { sharedPool, one, transaction } from './database.js';
@@ -49,6 +50,16 @@ export async function dispatch(request, db, principal, route, options = {}) {
   if (route === 'claim' && method === 'POST') return json(await claimHousehold(db, principal, await readJson(request), options.env));
   if (route === 'join' && method === 'POST') return json(await joinHousehold(db, principal, await readJson(request), { getVerifiedEmail: () => confirmedAccountEmail(request, principal, options) }));
   requireHousehold(principal);
+  if (route === 'media' && method === 'GET') return json(await listMedia(db, principal));
+  const mediaRoute = /^media\/([^/]+)(?:\/(content|video|complete))?$/.exec(route);
+  if (mediaRoute) {
+    const [, id, action] = mediaRoute;
+    if (action === 'content' && method === 'GET') return json(await mediaContent(db, principal, id, options));
+    if (action === 'video' && method === 'POST') return json(await reserveVideo(db, principal, id, await readJson(request), options), 201);
+    if (action === 'complete' && method === 'POST') return json(await finishVideo(db, principal, id, options));
+    if (!action && method === 'PUT') return json(await uploadPhoto(db, principal, id, request, options), 201);
+    if (!action && method === 'DELETE') return json(await removeMedia(db, principal, id, options));
+  }
   if (route === 'live-status' && method === 'GET') return json(await liveStatus(db, principal, options));
   if (route === 'account/transfer-ownership' && method === 'POST') return json(await transferOwnership(db, principal, await readJson(request)));
   if (principal.role === 'member' && /^(household|chores|chore-occurrences|chore-exceptions|chore-history|school-calendar)(\/|$)/.test(route)) principal = { ...principal, verifiedCapabilities: await parentCapabilities(db, principal) };
@@ -209,6 +220,12 @@ export async function handleRequest(request, options = {}) {
       requireValue(typeof env.CRON_SECRET === 'string' && env.CRON_SECRET.length >= 32, 503, 'internet_jobs_unconfigured', 'Internet scheduling is not configured.');
       requireValue(digest(request.headers.get('authorization') || '') === digest(`Bearer ${env.CRON_SECRET}`), 401, 'unauthenticated', 'Unauthorized.');
       return json(await processInternetJobs(db, { env, ...options.internetJobs }));
+    }
+    if (route === 'media/jobs/cleanup' && request.method === 'GET') {
+      const env = options.env || process.env;
+      requireValue(typeof env.CRON_SECRET === 'string' && env.CRON_SECRET.length >= 32, 503, 'media_jobs_unconfigured', 'Media cleanup is not configured.');
+      requireValue(digest(request.headers.get('authorization') || '') === digest(`Bearer ${env.CRON_SECRET}`), 401, 'unauthenticated', 'Unauthorized.');
+      return json(await cleanupMedia(db, { env }));
     }
     if (route === 'calendar/jobs/sync' && request.method === 'GET') {
       const env = options.env || process.env;

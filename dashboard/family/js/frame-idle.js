@@ -1,6 +1,6 @@
 // Only human input resets the deadline; data polling and scroll restoration do
 // not. The caller owns navigation, authorization, and in-flight write guards.
-export function createFrameIdleReturn({ enabled, blocked, onIdle, root = document, now = () => performance.now() }) {
+export function createFrameIdleReturn({ enabled, blocked, onIdle, delay = 45_000, root = document, now = () => performance.now() }) {
   let lastActivity = now();
   const pointers = new Set(), drafts = new WeakSet();
   const activity = () => { lastActivity = now(); };
@@ -16,6 +16,7 @@ export function createFrameIdleReturn({ enabled, blocked, onIdle, root = documen
   }, options);
   root.addEventListener('visibilitychange', () => { if (root.hidden) pointers.clear(); });
   return {
+    reset: activity,
     saved(form) { drafts.delete(form); },
     tick() {
       if (!enabled()) { pointers.clear(); activity(); return; }
@@ -23,7 +24,7 @@ export function createFrameIdleReturn({ enabled, blocked, onIdle, root = documen
       if (pointers.size || blocked() || [...root.querySelectorAll('form')].some(form => drafts.has(form) || form.dataset.reviewRequired === 'true')) {
         activity(); return;
       }
-      if (now() - lastActivity < 60_000) return;
+      if (now() - lastActivity < delay) return;
       activity();
       onIdle();
     },
