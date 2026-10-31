@@ -427,7 +427,7 @@ dialog > form { display:flex; flex-direction:column; max-height:calc(100vh - 32p
  .frame-display .sidebar nav { display:flex; gap:8px; }
  .frame-display .nav-item { flex-direction:row; min-height:44px; padding:8px 14px; font-size:15px; gap:7px; }
  .frame-display .nav-item svg { width:18px; height:18px; }
- .frame-display .sidebar-settings { margin:0; }
+ .frame-display .sidebar-settings { margin:0; display:flex; align-items:center; gap:8px; }
  .frame-display .sidebar-settings .nav-item { padding:8px; }
  .frame-display .sidebar-settings .nav-item span { display:none; }
  .frame-display .main-content,.frame-display .frame-home-content { height:100%; min-height:0; padding:12px 22px; }
@@ -513,3 +513,10 @@ dialog > form { display:flex; flex-direction:column; max-height:calc(100vh - 32p
  .frame-display .dialog-heading h2 { font-size:30px; }
  .frame-display .dialog-body { font-size:18px; }
 }
+
+/* Local frame audio controls use the same touch targets as navigation. */
+.frame-sound-button { display:inline-flex; align-items:center; justify-content:center; }
+.sound-preview-buttons { display:flex; flex-wrap:wrap; gap:8px; }
+.frame-sound-settings .form-row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.frame-sound-settings input[type="range"] { width:100%; min-height:44px; accent-color:var(--primary); }
+.frame-sound-settings output { font-variant-numeric:tabular-nums; }

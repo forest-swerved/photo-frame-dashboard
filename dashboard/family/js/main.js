@@ -11,6 +11,7 @@ import { taskOverview, taskGroups, agendaParts, completionLabel, protectDialogDr
 import { frameTaskLanes } from './frame-home.js';
 import { createFrameIdleReturn } from './frame-idle.js';
 import { createLiveUpdates } from './live-updates.js';
+import { createFrameSounds, taskCompletionCue } from './frame-sounds.js';
 
 const app = document.querySelector('#family-app');
 const dialog = document.querySelector('#family-dialog');
@@ -49,16 +50,19 @@ let pendingTaskDetails = false;
 const activePointers = new Set();
 const taskPointerIntents = new Map();
 const taskKeyIntents = new Map();
-const frameEvents = createFrameEventNotices(document.querySelector('#frame-event-notice'));
+const sounds = createFrameSounds({ enabled: () => frame(), timezone: zone });
+let soundFeedbackVersion = 0, navigationSound = false;
+function sound(name, options) { soundFeedbackVersion++; return sounds.play(name, options); }
+const frameEvents = createFrameEventNotices(document.querySelector('#frame-event-notice'), { onShow: () => sounds.play('reminder') });
 function tickFrameEvents() {
   frameEvents.update({ session: S.booting ? null : S.session, calendar: S.frameCalendar, timezone: zone(),
     visible: !document.hidden && !dialog.open });
 }
 const workbench = createWorkbench({ snapshot: () => S.snapshot, session: () => S.session, epoch: () => generation,
-  members: () => S.members, zone, today, frame, field, button, openDialog, dialog, toast, render, refreshTaskDetails,
+  members: () => S.members, zone, today, frame, field, button, openDialog, dialog, toast, sound, taskApproved, render, refreshTaskDetails,
   reload: async () => { await loadHousehold(); if (internet.loaded() || S.view === 'devices') await internet.load(); }, reloadSetup: loadSetup, reboot: boot });
 const internet = createInternetUI({ snapshot: () => S.snapshot, session: () => S.session, epoch: () => generation,
-  zone, frame, field, button, openDialog, dialog, toast, render, unlock: workbench.unlock });
+  zone, frame, field, button, openDialog, dialog, toast, sound, render, soundTimers: (rows, fresh) => sounds.observeTimers(rows, `${generation}:${S.session?.household?.id}`, fresh), unlock: workbench.unlock });
 const liveUpdates = createLiveUpdates({
   read: () => request('/api/live-status', { timeoutMs: 8000 }),
   loaders: { household:()=>loadHousehold().catch(error=>{dataFailure(error);return false;}), internet:()=>internet.load(), calendar:()=>loadCalendar() },
@@ -146,7 +150,22 @@ function updateStamp(value) {
 function shell(content) {
   const labels = { today: 'Today', calendar: 'Calendar', chores: S.session?.role === 'child' ? 'My tasks' : 'Tasks', devices: 'Devices', activity: 'Activity', setup: 'Settings' };
   const nav = view => `<a class="nav-item ${S.view === view ? 'active' : ''}" data-key="nav-${view}" href="#${view}" aria-label="${labels[view]}" ${S.view === view ? 'aria-current="page"' : ''}>${icon(view)}<span>${labels[view]}</span>${view === 'activity' && workbench.unreadCount() ? `<span class="nav-badge" aria-label="${workbench.unreadCount()} unread">${workbench.unreadCount()}</span>` : ''}</a>`;
-  return `<div class="family-shell" data-key="family-shell"><aside class="sidebar"><a class="brand" href="#today" aria-label="${h(title())} home"><img class="brand-mark" src="/brand/folded-home.svg" alt="" width="40" height="40"><span class="brand-name">${h(title())}<small>A little more together.</small></span></a><nav aria-label="Main navigation">${['today','chores','calendar','devices',...(!frame() ? ['activity'] : [])].map(nav).join('')}</nav><div class="sidebar-settings">${nav('setup')}</div><div class="sidebar-bottom"><span class="connection-dot ${S.error ? 'warning' : ''}"></span><span>${frame() ? 'Paired family frame' : 'Your family, connected'}</span></div></aside><main id="main-content" class="main-content ${S.view === 'today' ? 'today-content' : ''} ${frame() && S.view === 'today' ? 'frame-home-content' : ''}" tabindex="-1"><header class="page-heading" data-key="page-heading"><div><p class="eyebrow">${h(title())}</p><h1>${labels[S.view]}${frame() && S.view === 'today' && S.snapshot?.schoolDay?.label ? `<span class="frame-day-type">${h(S.snapshot.schoolDay.label)}</span>` : ''}</h1></div><div class="heading-actions"><div class="header-clock">${clockMarkup()}</div><a href="#setup" class="settings-shortcut icon-button" aria-label="Settings">${icon('setup')}</a></div></header>${noticeBanner()}${content}</main></div>`;
+  return `<div class="family-shell" data-key="family-shell"><aside class="sidebar"><a class="brand" href="#today" aria-label="${h(title())} home"><img class="brand-mark" src="/brand/folded-home.svg" alt="" width="40" height="40"><span class="brand-name">${h(title())}<small>A little more together.</small></span></a><nav aria-label="Main navigation">${['today','chores','calendar','devices',...(!frame() ? ['activity'] : [])].map(nav).join('')}</nav><div class="sidebar-settings">${frame() ? frameSoundButton() : ''}${nav('setup')}</div><div class="sidebar-bottom"><span class="connection-dot ${S.error ? 'warning' : ''}"></span><span>${frame() ? 'Paired family frame' : 'Your family, connected'}</span></div></aside><main id="main-content" class="main-content ${S.view === 'today' ? 'today-content' : ''} ${frame() && S.view === 'today' ? 'frame-home-content' : ''}" tabindex="-1"><header class="page-heading" data-key="page-heading"><div><p class="eyebrow">${h(title())}</p><h1>${labels[S.view]}${frame() && S.view === 'today' && S.snapshot?.schoolDay?.label ? `<span class="frame-day-type">${h(S.snapshot.schoolDay.label)}</span>` : ''}</h1></div><div class="heading-actions"><div class="header-clock">${clockMarkup()}</div><a href="#setup" class="settings-shortcut icon-button" aria-label="Settings">${icon('setup')}</a></div></header>${noticeBanner()}${content}</main></div>`;
+}
+
+function frameSoundButton() {
+  const prefs = sounds.preferences(), muted = !prefs.enabled || !prefs.volume;
+  return `<button type="button" class="icon-button frame-sound-button" data-action="frame-sounds" aria-label="Frame sounds${muted ? ' (muted)' : ''}" title="Frame sounds"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/>${muted ? '<path d="m16 9 5 6m0-6-5 6"/>' : '<path d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/>'}</svg></button>`;
+}
+function openFrameSounds() {
+  const prefs = sounds.preferences();
+  let saved = false;
+  const check = (label, name) => `<label class="checkbox-label"><input type="checkbox" name="${name}" ${prefs[name] ? 'checked' : ''}><span>${label}</span></label>`;
+  openDialog('Frame sounds', `<div class="form-stack frame-sound-settings"><p class="supporting">Gentle feedback for this display. Your phone and other frames keep their own settings.</p>${button(prefs.enabled ? 'Mute now' : 'Turn sounds on', 'toggle-frame-sounds', 'button button-secondary')}<label class="field"><span>Volume</span><input type="range" name="volume" data-sound-volume min="0" max="100" step="5" value="${Math.round(prefs.volume * 100)}" aria-label="Sound volume"><output data-sound-volume-label>${Math.round(prefs.volume * 100)}%</output></label>${check('Buttons, navigation and saved changes', 'interface')}${check('Task completions and celebrations', 'celebrations')}${check('Timer and calendar reminders', 'reminders')}${check('Quiet hours', 'quiet')}<div class="form-row">${field('Quiet from', 'quietStart', prefs.quietStart, {type:'time'})}${field('Quiet until', 'quietEnd', prefs.quietEnd, {type:'time'})}</div><p class="field-help">Quiet hours follow ${h(zone())}.${sounds.quiet() ? ' Quiet hours are active now.' : ''} Previews can play during quiet hours; mute and volume still apply.</p><div class="sound-preview-buttons">${button('Task done', 'preview-frame-sound', 'button button-secondary', 'data-cue="complete"')}${button('All done!', 'preview-frame-sound', 'button button-secondary', 'data-cue="allDone"')}${button('Timer finished', 'preview-frame-sound', 'button button-secondary', 'data-cue="timerEnd"')}</div><button type="submit" class="button">Save sound settings</button></div>`, async form => {
+    sounds.update({ ...Object.fromEntries(['interface','celebrations','reminders','quiet'].map(name => [name, form.has(name)])), volume:Number(form.get('volume')) / 100, quietStart:form.get('quietStart'), quietEnd:form.get('quietEnd') });
+    saved = true; dialog.close(); render(true); toast('Sound settings saved for this frame.');
+  });
+  dialog.addEventListener('close', () => { if (!saved && sounds.preferences().volume !== prefs.volume) sounds.update({volume:prefs.volume}); }, {once:true});
 }
 
 function calendarStatus() {
@@ -559,6 +578,15 @@ function dataFailure(error) {
   } else { S.error = errorMessage(error); render(); }
 }
 
+function taskApproved(item, result) {
+  const confirmed = result?.occurrence || result, current = S.snapshot?.occurrences?.find(task => task.id === item.id);
+  if (!current || confirmed?.status !== 'completed' || confirmed.date !== S.snapshot.date || current.status === 'completed' || current.version > confirmed.version) return;
+  const progress = snapshot => taskProgress(snapshot.occurrences.filter(task => task.personId === item.personId), snapshot.schoolDay);
+  const cue = taskCompletionCue(progress(S.snapshot), progress(mergeOccurrence(S.snapshot, confirmed)), {completed:true, status:confirmed.status});
+  const played = sound(cue, {key:cue === 'allDone' ? `all:${S.session.household.id}:${confirmed.date}:${item.personId || 'shared'}` : `task:${item.id}:${confirmed.date}:${confirmed.version}`});
+  if (cue === 'allDone' && !played) sounds.play('complete');
+}
+
 async function saveCompletion(chore, desired) {
   const date = S.snapshot.date;
   const key = `${chore.id}:${date}`;
@@ -578,16 +606,30 @@ async function saveCompletion(chore, desired) {
   try {
     const result = await request(occurrence ? `/api/chore-occurrences/${idPath(chore.id)}/completion` : `/api/chores/${idPath(chore.id)}/completions/${date}`, { method: 'PUT', body });
     if (epoch !== generation) return;
+    const beforeProgress = taskProgress(scheduledChores().filter(item => item.personId === chore.personId), S.snapshot.schoolDay);
+    const beforeTask = scheduledChores().find(item => item.id === chore.id);
     if (occurrence) S.snapshot = mergeOccurrence(S.snapshot, result.occurrence || result);
     else if (S.snapshot?.date === date) S.snapshot.chores = mergeCompletion(S.snapshot.chores, result, date);
     const current = S.snapshot?.chores.find(item => item.id === chore.id)?.completion;
     toast(current?.version > result.version ? 'Your change was saved earlier. A newer update from another device is shown.' : (result.occurrence || result).status === 'submitted' ? 'Submitted. Waiting for parent approval.' : desired ? 'Task completed. Saved for the family.' : 'Task reopened. Saved for the family.');
+    const afterTask = scheduledChores().find(item => item.id === chore.id);
+    const confirmed = result.occurrence || result;
+    const responseVersion = confirmed.version;
+    const visibleVersion = occurrence ? afterTask?.version : afterTask?.completion?.version;
+    if (S.snapshot.date === date && afterTask && visibleVersion === responseVersion &&
+      (occurrence ? beforeTask?.status !== afterTask.status : beforeTask?.completion?.completed !== afterTask.completion?.completed)) {
+      const afterProgress = taskProgress(scheduledChores().filter(item => item.personId === chore.personId), S.snapshot.schoolDay);
+      const cue = taskCompletionCue(beforeProgress, afterProgress, { completed:desired, status:afterTask.status });
+      const played = sound(cue, { key:cue === 'allDone' ? `all:${S.session.household.id}:${date}:${chore.personId || 'shared'}` : `task:${chore.id}:${date}:${responseVersion}` });
+      if (cue === 'allDone' && !played) sounds.play('complete');
+    }
     S.recentTasks.add(chore.id);
     S.attempts.delete(key);
     if (occurrence) await loadHousehold().catch(dataFailure);
     if (occurrence && epoch === generation) await internet.load();
   } catch (error) {
     if (epoch !== generation) return;
+    sound('error');
     if (error.status === 401 || error.status === 403) { dataFailure(error); return; }
     if (error.status === 409 && error.details?.current) {
       if (occurrence) S.snapshot = mergeOccurrence(S.snapshot, error.details.current);
@@ -616,6 +658,7 @@ function openDialog(titleText, contents, onSubmit) {
   form.querySelectorAll('[data-close-dialog]').forEach(button => { button.onclick = () => dialog.close(); });
   form.onsubmit = event => submitForm(event, onSubmit);
   dialog.showModal();
+  sounds.play('open');
   closeDraftGuard = protectDialogDraft(dialog);
   const first = dialog.querySelector('.dialog-body input:not([type="hidden"]),.dialog-body select,.dialog-body textarea') || dialog.querySelector('[data-close-dialog]');
   first?.focus();
@@ -644,8 +687,10 @@ async function submitForm(event, run) {
   form.dataset.submitting = 'true';
   if (submit) { submit.disabled = true; submit.textContent = 'Saving…'; }
   if (errorBox) { errorBox.hidden = true; errorBox.textContent = ''; }
-  try { await run(new FormData(form), form); frameIdle.saved(form); }
+  const soundVersion = soundFeedbackVersion, epoch = generation;
+  try { await run(new FormData(form), form); frameIdle.saved(form); if (epoch === generation && soundVersion === soundFeedbackVersion) sound('saved'); }
   catch (error) {
+    if (epoch === generation) sound('error');
     if (errorBox) { errorBox.textContent = `${errorMessage(error)}${error.status === 409 ? ' Another device changed this item. Close this form, refresh, and try again.' : ''}`; errorBox.hidden = false; }
   } finally {
     delete form.dataset.submitting;
@@ -739,6 +784,9 @@ const forms = {
 
 async function action(name, element, activation) {
   const id = element.dataset.id;
+  if (name === 'frame-sounds' && frame()) { openFrameSounds(); return; }
+  if (name === 'toggle-frame-sounds' && frame()) { sounds.update({ enabled:!sounds.preferences().enabled }); sounds.unlock(); dialog.close(); render(true); sounds.play('toggleOn'); return; }
+  if (name === 'preview-frame-sound' && frame()) { sounds.unlock(); sounds.play(element.dataset.cue, {preview:true}); return; }
   if (await workbench.action(name, element)) return;
   if (await internet.action(name, element)) return;
   if (await accountUI.action(name, element)) return;
@@ -797,7 +845,7 @@ async function action(name, element, activation) {
     if (intent && (intent.epoch !== generation || intent.id !== id || intent.date !== S.snapshot.date || intent.date !== today()
       || intent.kind !== (chore.status ? 'occurrence' : 'routine')
       || intent.version !== (chore.status ? chore.version : chore.completion?.version || 0))) {
-      toast('This task changed. Check its latest status before changing it.'); render(); refreshTaskDetails(); return;
+      sound('error'); toast('This task changed. Check its latest status before changing it.'); render(); refreshTaskDetails(); return;
     }
     const desired = intent ? intent.completed : (S.conflicts.has(key) ? S.conflicts.get(key) : S.attempts.get(key)?.completed);
     return saveCompletion(chore, desired);
@@ -856,7 +904,10 @@ document.addEventListener('click', event => {
     activation = press?.intent || taskKeyIntents.get(element) || taskIntent(element);
     taskKeyIntents.delete(element);
   }
-  action(element.dataset.action, element, activation).catch(error => toast(errorMessage(error)));
+  const soundVersion = soundFeedbackVersion;
+  action(element.dataset.action, element, activation).then(() => {
+    if (soundVersion === soundFeedbackVersion && !['complete-chore','retry-completion','preview-frame-sound','toggle-frame-sounds'].includes(element.dataset.action)) sounds.play('tap');
+  }).catch(error => { sound('error'); toast(errorMessage(error)); });
 });
 dialog.addEventListener('close', () => { if (dialog.open) return; dialog.innerHTML = ''; if (pendingRender) render(); });
 document.addEventListener('focusout', () => setTimeout(() => { if (pendingRender && !edited()) render(); }, 150));
@@ -897,16 +948,18 @@ window.addEventListener('hashchange', () => {
   const next = location.hash.slice(1);
   if (!views.includes(next)) return;
   if (dialog.open) {
-    if (!dialog.dispatchEvent(new Event('request-close', { cancelable: true }))) { history.replaceState(null,'',`${location.pathname}${location.search}#${S.view}`); return; }
+    if (!dialog.dispatchEvent(new Event('request-close', { cancelable: true }))) { history.replaceState(null,'',`${location.pathname}${location.search}#${S.view}`); navigationSound = false; return; }
     dialog.close();
   }
+  if (navigationSound && S.view !== next) sounds.play('navigate');
+  navigationSound = false;
   S.recentTasks.clear();
   S.view = next;
   render(true);
   if (S.session?.household) { if (next === 'setup') loadSetup(); else if (next === 'activity') workbench.loadActivity(); else if (next === 'devices') internet.load(); else loadCalendar(); }
 });
 window.addEventListener('online', () => { liveUpdates.tick(true);refresh(); });
-document.addEventListener('visibilitychange', () => { tickFrameEvents(); if (!document.hidden && S.session?.household) { liveUpdates.tick(true);refresh(); } });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { sounds.stop(); sounds.resetTimers(); } tickFrameEvents(); if (!document.hidden && S.session?.household) { liveUpdates.tick(true);refresh(); } });
 setInterval(() => {
   frameIdle.tick();
   paintClock();
@@ -923,3 +976,21 @@ setInterval(async () => {
   finally { pollBusy = false; }
 }, 20000);
 boot();
+
+// Unlock Web Audio only from a real gesture; startup, polling and synthetic events stay silent.
+for (const type of ['pointerdown', 'keydown']) document.addEventListener(type, event => { if (event.isTrusted) sounds.unlock(); }, {capture:true});
+document.addEventListener('click', event => {
+  const target = event.target.closest('button,a,summary,input');
+  if (!target || target.disabled || target.getAttribute('aria-disabled') === 'true') return;
+  if (target.matches('a[href^="#"]')) navigationSound = target.hash !== location.hash;
+  if (target.matches('[data-close-dialog],[data-dismiss-event]')) sounds.play('close');
+  if (target.matches('summary')) sounds.play(target.parentElement.open ? 'close' : 'open');
+}, {capture:true});
+document.addEventListener('change', event => {
+  if (event.target.matches('input[type="checkbox"],select')) sounds.play(event.target.type === 'checkbox' && !event.target.checked ? 'toggleOff' : 'toggleOn');
+});
+dialog.addEventListener('input', event => {
+  if (!event.target.matches('[data-sound-volume]')) return;
+  const value = Number(event.target.value); sounds.update({volume:value / 100});
+  dialog.querySelector('[data-sound-volume-label]').textContent = `${value}%`;
+});

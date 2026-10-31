@@ -70,9 +70,10 @@ export function createWorkbench(ctx) {
     const labels = { approve: 'Approve task', reject: 'Return for changes', skip: 'Excuse this task', reschedule: 'Reschedule task' };
     ctx.openDialog(labels[action], `<div class="form-stack"><p>${h(item.title)} · ${h(person(item.personId))}</p>${reasons ? ctx.field('Reason', 'reason', '', { max: 500 }) : ''}${action === 'reschedule' ? `${ctx.field('Move to date', 'toDate', addDays(ctx.today(), 1), { type: 'date' })}${ctx.field('Due by (optional)', 'dueTime', item.dueTime || '', { type: 'time', required: false })}` : ''}<p class="field-help">This changes this daily task. Its routine and earlier history are kept.</p><button type="submit" class="button">${labels[action]}</button></div>`, async (form, element) => {
       const started = epoch();
-      await request(`/api/chore-occurrences/${encodeURIComponent(item.id)}/actions`, { method: 'POST', body: { action, expectedVersion: item.version, mutationId: operationId,
+      const result = await request(`/api/chore-occurrences/${encodeURIComponent(item.id)}/actions`, { method: 'POST', body: { action, expectedVersion: item.version, mutationId: operationId,
         ...(reasons ? { reason: form.get('reason').trim() } : {}), ...(action === 'reschedule' ? { toDate: form.get('toDate'), dueTime: form.get('dueTime') || null } : {}) } });
       if (started !== epoch()) return;
+      if (action === 'approve') ctx.taskApproved?.(item, result); else ctx.sound?.(action === 'reject' ? 'undo' : 'saved');
       closeForm(element); ctx.toast('Daily task updated.'); await ctx.reload();
     });
   }
@@ -150,7 +151,7 @@ export function createWorkbench(ctx) {
       finally {element.querySelector('[name="pin"]').value='';form.delete('pin');}
       if(current!==epoch() || !activeForm(element)) return;
       setFrameAccess(data);state.access={scope:data.scope,personId:data.personId,parentName:data.parentName,expiresAt:data.expiresAt};ctx.session().personId=data.personId;
-      ctx.dialog.close();ctx.toast(`${data.parentName || 'Parent'} controls unlocked temporarily.`);await ctx.reload();
+      ctx.sound?.('unlock');ctx.dialog.close();ctx.toast(`${data.parentName || 'Parent'} controls unlocked temporarily.`);await ctx.reload();
     });
   }
   function parentPin() {
@@ -169,7 +170,7 @@ export function createWorkbench(ctx) {
       if (started !== epoch() || !activeForm(element)) return;
       setFrameAccess(data); state.access = { scope: data.scope, personId: data.personId, expiresAt: data.expiresAt };
       ctx.session().personId = data.personId;
-      ctx.dialog.close(); ctx.toast('Frame controls unlocked temporarily.'); await ctx.reload();
+      ctx.sound?.('unlock'); ctx.dialog.close(); ctx.toast('Frame controls unlocked temporarily.'); await ctx.reload();
     });
   }
   function createAccess() {
@@ -194,7 +195,7 @@ export function createWorkbench(ctx) {
       const item = occurrence(element.dataset.id); if (!item || item.status !== 'pending') return true;
       const started = epoch(), selected = item.subtasks.filter(step => step.id === element.dataset.stepId ? !step.completed : step.completed).map(step => step.id);
       element.disabled = true;
-      try { await request(`/api/chore-occurrences/${encodeURIComponent(item.id)}/actions`, { method: 'POST', body: { action: 'subtasks', expectedVersion: item.version, mutationId: mutationId(), completedSubtaskIds: selected } }); if (started === epoch()) { await ctx.reload(); ctx.refreshTaskDetails?.(); } }
+      try { await request(`/api/chore-occurrences/${encodeURIComponent(item.id)}/actions`, { method: 'POST', body: { action: 'subtasks', expectedVersion: item.version, mutationId: mutationId(), completedSubtaskIds: selected } }); if (started === epoch()) { ctx.sound?.(selected.includes(element.dataset.stepId) ? 'complete' : 'undo'); await ctx.reload(); ctx.refreshTaskDetails?.(); } }
       finally { if (element.isConnected) element.disabled = false; }
       return true;
     }
@@ -223,7 +224,7 @@ export function createWorkbench(ctx) {
     if(name==='frame-temporary-unlock') { temporaryUnlock();return true; }
     if(name==='parent-pin') { parentPin();return true; }
     if (name === 'create-frame-access') { createAccess(); return true; }
-    if (name === 'frame-lock') { setFrameAccess(null); state.access = null; await ctx.reboot(); return true; }
+    if (name === 'frame-lock') { ctx.sound?.('lock'); setFrameAccess(null); state.access = null; await ctx.reboot(); return true; }
     if (name === 'member-capabilities') {
       const item = ctx.members().find(row => row.id === element.dataset.id); if (!item) return true;
       ctx.openDialog('Caregiver permissions', `<div class="form-stack"><p>${h(item.name)}</p>${check('Manage routines, approvals and task breaks', 'manageChores', item.capabilities?.manageChores)}${check('Manage devices and Internet time', 'manageInternet', item.capabilities?.manageInternet)}<button type="submit" class="button">Save permissions</button></div>`, async (form, element) => {

@@ -29,6 +29,16 @@ export function sessionCountdown(session, now) {
       : pending ? 'Waiting for network' : preparation > 0 ? 'Get ready' : session.allDay ? 'All-day access' : 'Time remaining',
     progress: frozen > 0 ? Math.min(1, preparation / frozen) : 0 };
 }
+export function sessionSoundState(session, warningMinutes, now) {
+  const countdown = sessionCountdown(session, now), deadline = Date.parse(session.endsAt);
+  // Expiry can be observed just before or after the server marks the session ended.
+  // A timer cue means its clock elapsed, never that network blocking is confirmed.
+  const expired = ['ending','ended'].includes(session.state) && Number.isFinite(deadline) && deadline <= now;
+  return { id:session.id, phase:countdown.phase, remaining:expired ? 0 : countdown.remaining, deadline:session.endsAt,
+    running:expired || session.state === 'active' && session.observedState === 'allowed' && !session.lastError,
+    pending:['starting','resuming'].includes(session.state), warning:(warningMinutes || 0) * 60 };
+}
+
 export function remainingLabel(seconds) {
   if (seconds === null) return 'Checking time';
   if (seconds === 0) return '0:00 · checking cutoff';
@@ -130,6 +140,7 @@ export function createInternetUI(ctx) {
         ctx.render();
       }
       if (element?.tagName === 'FORM' && (!ctx.dialog.open || ctx.dialog.querySelector('form') !== element)) { await load(); return null; }
+      ctx.sound?.(/\/(?:redeem|grants)$|\/sessions\/.*\/actions$|\/devices\/.*\/access$/.test(path) ? 'requested' : 'saved');
       return result;
     } catch (error) {
       if (started !== epoch()) return null;
@@ -212,6 +223,7 @@ export function createInternetUI(ctx) {
   }
 
   function celebrate(credit) {
+    ctx.sound?.('reward', {key:`reward:${credit.id}`});
     ctx.openDialog(`Great job, ${personName(credit.personId)}!`, `<div class="reward-celebration"><strong>${credit.minutes} minutes earned</strong><p>Your approved tasks are complete. Use this reward now, or save it until ${h(stamp(credit.expiresAt))}.</p><div class="dialog-actions">${ctx.button('Save for later', 'reward-later', 'button button-secondary')}${ctx.button('Use now', 'reward-use', 'button', `data-id="${h(credit.id)}"`)}</div></div>`, async () => {});
     state.rewardDialog = { id: credit.id, form: ctx.dialog.querySelector('form') };
   }
@@ -330,6 +342,9 @@ export function createInternetUI(ctx) {
     return false;
   }
   function tick() {
+    const time = now();
+    ctx.soundTimers?.((state.data?.sessions || []).map(session => sessionSoundState(session, state.data.policies.find(policy => policy.personId === session.personId)?.warningMinutes, time)),
+      !!state.data && !state.error && state.serverMs !== null && performance.now() - state.monoMs < 45000);
     for (const element of document.querySelectorAll('[data-session-remaining]')) {
       const session = state.data?.sessions.find(item => item.id === element.dataset.sessionRemaining);
       if (!session) continue;

@@ -20,7 +20,7 @@ export function frameEventCandidates(calendar, timezone, now = Date.now()) {
   }).sort((a, b) => a.start - b.start || a.key.localeCompare(b.key));
 }
 
-export function createFrameEventNotices(root) {
+export function createFrameEventNotices(root, { onShow = () => {} } = {}) {
   let household = null, seen = new Map(), current = null, hideAt = 0, timer;
   const hide = () => { clearTimeout(timer); current = null; hideAt = 0; root.hidden = true; root.replaceChildren(); };
   const storageKey = () => `family-frame-event-notices:${household}`;
@@ -57,6 +57,7 @@ export function createFrameEventNotices(root) {
       const heading = next.phase === 'starting' ? 'Starting now' : `Starts in ${Math.ceil((next.start - now) / minute)} min`;
       root.innerHTML = `<div class="frame-event-orbit" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div><div class="frame-event-copy" role="status" aria-live="polite" aria-atomic="true"><p class="frame-event-heading">${h(heading)} · ${h(time)}</p><h2>${h(String(next.title || 'Calendar event').slice(0, 160))}</h2>${next.location ? `<p class="frame-event-location">${h(String(next.location).slice(0, 160))}</p>` : ''}</div><button type="button" data-dismiss-event aria-label="Dismiss event reminder">×</button>`;
       root.hidden = false;
+      onShow(next);
       timer = setTimeout(hide, Math.max(0, hideAt - now));
     },
   };
