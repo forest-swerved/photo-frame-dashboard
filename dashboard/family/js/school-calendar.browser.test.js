@@ -60,6 +60,7 @@ async function fixture({ role = 'admin', frame = false, width = 390, unknown = f
       assert.equal(body.expectedVersion, routine.version); Object.assign(routine, body, { version: routine.version + 1 }); data = routine;
     } else if (url.pathname === '/api/chores/batch' && req.method() === 'POST') data = { routines: body.personIds.map(personId => ({ ...body, personId, id: `new-${personId}`, version: 1 })) };
     else if (url.pathname === '/api/chores' && req.method() === 'POST') data = { id: 'fixture-new-routine', ...body, version: 1 };
+    else if (url.pathname === '/api/media') data = { media: [] };
     else if (url.pathname === '/api/notifications') data = { notifications: [] };
     else throw new Error(`Unexpected synthetic route ${req.method()} ${url.pathname}`);
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(url.pathname.startsWith('/api/auth/') ? data : { data }) });

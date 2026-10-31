@@ -10,22 +10,22 @@ function fixture() {
   const advance = ms => { state.time += ms; idle.tick(); };
   return { root, state, idle, emit, advance };
 }
-test('idle returns at sixty seconds; background work and scroll restoration do not reset it', () => {
-  const f = fixture(); f.advance(59_000); assert.equal(f.state.returns, 0);
+test('idle returns at 45 seconds; background work and scroll restoration do not reset it', () => {
+  const f = fixture(); f.advance(44_000); assert.equal(f.state.returns, 0);
   f.emit('scroll'); f.advance(1000); assert.equal(f.state.returns, 1);
 });
-test('touches, keyboard and wheel start a fresh minute while mouse hover does not', () => {
+test('touches, keyboard and wheel start a fresh 45 seconds while mouse hover does not', () => {
   for (const type of ['pointerdown', 'pointerup', 'keydown', 'wheel']) {
-    const f = fixture(); f.advance(59_000); f.emit(type, { pointerId: 1 });
+    const f = fixture(); f.advance(44_000); f.emit(type, { pointerId: 1 });
     if (type === 'pointerdown') f.emit('pointerup', { pointerId: 1 });
-    f.advance(59_000); assert.equal(f.state.returns, 0); f.advance(1000); assert.equal(f.state.returns, 1);
+    f.advance(44_000); assert.equal(f.state.returns, 0); f.advance(1000); assert.equal(f.state.returns, 1);
   }
-  const f = fixture(); f.advance(59_000); f.emit('pointermove', { pointerId: 1, buttons: 0 }); f.advance(1000); assert.equal(f.state.returns, 1);
+  const f = fixture(); f.advance(44_000); f.emit('pointermove', { pointerId: 1, buttons: 0 }); f.advance(1000); assert.equal(f.state.returns, 1);
 });
-test('an active drag or a write defers returning and leaves a fresh minute afterward', () => {
+test('an active drag or a write defers returning and leaves a fresh 45 seconds afterward', () => {
   const f = fixture(); f.emit('pointerdown', { pointerId: 1 }); f.advance(90_000); assert.equal(f.state.returns, 0);
   f.emit('pointercancel', { pointerId: 1 }); f.state.blocked = true; f.advance(90_000); assert.equal(f.state.returns, 0);
-  f.state.blocked = false; f.advance(59_000); assert.equal(f.state.returns, 0); f.advance(1000); assert.equal(f.state.returns, 1);
+  f.state.blocked = false; f.advance(44_000); assert.equal(f.state.returns, 0); f.advance(1000); assert.equal(f.state.returns, 1);
 });
 test('unsaved and review-required forms remain until saved or closed', () => {
   const f = fixture(), form = { dataset: {} }; f.state.forms = [form];
@@ -33,7 +33,7 @@ test('unsaved and review-required forms remain until saved or closed', () => {
   const event = new Event('change'); Object.defineProperty(event, 'target', { value: { closest: () => form } }); f.root.dispatchEvent(event);
   f.advance(90_000); assert.equal(f.state.returns, 0);
   f.idle.saved(form); form.dataset.reviewRequired = 'true'; f.advance(90_000); assert.equal(f.state.returns, 0);
-  f.state.forms = []; f.advance(59_000); assert.equal(f.state.returns, 0); f.advance(1000); assert.equal(f.state.returns, 1);
+  f.state.forms = []; f.advance(44_000); assert.equal(f.state.returns, 0); f.advance(1000); assert.equal(f.state.returns, 1);
 });
 test('unpaired and ordinary clients never return; hidden elapsed time is evaluated on foreground', () => {
   const f = fixture(); f.state.enabled = false; f.advance(90_000); assert.equal(f.state.returns, 0);

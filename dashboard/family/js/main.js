@@ -9,6 +9,7 @@ import { createInternetUI } from './internet-ui.js';
 import { createAccountUI } from './account-ui.js';
 import { taskOverview, taskGroups, agendaParts, completionLabel, protectDialogDraft, quietCalendarRefresh } from './presentation.js';
 import { frameTaskLanes } from './frame-home.js';
+import { createFrameAmbient } from './frame-ambient.js';
 import { createFrameIdleReturn } from './frame-idle.js';
 import { createLiveUpdates } from './live-updates.js';
 import { createFrameSounds, taskCompletionCue } from './frame-sounds.js';
@@ -74,6 +75,16 @@ const liveUpdates = createLiveUpdates({
     if(S.liveIssue!==message) { S.liveIssue=message;render(); }
   },
 });
+const ambient = createFrameAmbient(document.querySelector('#frame-ambient'), {
+  state: () => ({ enabled: frame() && !!S.session?.household && !S.booting,
+    cacheScope: `${S.session?.household?.id}:${S.session?.user?.id}`, purge: !S.booting && (!frame() || !S.session?.household),
+    scope: `${generation}:${S.session?.household?.id}:${JSON.stringify(frameAccessStatus())}`,
+    timezone: zone(), title: title(), calendar: S.frameCalendar, people: people(),
+    tasks: S.snapshot ? scheduledChores() : [], schoolDay: S.snapshot?.schoolDay,
+    stale: !!S.liveIssue || !!S.error || S.snapshot?.date !== today() }),
+  media: () => request('/api/media'), readMediaURL: id => request(`/api/media/${id}/content`), onAuthFailure: dataFailure,
+  onWake: () => { frameIdle.reset(); if (S.view !== 'today') location.hash = 'today'; },
+});
 const frameIdle = createFrameIdleReturn({
   enabled: () => frame() && !!S.session?.household && !S.booting,
   blocked: () => S.pending.size > 0 || internet.writing() || !!document.querySelector('form[data-submitting]'),
@@ -83,6 +94,7 @@ const frameIdle = createFrameIdleReturn({
       dialog.close();
     }
     if (S.view !== 'today') location.hash = 'today';
+    ambient.start();
   },
 });
 
@@ -403,6 +415,7 @@ function joinView() {
 }
 
 function render(force = false) {
+  ambient.sync();
   tickFrameEvents();
   if (!force && edited()) { pendingRender = true; return; }
   pendingRender = false;
@@ -961,6 +974,7 @@ window.addEventListener('hashchange', () => {
 window.addEventListener('online', () => { liveUpdates.tick(true);refresh(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { sounds.stop(); sounds.resetTimers(); } tickFrameEvents(); if (!document.hidden && S.session?.household) { liveUpdates.tick(true);refresh(); } });
 setInterval(() => {
+  ambient.tick();
   frameIdle.tick();
   paintClock();
   internet.tick();

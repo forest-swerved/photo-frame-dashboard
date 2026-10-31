@@ -5,7 +5,7 @@ import { createPool } from './database.js';
 export async function migrate(env = process.env) {
   // The parent setup workflow verifies this dedicated project's environment before invocation.
   if (!env.DATABASE_URL_UNPOOLED) throw new Error('DATABASE_URL_UNPOOLED is required for this migration.');
-  const schema = (await Promise.all(['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql', 'calendar-sync-schema.sql', 'chore-schema.sql', 'school-schema.sql', 'daily-task-sections-schema.sql', 'account-notifications-schema.sql', 'internet-schema.sql', 'family-notifications-schema.sql', 'account-deletion-schema.sql', 'parent-pin-schema.sql'].map(name => readFile(new URL(name, import.meta.url), 'utf8')))).join('\n');
+  const schema = (await Promise.all(['schema.sql', 'mobile-schema.sql', 'notifications-schema.sql', 'child-accounts-schema.sql', 'calendar-sync-schema.sql', 'chore-schema.sql', 'school-schema.sql', 'daily-task-sections-schema.sql', 'account-notifications-schema.sql', 'internet-schema.sql', 'family-notifications-schema.sql', 'account-deletion-schema.sql', 'parent-pin-schema.sql', 'media-schema.sql'].map(name => readFile(new URL(name, import.meta.url), 'utf8')))).join('\n');
   const pool = createPool(env, { migration: true, max: 1 });
   try {
     const client = await pool.connect();

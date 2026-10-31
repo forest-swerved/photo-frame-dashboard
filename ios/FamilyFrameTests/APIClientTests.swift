@@ -460,4 +460,23 @@ final class APIClientTests: XCTestCase {
         catch let error as APIError { XCTAssertEqual(error.code, "read_unconfirmed") }
     }
 
+    @MainActor func testMediaUploadUsesBinaryJPEGAndFamilyAuthorization() async throws {
+        let api = client(), id = "11111111-1111-4111-8111-111111111111"
+        MockProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "PUT")
+            XCTAssertEqual(request.url?.path, "/api/media/\(id)")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "image/jpeg")
+            XCTAssertTrue(request.value(forHTTPHeaderField: "Authorization")?.hasPrefix("FamilyMobile ") == true)
+            return (200, Data("{\"data\":{\"media\":{\"id\":\"\(id)\",\"kind\":\"photo\",\"bytes\":3,\"width\":1,\"height\":1,\"duration\":null,\"createdAt\":\"2026-10-31T18:00:00Z\"}}}".utf8))
+        }
+        let result = try await api.uploadPhoto(id: id, data: Data([1,2,3]))
+        XCTAssertEqual(result.id, id)
+    }
+    func testMediaSignedURLsCannotSendUploadsToOtherOriginsOrSchemes() {
+        XCTAssertNotNil(APIClient.mediaURL("https://example.supabase.co/storage/v1/object/upload/sign/family-media/test?token=test"))
+        for raw in ["http://example.supabase.co/storage/v1/object/test", "https://supabase.co.evil.test/storage/v1/object/test", "https://user@example.supabase.co/storage/v1/object/test", "https://example.supabase.co:1234/storage/v1/object/test", "https://example.supabase.co/auth/v1/user"] {
+            XCTAssertNil(APIClient.mediaURL(raw))
+        }
+    }
+
 }

@@ -33,6 +33,9 @@ final class Deferred<Value> {
 
 @MainActor
 final class DashboardAPI: FamilyAPI {
+    var mediaHandler: (() async throws -> MediaList)?
+    func mediaList() async throws -> MediaList { if let mediaHandler { return try await mediaHandler() }; return MediaList(media: [], maxBytes: 1_073_741_824, maxItems: 200) }
+    func removeMedia(id: String) async throws {}
     var mobileToken: String?
     var current: MobileSession
     var data: HouseholdSnapshot

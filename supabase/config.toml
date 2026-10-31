@@ -2,3 +2,7 @@
 # Disabling the legacy platform JWT gate never disables its internal checks.
 [functions.family-delete-account]
 verify_jwt = false
+
+# Every request is authenticated by a timestamped, body-bound HMAC; never public.
+[functions.family-media-object]
+verify_jwt = false
