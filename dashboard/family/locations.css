@@ -1,5 +1,31 @@
 .parent-location-panel { border-top:1px solid var(--line); padding-top:20px; }
 .parent-location-panel h2 { margin:0 0 12px; }
+.frame-home-heading { display:flex; align-items:center; gap:24px; flex:1; min-width:0; }
+.frame-home-heading>div { flex-shrink:0; }
+.frame-parent-locations { display:flex; gap:12px; min-width:0; }
+.parent-location-chip { display:flex; align-items:center; gap:10px; min-height:54px; min-width:0; max-width:280px; padding:7px 12px; border:1px solid var(--line); border-radius:12px; background:var(--surface); color:var(--ink); text-align:left; }
+.parent-location-chip:hover { background:var(--cyan-tint); }
+.location-chip-text { display:flex; flex-direction:column; gap:3px; min-width:0; }
+.location-chip-text strong { font-size:14px; }
+.location-chip-text>span { font-size:18px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+dialog[data-parent-location] { width:min(1400px,94vw); max-width:94vw; }
+dialog[data-parent-location]>form { height:min(900px,92vh); max-height:92vh; }
+dialog[data-parent-location] .dialog-body { padding:16px 24px; overflow:hidden; display:flex; flex:1; }
+.parent-map-detail { display:flex; flex:1; min-height:0; min-width:0; flex-direction:column; gap:12px; }
+.parent-map-summary { display:flex; align-items:baseline; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.parent-map-summary strong { font-size:24px; }.parent-map-summary span { font-size:16px; color:var(--muted); }
+.parent-map-surface { display:grid; place-items:center; flex:1; min-height:0; background:#182129; border-radius:12px; overflow:hidden; }
+.parent-map-surface img { display:block; width:100%; height:100%; min-height:0; object-fit:contain; }
+.parent-map-surface img[hidden],.parent-map-surface p[hidden] { display:none; }
+.parent-map-surface p { padding:24px; color:white; text-align:center; }
+.parent-map-controls { display:flex; align-items:center; gap:12px; }
+.parent-map-summary,.parent-map-controls { flex-shrink:0; }
+.parent-map-controls>span { margin-right:auto; font-size:14px; color:var(--muted); }
+.parent-map-controls button { width:52px; height:52px; font-size:30px; border:1px solid var(--line); }
+@media (max-width:1400px) {
+ .frame-home-heading { gap:12px; }.frame-parent-locations { gap:8px; }.parent-location-chip { gap:7px; padding:6px 9px; max-width:180px; }
+ .location-chip-text strong { font-size:12px; }.location-chip-text>span { font-size:14px; }.parent-location-chip .parent-location-pin { width:24px; height:24px; }
+}
 .parent-map-image { display:block; width:100%; height:auto; border-radius:12px; background:#eef1f2; }
 .parent-location { display:flex; gap:12px; align-items:flex-start; margin:16px 0; }
 .parent-location>div { min-width:0; }.parent-location h3 { margin:0; font-size:20px; }.parent-location p { margin:3px 0; font-size:16px; overflow-wrap:anywhere; }.parent-location small { color:var(--muted,#8993a9); font-size:13px; }
