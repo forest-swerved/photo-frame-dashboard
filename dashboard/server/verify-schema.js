@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url';
 import { createPool } from './database.js';
 import { verifyAccountDeletionBoundary } from './verify-account-deletion.js';
 
-export async function verifySchema(pool, schema = 'public', expectedCount = 40) {
+export async function verifySchema(pool, schema = 'public', expectedCount = 41) {
   const { rows } = await pool.query(`SELECT c.relname,c.relrowsecurity,c.relforcerowsecurity,
     pg_get_userbyid(c.relowner)=current_user AS owned_by_server,
     NOT EXISTS(SELECT 1 FROM aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) acl WHERE acl.grantee=0) AS public_revoked,

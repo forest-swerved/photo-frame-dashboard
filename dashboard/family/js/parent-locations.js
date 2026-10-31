@@ -36,8 +36,8 @@ export function locationMapMarkup(data) {
 export function createParentLocations({read,scope,onChange,onAuthFailure=()=>{}}) {
   let identity,epoch=0,busy=false,lastRead=-Infinity,coordinateKey='',value={parents:[],mapURL:null};
   function sync(){const next=scope();if(next!==identity){identity=next;epoch++;busy=false;lastRead=-Infinity;coordinateKey='';value={parents:[],mapURL:null};}return next;}
-  async function tick(){
-    if(!sync()||busy||document.hidden||performance.now()-lastRead<30000)return;
+  async function tick(force=false){
+    if(!sync()||busy||document.hidden||(!force&&performance.now()-lastRead<30000))return;
     busy=true;lastRead=performance.now();const version=epoch;
     try{
       const result=await read('/api/locations');sync();if(version!==epoch||!identity)return;

@@ -33,6 +33,11 @@ final class Deferred<Value> {
 
 @MainActor
 final class DashboardAPI: FamilyAPI {
+    var historyHandler: ((LocationHistoryDraft) async throws -> LocationHistoryChange)?
+    var historyDeleteHandler: (() async throws -> Void)?
+    func locationHistory() async throws -> LocationHistorySummary { LocationHistorySummary(count:0,oldest:nil,retention:"until_deleted") }
+    func changeLocationHistory(_ draft:LocationHistoryDraft) async throws -> LocationHistoryChange {guard let historyHandler else{throw unexpected};return try await historyHandler(draft)}
+    func deleteLocationHistory() async throws {try await historyDeleteHandler?()}
     var locationsHandler: (() async throws -> ParentLocationSnapshot)?
     var locationChangeHandler: ((LocationSharingDraft) async throws -> LocationSharingResult)?
     func parentLocations() async throws -> ParentLocationSnapshot { try await locationsHandler?() ?? ParentLocationSnapshot(sharing:.off) }

@@ -7,11 +7,15 @@ struct ParentLocationSharing: Codable, Equatable {
     let version: Int
     let label: String
     let thisPhone: Bool
+    var historyEnabled: Bool? = nil
     static let off = Self(enabled: false, version: 0, label: "", thisPhone: false)
 }
 struct ParentLocationSnapshot: Decodable { let sharing: ParentLocationSharing }
 struct LocationSharingResult: Decodable { let sharing: ParentLocationSharing; let reportToken: String? }
 struct LocationSharingDraft: Encodable { let enabled: Bool; let label: String; let expectedVersion: Int }
+struct LocationHistorySummary: Decodable { let count: Int; let oldest: String?; let retention: String }
+struct LocationHistoryDraft: Encodable { let enabled: Bool; let expectedVersion: Int }
+struct LocationHistoryChange: Decodable { let sharing: ParentLocationSharing }
 struct LocationPoint: Encodable { let latitude: Double; let longitude: Double; let accuracy: Double; let place: String; let recordedAt: String }
 struct LocationReportCredential: Codable {
     let token: String
@@ -19,6 +23,9 @@ struct LocationReportCredential: Codable {
     var stopping: Bool = false
 }
 extension FamilyAPI {
+    func locationHistory() async throws -> LocationHistorySummary { throw APIError(status:503,code:"unsupported",message:"Location history is unavailable.") }
+    func changeLocationHistory(_ draft:LocationHistoryDraft) async throws -> LocationHistoryChange { throw APIError(status:503,code:"unsupported",message:"Location history is unavailable.") }
+    func deleteLocationHistory() async throws { throw APIError(status:503,code:"unsupported",message:"Location history is unavailable.") }
     func parentLocations() async throws -> ParentLocationSnapshot { throw APIError(status: 503, code: "unsupported", message: "Location sharing is unavailable.") }
     func changeLocationSharing(_ draft: LocationSharingDraft) async throws -> LocationSharingResult { throw APIError(status: 503, code: "unsupported", message: "Location sharing is unavailable.") }
 }
@@ -71,6 +78,7 @@ private final class LocationNoRedirect: NSObject, URLSessionTaskDelegate {
     private var lastAttempt = Date.distantPast
     private var lastPlaceLocation: CLLocation?, place = ""
     private var generation = 0
+    private var refreshStarted: Date?
     override init() {
         super.init();manager.delegate=self;authorization=manager.authorizationStatus
         manager.desiredAccuracy=kCLLocationAccuracyHundredMeters;manager.distanceFilter=100
@@ -78,6 +86,20 @@ private final class LocationNoRedirect: NSObject, URLSessionTaskDelegate {
     }
     func resume() {
         do { credential=try store.load();configure() } catch { message=error.localizedDescription }
+    }
+    // A background push only requests a new fix under an existing local grant.
+    // It can never enable sharing or change history consent.
+    func refreshFromPush() async -> Bool {
+        guard isSharing,refreshStarted == nil else{return false}
+        let began=Date(),epoch=generation;refreshStarted=began;lastAttempt = .distantPast
+        manager.desiredAccuracy=kCLLocationAccuracyBest;configure(refresh:true)
+        defer {refreshStarted=nil;manager.desiredAccuracy=kCLLocationAccuracyHundredMeters}
+        while Date().timeIntervalSince(began)<25 {
+            guard epoch==generation,isSharing else{return false}
+            if let sent=lastSent,sent>=began{return true}
+            try? await Task.sleep(for:.milliseconds(500))
+        }
+        return false
     }
     func requestPermission() { manager.requestWhenInUseAuthorization() }
     func requestAlways() { manager.requestAlwaysAuthorization() }
@@ -101,7 +123,7 @@ private final class LocationNoRedirect: NSObject, URLSessionTaskDelegate {
     }
     private func sendStop() async {
         guard let saved=credential,saved.stopping else{return}
-        do { try await send(saved,method:"DELETE",point:nil);if credential?.token==saved.token {forgetConfirmedStop();message="Location sharing stopped."} }
+        do { _ = try await send(saved,method:"DELETE",point:nil);if credential?.token==saved.token {forgetConfirmedStop();message="Location sharing stopped."} }
         catch let error as APIError where error.status==401 { if credential?.token==saved.token {forgetConfirmedStop()} }
         catch {message="Sharing stopped on this phone. Reconnect to remove the last shared location; it expires after 24 hours."}
     }
@@ -127,6 +149,7 @@ private final class LocationNoRedirect: NSObject, URLSessionTaskDelegate {
     private func receive(_ locations:[CLLocation]) {
         guard let location=locations.last,location.horizontalAccuracy>=0,abs(location.timestamp.timeIntervalSinceNow)<900,
               let saved=credential,!saved.stopping else{return}
+        if let began=refreshStarted,location.timestamp<began.addingTimeInterval(-5){return}
         if sending {pendingLocation=location;return}
         guard Date().timeIntervalSince(lastAttempt)>30 else{return}
         lastAttempt=Date();sending=true;let epoch=generation
@@ -146,19 +169,23 @@ private final class LocationNoRedirect: NSObject, URLSessionTaskDelegate {
                 }
                 guard epoch==generation,credential?.token==saved.token,!saved.stopping else{return}
                 let point=LocationPoint(latitude:location.coordinate.latitude,longitude:location.coordinate.longitude,accuracy:location.horizontalAccuracy,place:String(place.prefix(160)),recordedAt:ISO8601DateFormatter().string(from:location.timestamp))
-                try await send(saved,method:"POST",point:point)
+                let accepted=try await send(saved,method:"POST",point:point)
+                guard accepted else{lastAttempt = .distantPast;return}
                 guard epoch==generation else{return};lastSent=Date();message=nil
             } catch let error as APIError where error.status==401 {if epoch==generation {forgetConfirmedStop();message="Sharing ended. Enable it again to share this phone."}}
             catch {if epoch==generation {message="Waiting for a connection to share the next location."}}
         }
     }
-    private func send(_ saved:LocationReportCredential,method:String,point:LocationPoint?) async throws {
+    private func send(_ saved:LocationReportCredential,method:String,point:LocationPoint?) async throws -> Bool {
         var request=URLRequest(url:APIClient.configuredURL.appendingPathComponent("api/location-reports"));request.httpMethod=method
         request.setValue(APIClient.configuredURL.absoluteString.trimmingCharacters(in:CharacterSet(charactersIn:"/")),forHTTPHeaderField:"Origin")
         request.setValue("FamilyLocation \(saved.token)",forHTTPHeaderField:"Authorization");request.setValue("application/json",forHTTPHeaderField:"Content-Type")
         request.httpBody=try point.map{try JSONEncoder().encode($0)} ?? Data("{}".utf8)
-        let (_,response)=try await network.data(for:request)
+        let (data,response)=try await network.data(for:request)
         guard let http=response as? HTTPURLResponse,(200..<300).contains(http.statusCode) else{throw APIError(status:(response as? HTTPURLResponse)?.statusCode ?? 0,code:"location_report_failed",message:"The location update was not confirmed.")}
+        if method=="DELETE"{return true}
+        struct ReportResponse:Decodable { struct Result:Decodable { let accepted:Bool };let data:Result }
+        return try JSONDecoder().decode(ReportResponse.self,from:data).data.accepted
     }
 }
 private extension Array where Element: Hashable { func uniqued()->[Element] {var seen=Set<Element>();return filter{seen.insert($0).inserted}} }
@@ -166,20 +193,38 @@ private extension Array where Element: Hashable { func uniqued()->[Element] {var
 @MainActor final class ParentLocationModel: ObservableObject {
     @Published private(set) var sharing=ParentLocationSharing.off
     @Published private(set) var busy=false
+    @Published private(set) var historyCount:Int?
     @Published var message:String?
     private let api:any FamilyAPI
     private let reporter:any LocationReporting
     private var session:MobileSession?,generation=0,revision=0
     init(api:any FamilyAPI,reporter:(any LocationReporting)? = nil){self.api=api;self.reporter=reporter ?? ParentLocationReporter.shared}
     func bind(_ value:MobileSession?) {
-        if session?.cacheIdentity != value?.cacheIdentity {generation += 1;sharing = .off;message=nil;busy=false}
+        if session?.cacheIdentity != value?.cacheIdentity {generation += 1;sharing = .off;message=nil;busy=false;historyCount=nil}
         session=value;reporter.bind(value)
     }
     func refresh() async {
         guard session != nil,session?.isChild != true else{return};let epoch=generation,readRevision=revision
         do {let result=try await api.parentLocations();guard epoch==generation,readRevision==revision else{return};sharing=result.sharing
             if !sharing.enabled || !sharing.thisPhone {reporter.forgetConfirmedStop()}
+            let history=try await api.locationHistory();guard epoch==generation,readRevision==revision else{return};historyCount=history.count
         } catch {if epoch==generation {message=error.localizedDescription}}
+    }
+    func setHistory(_ enabled:Bool) async {
+        guard let session,!session.isChild,!busy,sharing.enabled,sharing.thisPhone else{return}
+        let epoch=generation;revision += 1;busy=true;message=nil
+        defer{if epoch==generation{busy=false}}
+        do {
+            let result=try await api.changeLocationHistory(LocationHistoryDraft(enabled:enabled,expectedVersion:sharing.version))
+            guard epoch==generation else{return};sharing=result.sharing
+        } catch {if epoch==generation{message=error.localizedDescription;await refresh()}}
+    }
+    func deleteHistory() async {
+        guard let session,!session.isChild,!busy else{return}
+        let epoch=generation;revision += 1;busy=true;message=nil
+        defer{if epoch==generation{busy=false}}
+        do {try await api.deleteLocationHistory();guard epoch==generation else{return};historyCount=0;await refresh();message="Your saved history was deleted. History recording is off."}
+        catch {if epoch==generation{message=error.localizedDescription}}
     }
     func change(enabled:Bool,label:String) async {
         guard let session,!session.isChild,!busy else{return};let epoch=generation;revision += 1;busy=true;message=nil
@@ -212,13 +257,14 @@ private struct ParentLocationSettingsContent: View {
     @ObservedObject var location:ParentLocationModel
     @ObservedObject private var reporter=ParentLocationReporter.shared
     @State private var label=""
+    @State private var confirmingHistoryDeletion=false
     private var allowed:Bool {reporter.authorization == .authorizedAlways || reporter.authorization == .authorizedWhenInUse}
     var body:some View {
         Form {
             Section {
                 Text("Share where you are with your family.").font(.title2.bold())
                 Text("Your household’s members and paired frames can see your latest location, place name, accuracy and update time. This shares only your phone’s location. Each parent chooses for themselves; child location sharing is not supported.")
-                Text("Only the latest point is kept. It disappears after 24 hours without an update. You can stop sharing at any time.").font(.footnote).foregroundStyle(Brand.muted)
+                Text("Your latest map location disappears after 24 hours without an update. Saving history is optional and controlled separately below. You can stop sharing at any time.").font(.footnote).foregroundStyle(Brand.muted)
             }
             Section("Your map name") {TextField("Mom, Dad, or your name",text:$label).disabled(location.busy)}
             Section("This phone") {
@@ -231,7 +277,13 @@ private struct ParentLocationSettingsContent: View {
                 if let date=reporter.lastSent {LabeledContent("Last sent",value:date.formatted(date:.omitted,time:.shortened))}
                 if let message=location.message ?? reporter.message {Text(message).font(.footnote)}
             }
+            Section("Your location history") {
+                Toggle("Save my location history",isOn:Binding(get:{location.sharing.historyEnabled == true},set:{value in Task{await location.setHistory(value)}})).disabled(location.busy || !location.sharing.enabled || !location.sharing.thisPhone)
+                Text("When enabled, new locations from this phone are saved until you delete them, for future family maps and visualizations. Turning this off stops saving new points and keeps existing history. Each parent controls their own history.").font(.footnote).foregroundStyle(Brand.muted)
+                if let count=location.historyCount {LabeledContent("Saved locations",value:count.formatted())}
+                Button("Delete all my location history",role:.destructive){confirmingHistoryDeletion=true}.disabled(location.busy || location.historyCount == 0)
+            }
             Section {Text("Updates depend on iOS, movement, GPS and connectivity. Force-quitting the app can pause updates. The frame always shows when the last update arrived.").font(.footnote).foregroundStyle(Brand.muted)}
-        }.navigationTitle("Location sharing").task {await location.refresh();label=location.sharing.label}
+        }.navigationTitle("Location sharing").confirmationDialog("Delete all your saved location history?",isPresented:$confirmingHistoryDeletion,titleVisibility:.visible){Button("Delete history and stop saving",role:.destructive){Task{await location.deleteHistory()}}} message:{Text("This cannot be undone. Your latest shared map location stays available, and history recording turns off.")}.task {await location.refresh();label=location.sharing.label}
     }
 }

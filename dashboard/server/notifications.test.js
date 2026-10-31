@@ -98,6 +98,7 @@ test('APNs JWT is ES256, correctly scoped, cached, and refreshed inside Apple to
   assert.deepEqual(Object.values(APNS_HOSTS), ['https://api.sandbox.push.apple.com', 'https://api.push.apple.com']);
   assert.throws(() => apnsConfiguration({}), error => error.code === 'push_not_configured');
   await assert.rejects(sendApns({ token: 'a'.repeat(64), environment: 'https://attacker.example', payload: {} }, env), error => error.status === 422);
+  await assert.rejects(sendApns({token:'a'.repeat(64),environment:'production',pushType:'background',payload:{aps:{'content-available':1,sound:'default'}}},env),error=>error.code==='invalid_push_payload');
   await assert.rejects(providerToken({ ...env, FAMILY_APNS_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\ninvalid' }), error => error.code === 'push_not_configured');
 });
 

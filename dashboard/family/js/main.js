@@ -78,7 +78,7 @@ const liveUpdates = createLiveUpdates({
   },
 });
 const parentLocations = createParentLocations({ read: request, scope: () => !S.booting && frame() && S.session?.household ? `${generation}:${S.session.household.id}:${S.session.user.id}` : null, onChange: () => { parentMap.refresh(); render(); }, onAuthFailure: dataFailure });
-const parentMap = createParentLocationMap({dialog,openDialog,snapshot:()=>parentLocations.snapshot(),timezone:zone});
+const parentMap = createParentLocationMap({dialog,openDialog,snapshot:()=>parentLocations.snapshot(),timezone:zone,requestRefresh:id=>request('/api/locations/refresh',{method:'POST',body:{parentId:id}}),poll:()=>parentLocations.tick(true)});
 const ambient = createFrameAmbient(document.querySelector('#frame-ambient'), {
   state: () => ({ enabled: frame() && !!S.session?.household && !S.booting,
     cacheScope: `${S.session?.household?.id}:${S.session?.user?.id}`, purge: !S.booting && (!frame() || !S.session?.household),

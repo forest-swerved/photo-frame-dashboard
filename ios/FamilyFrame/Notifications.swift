@@ -47,9 +47,8 @@ final class NotificationController: NSObject, ObservableObject, UNUserNotificati
         case .ephemeral: permissionDescription = "Temporary permission"
         default: permissionDescription = "Not enabled yet"
         }
-        if settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional {
-            UIApplication.shared.registerForRemoteNotifications()
-        }
+        // Silent location refresh uses APNs without requesting alert permission.
+        UIApplication.shared.registerForRemoteNotifications()
     }
     func requestPermission() async {
         do {
@@ -90,6 +89,10 @@ final class FamilyAppDelegate: NSObject, UIApplicationDelegate {
         NotificationController.shared.prepare()
         ParentLocationReporter.shared.resume()
         return true
+    }
+    func application(_ application:UIApplication,didReceiveRemoteNotification userInfo:[AnyHashable:Any],fetchCompletionHandler completionHandler:@escaping (UIBackgroundFetchResult)->Void) {
+        guard userInfo["action"] as? String == "refresh-parent-location" else{completionHandler(.noData);return}
+        Task { @MainActor in completionHandler(await ParentLocationReporter.shared.refreshFromPush() ? .newData : .noData) }
     }
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) { NotificationController.shared.registered(deviceToken) }
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) { NotificationController.shared.failed() }
