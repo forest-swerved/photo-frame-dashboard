@@ -61,7 +61,10 @@ private struct DashboardTabContent: View {
 }
 private struct SettingsToolbar: ViewModifier {
     func body(content: Content) -> some View {
-        content.toolbar { ToolbarItem(placement: .topBarLeading) { NavigationLink { SettingsScreen() } label: { Label("Settings", systemImage: "gearshape").labelStyle(.iconOnly) } } }
+        content.toolbar {
+            ToolbarItem(placement: .topBarLeading) { NavigationLink { SettingsScreen() } label: { Label("Settings", systemImage: "gearshape").labelStyle(.iconOnly) } }
+            ToolbarItem(placement: .topBarTrailing) { NavigationLink { MediaLibraryScreen() } label: { Label("Photos & videos", systemImage: "photo.on.rectangle.angled") } }
+        }
     }
 }
 
