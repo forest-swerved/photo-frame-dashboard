@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 const base = process.env.FAMILY_UI_TEST_URL;
-async function fixture({ off = false, extra = 0, empty = false, paired = true, manager = false, viewport = { width:1280, height:800 } } = {}) {
+async function fixture({ off = false, extra = 0, empty = false, paired = true, manager = false, parents = [], viewport = { width:1280, height:800 } } = {}) {
   const origin = new URL(base); assert.ok(['localhost','127.0.0.1'].includes(origin.hostname));
   const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
   const browser = await chromium.launch({headless:true}), page = await browser.newPage({viewport});
@@ -21,9 +21,10 @@ async function fixture({ off = false, extra = 0, empty = false, paired = true, m
   const names = ['Get dressed','Eat breakfast','Brush teeth','Backpack ready','Put backpack away','Dirty laundry in bin','Read for 30 minutes','Homework','Load dishes','Unload dishes','Finish today’s work'];
   const tasks = empty ? [] : people.flatMap((p, n) => Array.from({length:(n ? 11 : 9) + (n ? extra : 0)}, (_,i) => ({id:`${p.id}-${i}`,choreId:`routine-${p.id}-${i}`,title:names[i] || `Extra task ${i + 1}`,personId:p.id,personName:p.name,
     date:'2026-10-27',originalDate:'2026-10-27',definitionSource:'routine',schoolDayFilter:'any',taskSection:i<4?'before_school':'after_school',required:true,status:'pending',requiresApproval:false,version:1,subtasks:[],completion:{date:'2026-10-27',completed:false,version:0}})));
-  const home={id:'frame-fixture-home',title:'Synthetic family',timezone:'America/Denver'}, state={people,tasks,writes:[],errors:[],reads:[],conflict:null,internet:{devices:[],sessions:[],credits:[]}};
+  const home={id:'frame-fixture-home',title:'Synthetic family',timezone:'America/Denver'}, state={people,tasks,writes:[],errors:[],reads:[],conflict:null,locations:{parents},internet:{devices:[],sessions:[],credits:[]}};
   page.on('pageerror',e=>state.errors.push(e.message));
-  await page.route('**/api/**',async route=>{
+  await page.route('https://maps.googleapis.com/**',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800"><rect width="1280" height="800" fill="#1e4242"/><path d="M0 380h1280M640 0v800" stroke="#c4d2a7" stroke-width="24"/><circle cx="640" cy="400" r="24" fill="#aa29dc"/></svg>'}));
+  await page.route(new URL('/api/**',origin).href,async route=>{
     const req=route.request(),path=new URL(req.url()).pathname;state.reads.push(path);
     if(path==='/api/household'&&state.holdHousehold) await new Promise(resolve=>{state.releaseHousehold=resolve;});
     let data;
@@ -40,7 +41,8 @@ async function fixture({ off = false, extra = 0, empty = false, paired = true, m
       task.version++;
       if(state.conflict===task.id){state.conflict=null;await route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({error:{code:'version_conflict',message:'Changed on another device',details:{current:task}}})});return;}
       task.status=body.completed?'completed':'pending';task.completion={date:task.date,completed:body.completed,version:task.version};data=task;
-    } else if (path === '/api/locations') data = { parents: [] };
+    } else if (path === '/api/locations') data = state.locations;
+    else if (path === '/api/locations/map-url') data = {url:'https://maps.googleapis.com/maps/api/staticmap?key=synthetic&markers=first&markers=second'};
     else if (path === '/api/media') data = { media: [] };
     else if(path==='/api/notifications') data={notifications:[]};
     else throw new Error(`Unexpected synthetic frame route ${path}`);
@@ -355,5 +357,33 @@ test('large-frame agenda shows distinct upcoming events, retains sync warnings a
     assert.equal(await f.page.evaluate(()=>document.documentElement.scrollWidth),1807);
     await f.page.screenshot({path:'/tmp/frame156-agenda-1807.png'});
     assert.deepEqual(f.state.errors,[]);assert.deepEqual(f.state.writes,[]);
+  }finally{await f.browser.close();}
+});
+
+for(const viewport of [{width:1808,height:1017},{width:1280,height:800}]) test(`parent city chips sit beside Today and open a current satellite map at ${viewport.width}×${viewport.height}`,{skip:!base},async()=>{
+  const parents=[{id:'dad',label:'Dad',marker:'A',latitude:39.7,longitude:-105,accuracy:12,place:'Neighborhood, Denver, CO',recordedAt:'2026-10-27T17:59:50Z'},{id:'mom',label:'Mom',marker:'B',latitude:40,longitude:-105.2,accuracy:25,place:'Boulder, CO',recordedAt:'2026-10-27T17:59:45Z'}];
+  const f=await fixture({off:true,parents,viewport});try{
+    await f.page.clock.runFor(1500);
+    const dad=f.page.getByRole('button',{name:'View Dad on satellite map'});await dad.waitFor();
+    assert.match(await dad.innerText(),/Denver, CO/);assert.doesNotMatch(await dad.innerText(),/Neighborhood/);
+    const geometry=await f.page.evaluate(()=>{const r=document.querySelector('.frame-day-type').getBoundingClientRect(),chips=[...document.querySelectorAll('.parent-location-chip')].map(n=>{const b=n.getBoundingClientRect();return{x:b.x,right:b.right,y:b.y,bottom:b.bottom}});return{badgeRight:r.right,badgeTop:r.top,badgeBottom:r.bottom,chips,width:document.documentElement.scrollWidth,clockLeft:document.querySelector('.heading-actions').getBoundingClientRect().left}});
+    assert.equal(geometry.width,viewport.width);assert.ok(geometry.chips.every(c=>c.x>=geometry.badgeRight&&c.right<=geometry.clockLeft&&c.y<geometry.badgeBottom&&c.bottom>geometry.badgeTop),JSON.stringify(geometry));
+    await f.page.screenshot({path:`/tmp/frame-parent-header-${viewport.width}.png`});
+    await dad.click();await f.page.getByRole('heading',{name:'Dad · Satellite map',exact:true}).waitFor();
+    const img=f.page.locator('[data-parent-map-image]');await img.waitFor({state:'visible'});
+    let url=new URL(await img.getAttribute('src'));assert.equal(url.searchParams.get('maptype'),'hybrid');assert.equal(url.searchParams.get('center'),'39.7,-105');assert.equal(url.searchParams.getAll('markers').length,1);
+    assert.match(await f.page.locator('[data-parent-map-update]').innerText(),/Updated.*AM.*Accuracy about 12 m/);
+    const fits=await f.page.locator('#family-dialog').evaluate(d=>{const r=d.getBoundingClientRect(),button=d.querySelector('[data-map-zoom="1"]').getBoundingClientRect();return r.x>=0&&r.right<=innerWidth&&r.y>=0&&r.bottom<=innerHeight&&button.bottom<=r.bottom});assert.equal(fits,true);
+    await f.page.getByRole('button',{name:'Zoom in',exact:true}).click();assert.equal(new URL(await img.getAttribute('src')).searchParams.get('zoom'),'18');await img.waitFor({state:'visible'});
+    await f.page.screenshot({path:`/tmp/frame-parent-satellite-${viewport.width}.png`});
+    parents[0]={...parents[0],latitude:39.8,place:'Golden, CO',recordedAt:'2026-10-27T18:00:20Z'};
+    await f.page.clock.runFor(30000);await f.page.waitForFunction(()=>document.querySelector('[data-parent-map-place]')?.textContent==='Golden, CO');
+    assert.equal(new URL(await img.getAttribute('src')).searchParams.get('center'),'39.8,-105');
+    await f.page.getByRole('button',{name:'Zoom out',exact:true}).click();
+    f.state.locations={parents:[parents[1]]};await f.page.clock.runFor(30000);await f.page.getByRole('heading',{name:'Location unavailable',exact:true}).waitFor();
+    assert.equal(await img.getAttribute('src'),null);assert.equal(await img.isVisible(),false);
+    await f.page.getByRole('button',{name:'Close dialog',exact:true}).click();await f.page.getByRole('button',{name:'View Mom on satellite map'}).click();
+    await f.page.getByRole('heading',{name:'Mom · Satellite map',exact:true}).waitFor();assert.equal(new URL(await img.getAttribute('src')).searchParams.get('center'),'40,-105.2');
+    await f.page.keyboard.press('Escape');assert.equal(await f.page.locator('#family-dialog').isVisible(),false);assert.deepEqual(f.state.errors,[]);
   }finally{await f.browser.close();}
 });

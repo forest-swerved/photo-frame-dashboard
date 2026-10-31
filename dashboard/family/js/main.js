@@ -1,4 +1,5 @@
-import { createParentLocations, locationCards, locationMapMarkup } from './parent-locations.js';
+import { createParentLocations, parentLocationChips } from './parent-locations.js';
+import { createParentLocationMap } from './parent-location-map.js';
 import { request, setFrameMode, frameAccessStatus } from './api.js';
 import { authClient, clearAuthCache } from './auth.js';
 import { escapeHtml as h, color, dateInZone, dateFormatter, addDays, dateLabel, weekday, calendarRange, calendarEventsByDay, calendarDayIsKnown, timeLabel, choreUrgency, orderChores, completionBody, mergeCompletion, reconcileHousehold, mutationId } from './model.js';
@@ -76,7 +77,8 @@ const liveUpdates = createLiveUpdates({
     if(S.liveIssue!==message) { S.liveIssue=message;render(); }
   },
 });
-const parentLocations = createParentLocations({ read: request, scope: () => !S.booting && frame() && S.session?.household ? `${generation}:${S.session.household.id}:${S.session.user.id}` : null, onChange: () => render(), onAuthFailure: dataFailure });
+const parentLocations = createParentLocations({ read: request, scope: () => !S.booting && frame() && S.session?.household ? `${generation}:${S.session.household.id}:${S.session.user.id}` : null, onChange: () => { parentMap.refresh(); render(); }, onAuthFailure: dataFailure });
+const parentMap = createParentLocationMap({dialog,openDialog,snapshot:()=>parentLocations.snapshot(),timezone:zone});
 const ambient = createFrameAmbient(document.querySelector('#frame-ambient'), {
   state: () => ({ enabled: frame() && !!S.session?.household && !S.booting,
     cacheScope: `${S.session?.household?.id}:${S.session?.user?.id}`, purge: !S.booting && (!frame() || !S.session?.household),
@@ -164,7 +166,7 @@ function updateStamp(value) {
 function shell(content) {
   const labels = { today: 'Today', calendar: 'Calendar', chores: S.session?.role === 'child' ? 'My tasks' : 'Tasks', devices: 'Devices', activity: 'Activity', setup: 'Settings' };
   const nav = view => `<a class="nav-item ${S.view === view ? 'active' : ''}" data-key="nav-${view}" href="#${view}" aria-label="${labels[view]}" ${S.view === view ? 'aria-current="page"' : ''}>${icon(view)}<span>${labels[view]}</span>${view === 'activity' && workbench.unreadCount() ? `<span class="nav-badge" aria-label="${workbench.unreadCount()} unread">${workbench.unreadCount()}</span>` : ''}</a>`;
-  return `<div class="family-shell" data-key="family-shell"><aside class="sidebar"><a class="brand" href="#today" aria-label="${h(title())} home"><img class="brand-mark" src="/brand/folded-home.svg" alt="" width="40" height="40"><span class="brand-name">${h(title())}<small>A little more together.</small></span></a><nav aria-label="Main navigation">${['today','chores','calendar','devices',...(!frame() ? ['activity'] : [])].map(nav).join('')}</nav><div class="sidebar-settings">${frame() ? frameSoundButton() : ''}${nav('setup')}</div><div class="sidebar-bottom"><span class="connection-dot ${S.error ? 'warning' : ''}"></span><span>${frame() ? 'Paired family frame' : 'Your family, connected'}</span></div></aside><main id="main-content" class="main-content ${S.view === 'today' ? 'today-content' : ''} ${frame() && S.view === 'today' ? 'frame-home-content' : ''}" tabindex="-1"><header class="page-heading" data-key="page-heading"><div><p class="eyebrow">${h(title())}</p><h1>${labels[S.view]}${frame() && S.view === 'today' && S.snapshot?.schoolDay?.label ? `<span class="frame-day-type">${h(S.snapshot.schoolDay.label)}</span>` : ''}</h1></div><div class="heading-actions"><div class="header-clock">${clockMarkup()}</div><a href="#setup" class="settings-shortcut icon-button" aria-label="Settings">${icon('setup')}</a></div></header>${noticeBanner()}${content}</main></div>`;
+  return `<div class="family-shell" data-key="family-shell"><aside class="sidebar"><a class="brand" href="#today" aria-label="${h(title())} home"><img class="brand-mark" src="/brand/folded-home.svg" alt="" width="40" height="40"><span class="brand-name">${h(title())}<small>A little more together.</small></span></a><nav aria-label="Main navigation">${['today','chores','calendar','devices',...(!frame() ? ['activity'] : [])].map(nav).join('')}</nav><div class="sidebar-settings">${frame() ? frameSoundButton() : ''}${nav('setup')}</div><div class="sidebar-bottom"><span class="connection-dot ${S.error ? 'warning' : ''}"></span><span>${frame() ? 'Paired family frame' : 'Your family, connected'}</span></div></aside><main id="main-content" class="main-content ${S.view === 'today' ? 'today-content' : ''} ${frame() && S.view === 'today' ? 'frame-home-content' : ''}" tabindex="-1"><header class="page-heading" data-key="page-heading"><div class="${frame() && S.view === 'today' ? 'frame-home-heading' : ''}"><div><p class="eyebrow">${h(title())}</p><h1>${labels[S.view]}${frame() && S.view === 'today' && S.snapshot?.schoolDay?.label ? `<span class="frame-day-type">${h(S.snapshot.schoolDay.label)}</span>` : ''}</h1></div>${frame() && S.view === 'today' ? parentLocationChips(parentLocations.snapshot()) : ''}</div><div class="heading-actions"><div class="header-clock">${clockMarkup()}</div><a href="#setup" class="settings-shortcut icon-button" aria-label="Settings">${icon('setup')}</a></div></header>${noticeBanner()}${content}</main></div>`;
 }
 
 function frameSoundButton() {
@@ -321,7 +323,7 @@ function frameHomeOverview(shared) {
     }
   }
   const sharedTasks = [...shared.todo, ...shared.submitted];
-  return `<aside class="frame-home-overview" data-key="frame-home-overview" aria-label="Family day at a glance"><section class="frame-upcoming"><div class="section-heading"><div><p class="eyebrow">The family schedule</p><h2>Coming up</h2></div><a href="#calendar" class="text-button" aria-label="Open full calendar">↗</a></div>${calendarStatus()}<div class="frame-upcoming-events">${upcoming.length ? upcoming.slice(0, 4).map(({ date, event }) => eventCard(event, true, date)).join('') : `<p class="quiet-empty">${calendarDayIsKnown(S.calendar, today()) ? 'The rest of today is clear.' : 'Upcoming events are not confirmed yet.'}</p>`}</div><a href="#calendar" class="more-link">Open calendar →</a></section>${sharedTasks.length ? `<section class="frame-shared-tasks"><div class="section-heading"><h2>For anyone</h2><a href="#chores" data-action="open-shared-tasks" class="text-button">${sharedTasks.length} tasks ↗</a></div>${sharedTasks.slice(0, 3).map(item => choreRow(item, false, true)).join('')}</section>` : ''}${parentLocations.snapshot().parents.length ? `<section class="parent-location-panel" data-key="parent-locations"><h2>Mom & Dad</h2>${locationMapMarkup(parentLocations.snapshot())}${locationCards(parentLocations.snapshot(), zone())}${parentLocations.snapshot().offline ? '<p class="parent-location-note">Location updates are reconnecting.</p>' : ''}</section>` : ''}</aside>`;
+  return `<aside class="frame-home-overview" data-key="frame-home-overview" aria-label="Family day at a glance"><section class="frame-upcoming"><div class="section-heading"><div><p class="eyebrow">The family schedule</p><h2>Coming up</h2></div><a href="#calendar" class="text-button" aria-label="Open full calendar">↗</a></div>${calendarStatus()}<div class="frame-upcoming-events">${upcoming.length ? upcoming.slice(0, 4).map(({ date, event }) => eventCard(event, true, date)).join('') : `<p class="quiet-empty">${calendarDayIsKnown(S.calendar, today()) ? 'The rest of today is clear.' : 'Upcoming events are not confirmed yet.'}</p>`}</div><a href="#calendar" class="more-link">Open calendar →</a></section>${sharedTasks.length ? `<section class="frame-shared-tasks"><div class="section-heading"><h2>For anyone</h2><a href="#chores" data-action="open-shared-tasks" class="text-button">${sharedTasks.length} tasks ↗</a></div>${sharedTasks.slice(0, 3).map(item => choreRow(item, false, true)).join('')}</section>` : ''}</aside>`;
 }
 function frameHomeView() {
   const tasks = scheduledChores(), lanes = frameTaskLanes(people(), tasks, S.snapshot?.schoolDay);
@@ -659,6 +661,7 @@ async function saveCompletion(chore, desired) {
 }
 
 function openDialog(titleText, contents, onSubmit) {
+  parentMap.clear();
   closeDraftGuard?.();
   delete dialog.dataset.taskId;
   dialog.innerHTML = `<form data-dialog-form><header class="dialog-heading"><h2 id="dialog-title">${h(titleText)}</h2><button class="icon-button" type="button" data-close-dialog aria-label="Close dialog">×</button></header><div class="dialog-body">${contents}${formError()}</div><footer class="dialog-footer" hidden></footer></form>`;
@@ -800,6 +803,7 @@ const forms = {
 
 async function action(name, element, activation) {
   const id = element.dataset.id;
+  if (name === 'parent-location' && frame()) { parentMap.open(id); return; }
   if (name === 'frame-sounds' && frame()) { openFrameSounds(); return; }
   if (name === 'toggle-frame-sounds' && frame()) { sounds.update({ enabled:!sounds.preferences().enabled }); sounds.unlock(); dialog.close(); render(true); sounds.play('toggleOn'); return; }
   if (name === 'preview-frame-sound' && frame()) { sounds.unlock(); sounds.play(element.dataset.cue, {preview:true}); return; }
@@ -978,6 +982,7 @@ window.addEventListener('online', () => { liveUpdates.tick(true);refresh(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { sounds.stop(); sounds.resetTimers(); } tickFrameEvents(); if (!document.hidden && S.session?.household) { liveUpdates.tick(true);refresh(); } });
 setInterval(() => {
   parentLocations.tick();
+  parentMap.refresh();
   ambient.tick();
   frameIdle.tick();
   paintClock();
