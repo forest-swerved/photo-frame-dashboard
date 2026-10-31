@@ -58,7 +58,7 @@ export async function reportLocation(db, request, body) {
     requireValue(row,401,'location_revoked','Location sharing has ended.');
     if(!point){await client.query(`UPDATE family_parent_locations SET ${stop},version=version+1 WHERE household_id=$1 AND user_id=$2`,[row.household_id,row.user_id]);return {stopped:true};}
     if(row.recorded_at && new Date(point.recordedAt)<=new Date(row.recorded_at))return {accepted:false};
-    const requested=row.refresh_requested_at && new Date(row.refresh_requested_at)>new Date(row.received_at||0) && new Date(point.recordedAt)>=new Date(new Date(row.refresh_requested_at).getTime()-5000);
+    const requested=row.refresh_requested_at && new Date(row.recorded_at||0)<new Date(new Date(row.refresh_requested_at).getTime()-5000) && new Date(point.recordedAt)>=new Date(new Date(row.refresh_requested_at).getTime()-5000);
     if(!requested && row.received_at && Date.now()-new Date(row.received_at).getTime()<15000)return {accepted:false};
     await client.query(`UPDATE family_parent_locations SET latitude=$3,longitude=$4,accuracy=$5,place=$6,recorded_at=$7,received_at=now()
       WHERE household_id=$1 AND user_id=$2`,[row.household_id,row.user_id,point.latitude,point.longitude,point.accuracy,point.place,point.recordedAt]);

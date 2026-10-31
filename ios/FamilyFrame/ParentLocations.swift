@@ -16,6 +16,9 @@ struct LocationSharingDraft: Encodable { let enabled: Bool; let label: String; l
 struct LocationHistorySummary: Decodable { let count: Int; let oldest: String?; let retention: String }
 struct LocationHistoryDraft: Encodable { let enabled: Bool; let expectedVersion: Int }
 struct LocationHistoryChange: Decodable { let sharing: ParentLocationSharing }
+func locationFixIsFresh(_ recordedAt:Date?,since requestedAt:Date)->Bool {
+    guard let recordedAt else{return false};return recordedAt>=requestedAt.addingTimeInterval(-5)
+}
 struct LocationPoint: Encodable { let latitude: Double; let longitude: Double; let accuracy: Double; let place: String; let recordedAt: String }
 struct LocationReportCredential: Codable {
     let token: String
@@ -79,6 +82,7 @@ private final class LocationNoRedirect: NSObject, URLSessionTaskDelegate {
     private var lastPlaceLocation: CLLocation?, place = ""
     private var generation = 0
     private var refreshStarted: Date?
+    private var lastReportedFix: Date?
     override init() {
         super.init();manager.delegate=self;authorization=manager.authorizationStatus
         manager.desiredAccuracy=kCLLocationAccuracyHundredMeters;manager.distanceFilter=100
@@ -92,11 +96,11 @@ private final class LocationNoRedirect: NSObject, URLSessionTaskDelegate {
     func refreshFromPush() async -> Bool {
         guard isSharing,refreshStarted == nil else{return false}
         let began=Date(),epoch=generation;refreshStarted=began;lastAttempt = .distantPast
-        manager.desiredAccuracy=kCLLocationAccuracyBest;configure(refresh:true)
-        defer {refreshStarted=nil;manager.desiredAccuracy=kCLLocationAccuracyHundredMeters}
+        manager.desiredAccuracy=kCLLocationAccuracyBest;manager.distanceFilter=kCLDistanceFilterNone;configure(refresh:true)
+        defer {refreshStarted=nil;manager.desiredAccuracy=kCLLocationAccuracyHundredMeters;manager.distanceFilter=100}
         while Date().timeIntervalSince(began)<25 {
             guard epoch==generation,isSharing else{return false}
-            if let sent=lastSent,sent>=began{return true}
+            if let sent=lastSent,sent>=began,locationFixIsFresh(lastReportedFix,since:began){return true}
             try? await Task.sleep(for:.milliseconds(500))
         }
         return false
@@ -151,7 +155,7 @@ private final class LocationNoRedirect: NSObject, URLSessionTaskDelegate {
               let saved=credential,!saved.stopping else{return}
         if let began=refreshStarted,location.timestamp<began.addingTimeInterval(-5){return}
         if sending {pendingLocation=location;return}
-        guard Date().timeIntervalSince(lastAttempt)>30 else{return}
+        guard refreshStarted != nil || Date().timeIntervalSince(lastAttempt)>30 else{return}
         lastAttempt=Date();sending=true;let epoch=generation
         Task {
             var background=UIBackgroundTaskIdentifier.invalid
@@ -171,7 +175,7 @@ private final class LocationNoRedirect: NSObject, URLSessionTaskDelegate {
                 let point=LocationPoint(latitude:location.coordinate.latitude,longitude:location.coordinate.longitude,accuracy:location.horizontalAccuracy,place:String(place.prefix(160)),recordedAt:ISO8601DateFormatter().string(from:location.timestamp))
                 let accepted=try await send(saved,method:"POST",point:point)
                 guard accepted else{lastAttempt = .distantPast;return}
-                guard epoch==generation else{return};lastSent=Date();message=nil
+                guard epoch==generation else{return};lastReportedFix=location.timestamp;lastSent=Date();message=nil
             } catch let error as APIError where error.status==401 {if epoch==generation {forgetConfirmedStop();message="Sharing ended. Enable it again to share this phone."}}
             catch {if epoch==generation {message="Waiting for a connection to share the next location."}}
         }
@@ -223,7 +227,7 @@ private extension Array where Element: Hashable { func uniqued()->[Element] {var
         guard let session,!session.isChild,!busy else{return}
         let epoch=generation;revision += 1;busy=true;message=nil
         defer{if epoch==generation{busy=false}}
-        do {try await api.deleteLocationHistory();guard epoch==generation else{return};historyCount=0;await refresh();message="Your saved history was deleted. History recording is off."}
+        do {try await api.deleteLocationHistory();guard epoch==generation else{return};historyCount=0;sharing.historyEnabled=false;await refresh();message="Your saved history was deleted. History recording is off."}
         catch {if epoch==generation{message=error.localizedDescription}}
     }
     func change(enabled:Bool,label:String) async {

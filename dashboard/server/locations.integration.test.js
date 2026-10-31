@@ -82,6 +82,11 @@ test('adult location consent, limited credentials, household isolation, expiry a
    assert.equal((await refreshParentLocation(db,{...p,authType:'frame',role:'frame'},{parentId:user},opts)).requested,true);
    assert.equal(sent.length,1);assert.equal(sent[0].token,'a'.repeat(64));assert.equal(sent[0].pushType,'background');assert.deepEqual(sent[0].payload,{aps:{'content-available':1},action:'refresh-parent-location'});
    await assert.rejects(refreshParentLocation(db,p,{parentId:user},opts),{code:'refresh_rate_limited'});
+   // iOS may send its cached fix while launching for the push. That report must
+   // not consume the fresh-fix exception to the normal report throttle.
+   await db.query("UPDATE family_parent_locations SET recorded_at=now()-interval '25 seconds',received_at=now()");
+   assert.equal((await reportLocation(db,request(enabled.reportToken),{...point,recordedAt:new Date().toISOString()})).accepted,true);
+   assert.equal((await reportLocation(db,request(enabled.reportToken),{...point,recordedAt:new Date(Date.now()+1000).toISOString()})).accepted,false);
    await db.query("UPDATE family_parent_locations SET refresh_requested_at=now()-interval '2 minutes'");
    await assert.rejects(refreshParentLocation(db,p,{parentId:user},{env,send:async()=>({accepted:false,status:410})}),{code:'phone_refresh_unavailable'});
   });

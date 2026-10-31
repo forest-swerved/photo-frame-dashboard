@@ -80,4 +80,9 @@ import XCTest
         let reporter=ParentLocationReporter();let sent=await reporter.refreshFromPush();XCTAssertFalse(sent);XCTAssertFalse(reporter.isSharing)
     }
 
+    func testCachedFixCannotSatisfyExplicitRefresh() {
+        let requested=Date();XCTAssertFalse(locationFixIsFresh(nil,since:requested));XCTAssertFalse(locationFixIsFresh(requested.addingTimeInterval(-25),since:requested))
+        XCTAssertTrue(locationFixIsFresh(requested,since:requested));XCTAssertTrue(locationFixIsFresh(requested.addingTimeInterval(3),since:requested))
+    }
+
 }
