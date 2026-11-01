@@ -92,7 +92,7 @@ test('frame polling preserves the keyed shell, scroll, focus, chosen week, and s
     });
     f.state.changed = true;
     await f.page.clock.runFor(20_001);
-    await f.page.getByRole('heading', { name: 'Updated event 0', exact: true }).waitFor();
+    await f.page.locator('.frame-next-event').getByText('Updated event 0', { exact: true }).waitFor();
     const after = await f.page.evaluate(() => ({ sameMain: fixtureMain === document.querySelector('.main-content'), top: fixtureMain.scrollTop, sameFocus: fixtureFocus === document.activeElement }));
     assert.deepEqual(after, { sameMain: true, top: 131, sameFocus: true });
     assert.equal(await f.page.getByText('Oct 19 – Oct 25', { exact: true }).count(), 1);
@@ -187,7 +187,7 @@ test('a queued calendar background update retains events without reporting a pro
     await f.open();
     f.state.calendarStatus = 'stale'; f.state.syncState = 'scheduled'; f.state.changed = true;
     await f.page.clock.runFor(20_001);
-    await f.page.getByRole('heading', { name: 'Updated event 0', exact: true }).waitFor();
+    await f.page.locator('.frame-next-event').getByText('Updated event 0', { exact: true }).waitFor();
     assert.equal(await f.page.getByText('Calendar update in progress.', { exact: true }).count(), 0);
     assert.equal(await f.page.locator('.status-warning').count(), 0);
     assert.deepEqual(f.state.errors, []);
