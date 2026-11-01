@@ -39,6 +39,7 @@ async function fixture({ off = false, extra = 0, empty = false, paired = true, m
     else if(path==='/api/auth/token') data={token:'fixture.transient.token'};
     else if(path==='/api/household') data={household:home,role:paired?(manager?'caregiver':'frame'):'member',date:'2026-10-27',people:state.people,routines:[],chores:[],occurrences:state.tasks.filter(t=>state.people.some(p=>p.id===t.personId)),schoolDay:{type:off?'non_school_day':'school_day',label:off?'No school':'School day'},capabilities:{manageChores:manager,manageInternet:false}};
     else if(path==='/api/calendar') data=state.calendar || {status:'ready',events:[{id:'frame-calendar-event',calendarId:'frame-cal',title:'Family dinner',allDay:false,startAt:'2026-10-27T23:30:00Z',endAt:'2026-10-28T00:30:00Z'}],calendars:[],coverage:{startDate:'2026-10-27',endDateExclusive:'2026-11-04',complete:true,truncated:false},lastSuccessfulSyncAt:'2026-10-27T18:00:00Z'};
+    else if(path==='/api/frame-access/pin') data={token:'fixture-parent-grant',scope:'parent',personId:null,expiresAt:'2026-10-27T18:20:00Z'};
     else if(path==='/api/live-status') data=state.revisions||{};
     else if(path==='/api/internet') data={serverTime:req.headers()['x-fixture-clock'],timezone:home.timezone,role:'frame',integration:{state:'ready'},policies:[],progress:[],...state.internet};
     else if(path.startsWith('/api/chore-occurrences/')&&path.endsWith('/completion')) {
@@ -165,6 +166,7 @@ test('remote task reads continue behind an open parent draft and appear when it 
   const f=await fixture({manager:true});try{
     f.state.revisions={household:'h1',internet:'i1',calendar:'c1'};await f.page.clock.runFor(2000);
     await f.page.getByRole('link',{name:'Tasks',exact:true}).click();await f.page.getByRole('button',{name:'+ Add a task',exact:true}).click();
+    await f.page.keyboard.type('2468');await f.page.locator('.pin-continue').click();
     await f.page.getByLabel('Task',{exact:true}).fill('Keep this parent draft');
     Object.assign(f.state.tasks[0],{status:'completed',version:2});f.state.revisions.household='h2';
     await f.page.clock.runFor(2000);assert.equal(await f.page.getByLabel('Task',{exact:true}).inputValue(),'Keep this parent draft');
@@ -303,6 +305,7 @@ test('frame activity restarts the idle deadline and unfinished parent task forms
     await f.page.clock.runFor(1100);await f.page.locator('.frame-person-card').first().waitFor();
     await f.page.locator('#frame-ambient').click(); await f.page.clock.runFor(700);
     await f.page.getByRole('link',{name:'Tasks',exact:true}).click();await f.page.getByRole('button',{name:'+ Add a task',exact:true}).click();
+    await f.page.keyboard.type('2468');await f.page.locator('.pin-continue').click();
     await f.page.getByLabel('Task',{exact:true}).fill('Unfinished parent draft');
     await f.page.clock.runFor(91_000);assert.equal(await f.page.getByLabel('Task',{exact:true}).inputValue(),'Unfinished parent draft');
     assert.ok(f.page.url().endsWith('#chores'));assert.deepEqual(f.state.writes,[]);assert.deepEqual(f.state.errors,[]);

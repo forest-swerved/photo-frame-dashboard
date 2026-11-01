@@ -1,3 +1,4 @@
+import { parentKeypad } from './parent-keypad.js';
 import { request, setFrameAccess, frameAccessStatus } from './api.js';
 import { escapeHtml as h, color, dateLabel, addDays, dateFormatter, dateInZone, mutationId } from './model.js';
 import { routinePayload } from './occurrences.js';
@@ -138,21 +139,31 @@ export function createWorkbench(ctx) {
   function unlockPanel() {
     if (ctx.frame()) {
       const access = frameAccessStatus();
+      if (!access) return '';
       return `<section class="panel setup-card"><h2>${access ? `${access.scope === 'parent' ? h(access.parentName || 'Parent') : person(access.personId)} controls unlocked` : 'Unlock private controls'}</h2><p class="supporting">${access ? `This approval expires at ${h(stamp(access.expiresAt))}. Lock the frame when you finish.` : 'Create a short-lived unlock code from your signed-in phone. A family profile alone cannot spend a reward or change Internet access.'}</p>${ctx.button(access ? 'Lock controls now' : 'Enter unlock code', access ? 'frame-lock' : 'frame-unlock', 'button button-secondary')}</section>`;
     }
     const scopes = frameCodeScopes(ctx.session(), ctx.snapshot()?.capabilities);
     return `<section class="panel setup-card"><h2>${scopes.length ? 'Notifications & frame access' : 'Notifications'}</h2><p class="supporting">Your inbox and preferences follow your family account. Frame unlock codes grant temporary, scoped access.</p><div class="form-stack">${ctx.button('Notification preferences', 'notification-preferences', 'button button-secondary')}${scopes.includes('parent') ? ctx.button('Set or change parent PIN','parent-pin','button button-secondary') : ''}${scopes.length ? ctx.button('Create temporary unlock code', 'create-frame-access', 'button button-secondary') : ''}</div></section>`;
   }
-  function unlock() {
-    setFrameAccess(null);state.access=null;if(ctx.session())ctx.session().personId=null;
-    ctx.openDialog('Unlock parent controls', `<p class="supporting">Enter your four-digit parent PIN. The frame identifies you automatically and unlocks your controls for ten minutes.</p><div class="form-stack">${ctx.field('Parent PIN','pin','',{type:'password',max:4,extra:'inputmode="numeric" pattern="[0-9]{4}" autocomplete="off"'})}<button type="submit" class="button">Unlock controls</button>${ctx.button('Use a temporary code','frame-temporary-unlock','text-button')}</div>`,async(form,element)=>{
-      const current=epoch();let data;
-      try {data=await request('/api/frame-access/pin',{method:'POST',body:{pin:form.get('pin')}});}
-      finally {element.querySelector('[name="pin"]').value='';form.delete('pin');}
-      if(current!==epoch() || !activeForm(element)) return;
-      setFrameAccess(data);state.access={scope:data.scope,personId:data.personId,parentName:data.parentName,expiresAt:data.expiresAt};ctx.session().personId=data.personId;
-      ctx.sound?.('unlock');ctx.dialog.close();ctx.toast(`${data.parentName || 'Parent'} controls unlocked temporarily.`);await ctx.reload();
-    });
+  let unlocking = null;
+  function unlock(temporary = false) {
+    if (unlocking) return unlocking;
+    const current = epoch();
+    unlocking = parentKeypad({ temporary, verify: async data => {
+      if(current !== epoch()) throw new Error('This frame session changed. Close this keypad and try again.');
+      setFrameAccess(data); state.access = data; ctx.session().personId = data.personId;
+      ctx.sound?.('unlock'); await ctx.reload(); ctx.toast('Frame controls unlocked temporarily.');
+    }}).finally(() => { unlocking = null; });
+    return unlocking;
+  }
+  async function authorize(permission) {
+    if (!ctx.frame()) return true;
+    const allowed = () => frameAccessStatus()?.scope === 'parent' &&
+      (permission === 'parent' || ctx.snapshot()?.capabilities?.[permission] === true);
+    if (allowed()) return true;
+    if (!await unlock()) return false;
+    if (!allowed()) { ctx.toast('This account does not have permission for that control.'); return false; }
+    return true;
   }
   function parentPin() {
     ctx.openDialog('Your parent PIN', `<p class="supporting">Use your unique four-digit PIN to unlock parent controls on the paired frame.</p><div class="form-stack">${ctx.field('New parent PIN','pin','',{type:'password',max:4,extra:'inputmode="numeric" pattern="[0-9]{4}" autocomplete="off"'})}<button type="submit" class="button">Save parent PIN</button></div>`,async(form,element)=>{
@@ -161,18 +172,7 @@ export function createWorkbench(ctx) {
       if(current!==epoch() || !activeForm(element))return;ctx.dialog.close();ctx.toast('Your parent PIN was saved.');
     });
   }
-  function temporaryUnlock() {
-    ctx.openDialog('Unlock frame controls', `<p class="supporting">On a signed-in phone, open Settings → Notifications & frame access → Create frame unlock code. Enter that six-digit code here.</p><div class="form-stack">${ctx.field('Unlock code', 'code', '', { max: 6, extra: 'inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code"' })}<button type="submit" class="button">Unlock controls</button></div>`, async (form, element) => {
-      const started = epoch();
-      let data;
-      try { data = await request('/api/frame-access/redeem', { method: 'POST', body: { code: form.get('code').trim() } }); }
-      finally { element.querySelector('[name="code"]').value = ''; form.delete('code'); }
-      if (started !== epoch() || !activeForm(element)) return;
-      setFrameAccess(data); state.access = { scope: data.scope, personId: data.personId, expiresAt: data.expiresAt };
-      ctx.session().personId = data.personId;
-      ctx.sound?.('unlock'); ctx.dialog.close(); ctx.toast('Frame controls unlocked temporarily.'); await ctx.reload();
-    });
-  }
+  function temporaryUnlock() { return unlock(true); }
   function createAccess() {
     const session = ctx.session(), child = session?.role === 'child', scopes = frameCodeScopes(session, ctx.snapshot()?.capabilities);
     if (!scopes.length) return;
@@ -235,5 +235,5 @@ export function createWorkbench(ctx) {
     }
     return false;
   }
-  return { reset, editRoutine, action, loadActivity, activityView, unreadCount: () => (state.activity || []).filter(item=>!item.readAt).length, unlockPanel, unlock, schoolCalendarPanel: schoolCalendar.panel, accessExpired: () => !!state.access && !frameAccessStatus() };
+  return { reset, editRoutine, action, loadActivity, activityView, unreadCount: () => (state.activity || []).filter(item=>!item.readAt).length, unlockPanel, unlock, authorize, schoolCalendarPanel: schoolCalendar.panel, accessExpired: () => !!state.access && !frameAccessStatus() };
 }

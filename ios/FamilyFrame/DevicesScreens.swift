@@ -175,9 +175,7 @@ struct NetworkStatusCard: View {
     @ObservedObject var network: InternetModel
     var body: some View {
         if let snapshot = network.snapshot {
-            if snapshot.integration.isReady && !network.isStale && network.message == nil && snapshot.integration.error == nil {
-                DisclosureGroup("Home network connected") { Text("Controls apply to enrolled devices on your home network. Each device shows its confirmed access state.").font(.caption).foregroundStyle(Brand.muted) }.font(.subheadline).padding(16).background(.white, in: RoundedRectangle(cornerRadius: 12))
-            } else {
+            if !snapshot.integration.isReady || network.isStale || network.message != nil || snapshot.integration.error != nil {
             FrameCard(accent: snapshot.integration.isReady ? Brand.cyan : Brand.magenta) {
                 Label(snapshot.integration.title, systemImage: snapshot.integration.isReady ? "network" : "network.slash").font(.headline)
                 if !snapshot.integration.isReady { Text(snapshot.integration.detail).font(.subheadline).foregroundStyle(Brand.muted); Link("Open Family Frame network setup", destination: Brand.webSettings("frames")).font(.subheadline.weight(.semibold)).frame(minHeight: 44) }
