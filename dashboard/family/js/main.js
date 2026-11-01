@@ -91,7 +91,7 @@ const ambient = createFrameAmbient(document.querySelector('#frame-ambient'), {
 });
 const frameIdle = createFrameIdleReturn({
   enabled: () => frame() && !!S.session?.household && !S.booting,
-  blocked: () => S.pending.size > 0 || internet.writing() || !!document.querySelector('form[data-submitting]'),
+  blocked: () => !!document.querySelector('.parent-keypad') || S.pending.size > 0 || internet.writing() || !!document.querySelector('form[data-submitting]'),
   onIdle: () => {
     if (dialog.open) {
       if (!dialog.dispatchEvent(new Event('request-close', { cancelable: true }))) return;
@@ -121,6 +121,7 @@ const accountUI = createAccountUI({ session: () => S.session, epoch: () => gener
 function icon(name) { return `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.today}</svg>`; }
 function admin() { return S.session?.role === 'admin'; }
 function choreManager() { return admin() || S.snapshot?.capabilities?.manageChores === true; }
+function showTaskControls() { return choreManager() || frame(); }
 function routines() { return S.snapshot?.routines || S.snapshot?.chores || []; }
 function frame() { return S.session?.authType === 'frame'; }
 function zone() { return S.snapshot?.household?.timezone || S.session?.household?.timezone || 'America/Denver'; }
@@ -263,7 +264,7 @@ function taskListMarkup(items, showPerson = true, profileId, limit = Infinity) {
     const hasScheduled = taskSections(scheduled, S.snapshot?.schoolDay).some(group=>group.id===section.id && group.items.length);
     if (!section.items.length && hasScheduled && S.taskStatus === 'active') return '';
     const filter = section.id !== 'tasks' ? 'school_day' : S.snapshot?.schoolDay?.type === 'non_school_day' ? 'non_school_day' : 'any';
-    return `<section class="task-section" data-key="task-section-${section.id}"><h3 class="task-section-heading">${h(section.label)}</h3>${section.items.length ? `<div class="chore-list">${displayed.map(item => choreRow(item, showPerson)).join('')}</div>${omitted ? `<a href="#chores" class="more-link" aria-label="View ${omitted} more ${omitted === 1 ? 'task' : 'tasks'} in ${h(section.label)}">View ${omitted} more ${omitted === 1 ? 'task' : 'tasks'}</a>` : ''}` : `<div class="task-section-empty"><p>${hasScheduled ? 'No unfinished tasks here.' : 'No tasks scheduled here yet.'}</p>${choreManager() && !hasScheduled ? button('Add task', 'add-chore', 'text-button', `data-person-id="${h(profileId || '')}" data-school-filter="${filter}" data-task-section="${section.id}" aria-label="Add a task${section.id !== 'tasks' ? ` ${section.label.toLowerCase()}` : ''}${profileId ? ` for ${h(profileLabel(profileId))}` : ''}"`) : ''}</div>`}</section>`;
+    return `<section class="task-section" data-key="task-section-${section.id}"><h3 class="task-section-heading">${h(section.label)}</h3>${section.items.length ? `<div class="chore-list">${displayed.map(item => choreRow(item, showPerson)).join('')}</div>${omitted ? `<a href="#chores" class="more-link" aria-label="View ${omitted} more ${omitted === 1 ? 'task' : 'tasks'} in ${h(section.label)}">View ${omitted} more ${omitted === 1 ? 'task' : 'tasks'}</a>` : ''}` : `<div class="task-section-empty"><p>${hasScheduled ? 'No unfinished tasks here.' : 'No tasks scheduled here yet.'}</p>${showTaskControls() && !hasScheduled ? button('Add task', 'add-chore', 'text-button', `data-person-id="${h(profileId || '')}" data-school-filter="${filter}" data-task-section="${section.id}" aria-label="Add a task${section.id !== 'tasks' ? ` ${section.label.toLowerCase()}` : ''}${profileId ? ` for ${h(profileLabel(profileId))}` : ''}"`) : ''}</div>`}</section>`;
   }).join('');
 }
 
@@ -274,7 +275,7 @@ function profileFilter() {
 }
 function approvalQueue(items, preview = false) {
   if (!items.length) return '';
-  if (!choreManager()) return frame() ? `<section class="approval-queue approval-preview"><div class="section-heading"><h2>${items.length} waiting for parent approval</h2>${button('Unlock to review','unlock-frame','text-button')}</div></section>` : '';
+  if (!choreManager()) return frame() ? `<section class="approval-queue approval-preview"><div class="section-heading"><h2>${items.length} waiting for parent approval</h2>${button('Review tasks','review-tasks','text-button')}</div></section>` : '';
   return `<section class="approval-queue ${preview ? 'approval-preview' : 'panel'}" data-key="approval-queue"><div class="section-heading"><h2>${items.length} ${items.length === 1 ? 'task needs' : 'tasks need'} approval</h2>${button('Review tasks', 'review-tasks', 'text-button')}</div>${preview ? '<p class="soft-label">Review submitted work before it counts toward rewards.</p>' : items.map(item => `<article class="approval-item" data-key="approval-${h(item.id)}"><button type="button" class="chore-open" data-action="task-details" data-id="${h(item.id)}"><strong>${h(item.title)}</strong><small>${h(profileLabel(item.personId))} · Waiting for parent approval</small></button>${button('Review work', 'task-details', 'button button-small', `data-id="${h(item.id)}"`)}</article>`).join('')}</section>`;
 }
 function todayAgenda() {
@@ -283,7 +284,7 @@ function todayAgenda() {
 }
 function taskDetailContents(chore) {
   const historical = taskGroups([chore], S.snapshot?.schoolDay).history.length > 0;
-  return `<p class="supporting">${h(profileLabel(chore.personId))} · ${h(completionLabel(chore))}</p>${occurrenceDetails(chore,choreManager(),S.pending.has(`${chore.id}:${S.snapshot.date}`),S.snapshot.schoolDay)}${!historical && !(chore.status === 'submitted' && choreManager()) ? button(chore.status === 'submitted' ? 'Withdraw submission' : done(chore) ? 'Reopen task' : chore.requiresApproval && !choreManager() ? 'Submit for approval' : 'Mark task done','complete-chore','button',`data-id="${h(chore.id)}" ${taskIntentAttributes(chore)}`) : ''}${choreManager() ? button('Edit routine','edit-chore','text-button',`data-id="${h(chore.choreId || chore.id)}"`) : ''}`;
+  return `<p class="supporting">${h(profileLabel(chore.personId))} · ${h(completionLabel(chore))}</p>${occurrenceDetails(chore,showTaskControls(),S.pending.has(`${chore.id}:${S.snapshot.date}`),S.snapshot.schoolDay)}${!historical && !(chore.status === 'submitted' && choreManager()) ? button(chore.status === 'submitted' ? 'Withdraw submission' : done(chore) ? 'Reopen task' : chore.requiresApproval && !choreManager() ? 'Submit for approval' : 'Mark task done','complete-chore','button',`data-id="${h(chore.id)}" ${taskIntentAttributes(chore)}`) : ''}${showTaskControls() ? button('Edit routine','edit-chore','text-button',`data-id="${h(chore.choreId || chore.id)}"`) : ''}`;
 }
 function refreshTaskDetails() {
   if (!dialog.open || !dialog.dataset.taskId) { pendingTaskDetails = false; return; }
@@ -336,7 +337,7 @@ function frameHomeView() {
       <div class="frame-person-tasks" data-key="frame-tasks-${h(profile.id)}" tabindex="0" role="region" aria-label="${h(profile.name)}’s task list">${sections.length ? sections.map(section => `<section class="task-section" data-key="frame-section-${h(profile.id)}-${section.id}"><h3 class="task-section-heading">${h(section.label)}</h3><div class="chore-list">${section.items.map(item => choreRow(item, false, true)).join('')}</div></section>`).join('') : `<div class="frame-person-empty"><span aria-hidden="true">${currentCount ? '✓' : '○'}</span><strong>${currentCount ? 'You’re all set!' : 'A little room to breathe.'}</strong><p>${currentCount ? 'Your tasks are done. Nice work.' : 'No tasks scheduled for today.'}</p></div>`}</div>
       ${internet.personSummary(profile.id)}
     </section>`).join('') || '<section class="panel"><h2>Your family tasks</h2><p>Add family profiles in Settings to see their task lists here.</p></section>'}</div>${frameHomeOverview(shared)}</div>
-    <footer class="frame-home-bottom" data-key="frame-home-bottom">${frameHomeCalendar()}<div class="frame-home-tools">${button('Unlock controls','frame-unlock','text-button')}${submitted.length ? button(choreManager() ? 'Review tasks' : 'Unlock to review', choreManager() ? 'review-tasks' : 'unlock-frame', 'text-button') : ''}${shared.todo.length || shared.submitted.length ? `<a href="#chores" data-action="open-shared-tasks" class="text-button">Shared tasks · ${shared.todo.length + shared.submitted.length}</a>` : ''}</div></footer>
+    <footer class="frame-home-bottom" data-key="frame-home-bottom">${frameHomeCalendar()}<div class="frame-home-tools">${frameAccessStatus() ? button('Lock controls','frame-lock','text-button') : ''}${submitted.length ? button('Review tasks','review-tasks','text-button') : ''}${shared.todo.length || shared.submitted.length ? `<a href="#chores" data-action="open-shared-tasks" class="text-button">Shared tasks · ${shared.todo.length + shared.submitted.length}</a>` : ''}</div></footer>
   </section>`;
 }
 function todayView() {
@@ -364,7 +365,7 @@ function choresView() {
   const all = scheduledChores(), selected = selectedPerson === 'all' ? all : all.filter(item => item.personId === selectedPerson);
   const groups = taskGroups(selected, S.snapshot.schoolDay), list = S.taskStatus === 'waiting' ? groups.submitted : S.taskStatus === 'completed' ? groups.completed : S.taskStatus === 'all' ? selected : activeTasks(selected, groups);
   const selectedRoutines = routines().filter(item => (S.taskPerson === 'all' || item.personId === S.taskPerson) && (!S.routineQuery || `${item.title} ${profileLabel(item.personId)}`.toLowerCase().includes(S.routineQuery.toLowerCase())) && (!S.routineSchedule || item.scheduleType === S.routineSchedule));
-  return `${choreManager() ? `<div class="task-toolbar"><div class="segmented task-view-switch" role="group" aria-label="Task view">${['today','routines'].map(mode => button(mode === 'today' ? 'Today' : 'Routines', 'task-mode', `segment ${S.taskMode === mode ? 'selected' : ''}`, `data-mode="${mode}" aria-pressed="${S.taskMode === mode}"`)).join('')}</div>${button('+ Add a task', 'add-chore')}</div>` : ''}${profileFilter()}${S.taskMode === 'routines' && choreManager() ? `<section class="panel all-chores"><div class="section-heading"><h2>Task routines</h2><span class="soft-label">Changes apply to future days</span></div><div class="routine-filters"><label class="field" data-key="routine-search"><span>Find a routine</span><input type="search" data-routine-search name="routineSearch" value="${h(S.routineQuery || '')}" placeholder="Task or family profile"></label><label class="field"><span>Schedule</span><select data-routine-schedule><option value="">All schedules</option><option value="weekly" ${S.routineSchedule === 'weekly' ? 'selected' : ''}>Weekly routines</option><option value="one_off" ${S.routineSchedule === 'one_off' ? 'selected' : ''}>One-time tasks</option></select></label></div><div class="definition-list">${selectedRoutines.map(chore => `<div data-key="definition-${h(chore.id)}"><span><strong>${h(chore.title)}</strong><small>${h(profileLabel(chore.personId))} · ${chore.scheduleType === 'one_off' ? `Once on ${h(chore.scheduledDate)}` : h(chore.weekdays.map(day => days[day]).join(', '))} · ${h(schoolDayFilterLabel(chore.schoolDayFilter))} · ${chore.required === false ? 'Optional' : 'Required'}</small></span>${button('Edit', 'edit-chore', 'text-button', `data-id="${h(chore.id)}" aria-label="Edit ${h(chore.title)}"`)}</div>`).join('') || '<p class="quiet-empty">No matching routines.</p>'}</div></section>` : `${schoolDayStatus(S.snapshot)}<div class="task-status-filter" role="group" aria-label="Task status">${[['active',`To do · ${groups.todo.length}`],['waiting',`Waiting for approval · ${groups.submitted.length}`],['completed',`Done · ${groups.completed.length}`],['all','All']].map(([id,label]) => button(id === 'waiting' ? `Waiting · ${groups.submitted.length}` : label, 'task-status', `filter-pill ${S.taskStatus === id ? 'selected' : ''}`, `data-id="${id}" aria-label="${h(label)}" aria-pressed="${S.taskStatus === id}"`)).join('')}</div>${S.taskStatus === 'waiting' && choreManager() ? (approvalQueue(groups.submitted) || '<section class="panel"><p class="quiet-empty">No tasks waiting for approval.</p></section>') : `<section class="panel person-lane focused-tasks"><header><div><h2>${selectedPerson === 'all' ? 'Family tasks' : h(profileLabel(selectedPerson))}</h2><p>${taskOverview(selected,S.snapshot.schoolDay).total ? `${taskProgress(selected,S.snapshot.schoolDay).completed} of ${taskProgress(selected,S.snapshot.schoolDay).total} required tasks done` : 'No required tasks today'}</p></div></header>${list.length || S.taskStatus === 'active' ? taskListMarkup(list, selectedPerson === 'all', selectedPerson === 'all' ? '' : selectedPerson) : '<p class="quiet-empty">Nothing in this view.</p>'}</section>`}${groups.history.length && S.taskStatus !== 'all' ? `<details class="panel earlier-schedule"><summary>Earlier schedule and excused work · ${groups.history.length}</summary><p class="supporting">Saved for history; these tasks do not count toward today’s required work.</p>${groups.history.map(item=>choreRow(item)).join('')}</details>` : ''}`}<details class="task-tools"><summary>History and schedule tools</summary><div class="chore-tools">${button('Task history','chore-history','button button-secondary')}${choreManager() ? button('School calendar','school-calendar','button button-secondary')+button('Task breaks','chore-breaks','button button-secondary') : ''}</div><p class="field-help">School dates choose routines. Task breaks excuse work for a trip or time away.</p></details>`;
+  return `${showTaskControls() ? `<div class="task-toolbar"><div class="segmented task-view-switch" role="group" aria-label="Task view">${['today','routines'].map(mode => button(mode === 'today' ? 'Today' : 'Routines', 'task-mode', `segment ${S.taskMode === mode ? 'selected' : ''}`, `data-mode="${mode}" aria-pressed="${S.taskMode === mode}"`)).join('')}</div>${button('+ Add a task', 'add-chore')}</div>` : ''}${profileFilter()}${S.taskMode === 'routines' && choreManager() ? `<section class="panel all-chores"><div class="section-heading"><h2>Task routines</h2><span class="soft-label">Changes apply to future days</span></div><div class="routine-filters"><label class="field" data-key="routine-search"><span>Find a routine</span><input type="search" data-routine-search name="routineSearch" value="${h(S.routineQuery || '')}" placeholder="Task or family profile"></label><label class="field"><span>Schedule</span><select data-routine-schedule><option value="">All schedules</option><option value="weekly" ${S.routineSchedule === 'weekly' ? 'selected' : ''}>Weekly routines</option><option value="one_off" ${S.routineSchedule === 'one_off' ? 'selected' : ''}>One-time tasks</option></select></label></div><div class="definition-list">${selectedRoutines.map(chore => `<div data-key="definition-${h(chore.id)}"><span><strong>${h(chore.title)}</strong><small>${h(profileLabel(chore.personId))} · ${chore.scheduleType === 'one_off' ? `Once on ${h(chore.scheduledDate)}` : h(chore.weekdays.map(day => days[day]).join(', '))} · ${h(schoolDayFilterLabel(chore.schoolDayFilter))} · ${chore.required === false ? 'Optional' : 'Required'}</small></span>${button('Edit', 'edit-chore', 'text-button', `data-id="${h(chore.id)}" aria-label="Edit ${h(chore.title)}"`)}</div>`).join('') || '<p class="quiet-empty">No matching routines.</p>'}</div></section>` : `${schoolDayStatus(S.snapshot)}<div class="task-status-filter" role="group" aria-label="Task status">${[['active',`To do · ${groups.todo.length}`],['waiting',`Waiting for approval · ${groups.submitted.length}`],['completed',`Done · ${groups.completed.length}`],['all','All']].map(([id,label]) => button(id === 'waiting' ? `Waiting · ${groups.submitted.length}` : label, 'task-status', `filter-pill ${S.taskStatus === id ? 'selected' : ''}`, `data-id="${id}" aria-label="${h(label)}" aria-pressed="${S.taskStatus === id}"`)).join('')}</div>${S.taskStatus === 'waiting' && choreManager() ? (approvalQueue(groups.submitted) || '<section class="panel"><p class="quiet-empty">No tasks waiting for approval.</p></section>') : `<section class="panel person-lane focused-tasks"><header><div><h2>${selectedPerson === 'all' ? 'Family tasks' : h(profileLabel(selectedPerson))}</h2><p>${taskOverview(selected,S.snapshot.schoolDay).total ? `${taskProgress(selected,S.snapshot.schoolDay).completed} of ${taskProgress(selected,S.snapshot.schoolDay).total} required tasks done` : 'No required tasks today'}</p></div></header>${list.length || S.taskStatus === 'active' ? taskListMarkup(list, selectedPerson === 'all', selectedPerson === 'all' ? '' : selectedPerson) : '<p class="quiet-empty">Nothing in this view.</p>'}</section>`}${groups.history.length && S.taskStatus !== 'all' ? `<details class="panel earlier-schedule"><summary>Earlier schedule and excused work · ${groups.history.length}</summary><p class="supporting">Saved for history; these tasks do not count toward today’s required work.</p>${groups.history.map(item=>choreRow(item)).join('')}</details>` : ''}`}<details class="task-tools"><summary>History and schedule tools</summary><div class="chore-tools">${button('Task history','chore-history','button button-secondary')}${showTaskControls() ? button('School calendar','school-calendar','button button-secondary')+button('Task breaks','chore-breaks','button button-secondary') : ''}</div><p class="field-help">School dates choose routines. Task breaks excuse work for a trip or time away.</p></details>`;
 }
 
 function profileCards() {
@@ -666,6 +667,7 @@ function openDialog(titleText, contents, onSubmit) {
   delete dialog.dataset.taskId;
   dialog.innerHTML = `<form data-dialog-form><header class="dialog-heading"><h2 id="dialog-title">${h(titleText)}</h2><button class="icon-button" type="button" data-close-dialog aria-label="Close dialog">×</button></header><div class="dialog-body">${contents}${formError()}</div><footer class="dialog-footer" hidden></footer></form>`;
   const form = dialog.querySelector('form'), footer = dialog.querySelector('.dialog-footer');
+  if (actionPermission) form.dataset.parentPermission = actionPermission;
   const submit = [...form.querySelectorAll('button[type="submit"]')].pop();
   if (submit) {
     const actions = submit.closest('.dialog-actions') || submit;
@@ -707,7 +709,10 @@ async function submitForm(event, run) {
   if (submit) { submit.disabled = true; submit.textContent = 'Saving…'; }
   if (errorBox) { errorBox.hidden = true; errorBox.textContent = ''; }
   const soundVersion = soundFeedbackVersion, epoch = generation;
-  try { await run(new FormData(form), form); frameIdle.saved(form); if (epoch === generation && soundVersion === soundFeedbackVersion) sound('saved'); }
+  try {
+    if (frame() && form.dataset.parentPermission && !await workbench.authorize(form.dataset.parentPermission)) return;
+    if (epoch !== generation || !form.isConnected) return;
+    await run(new FormData(form), form); frameIdle.saved(form); if (epoch === generation && soundVersion === soundFeedbackVersion) sound('saved'); }
   catch (error) {
     if (epoch === generation) sound('error');
     if (errorBox) { errorBox.textContent = `${errorMessage(error)}${error.status === 409 ? ' Another device changed this item. Close this form, refresh, and try again.' : ''}`; errorBox.hidden = false; }
@@ -801,7 +806,28 @@ const forms = {
   'create-child-invite': async form => { S.generatedInvite = await request('/api/invites', { method: 'POST', body: { role: 'child', personId: form.get('personId'), email: form.get('email').trim() } }); toast('Child invitation created. Share the link privately.'); render(true); },
 };
 
+function protectedPermission(name, element) {
+  if (['device-add','device-edit','device-access','device-grant','device-remove','session-control','reward-policies','reward-policy-edit','reward-review','internet-history'].includes(name)) return 'manageInternet';
+  if (['add-chore','edit-chore','delete-chore','review-tasks','occurrence-action','chore-breaks','revoke-break','school-calendar'].includes(name) || name === 'task-mode' && element.dataset.mode === 'routines') return 'manageChores';
+  if (name === 'unpair-local') return 'parent';
+  return null;
+}
+let actionPermission = null;
 async function action(name, element, activation) {
+  const permission = protectedPermission(name, element), started = generation;
+  if (frame() && permission) {
+    const target = element.cloneNode(true), id = target.dataset.id;
+    const version = () => permission === 'manageInternet' ? internet.actionVersion(name,id) : name === 'occurrence-action' ? scheduledChores().find(item=>item.id===id)?.version : null;
+    const before = version();
+    if (!await workbench.authorize(permission) || started !== generation) return;
+    if (before !== version()) { toast('This item changed while you entered your PIN. Check its latest status and tap again.'); return; }
+    element = target;
+  }
+  const previous = actionPermission; actionPermission = permission;
+  try { return await runAction(name, element, activation); }
+  finally { actionPermission = previous; }
+}
+async function runAction(name, element, activation) {
   const id = element.dataset.id;
   if (name === 'parent-location' && frame()) { parentMap.open(id); return; }
   if (name === 'frame-sounds' && frame()) { openFrameSounds(); return; }
@@ -989,7 +1015,7 @@ setInterval(() => {
   internet.tick();
   liveUpdates.tick();
   tickFrameEvents();
-  if (frame() && workbench.accessExpired()) { workbench.reset(); boot(); return; }
+  if (frame() && workbench.accessExpired() && !document.querySelector('.parent-keypad') && !dialog.open) { workbench.reset(); boot(); return; }
   if (S.session?.household && S.snapshot && S.snapshot.date !== today() && !pollBusy) { pollBusy = true; refresh().finally(() => { pollBusy = false; }); }
 }, 1000);
 setInterval(async () => {

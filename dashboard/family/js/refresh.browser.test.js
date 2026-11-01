@@ -187,7 +187,7 @@ test('a queued calendar background update retains events without reporting a pro
     await f.open();
     f.state.calendarStatus = 'stale'; f.state.syncState = 'scheduled'; f.state.changed = true;
     await f.page.clock.runFor(20_001);
-    await f.page.getByText('Updated event 0', { exact: true }).waitFor();
+    await f.page.locator('.frame-next-event').getByText('Updated event 0', { exact: true }).waitFor();
     assert.equal(await f.page.getByText('Calendar update in progress.', { exact: true }).count(), 0);
     assert.equal(await f.page.locator('.status-warning').count(), 0);
     assert.deepEqual(f.state.errors, []);

@@ -19,7 +19,7 @@ async function fixture({ role = 'admin', frame = false, ready = true, allDayRead
     const body = ['POST', 'PUT', 'PATCH'].includes(method) ? req.postDataJSON() : null;
     state.calls.push({ path: url.pathname, method, body, headers: req.headers() });
     let data, status = 200;
-    const activeRole = frame ? state.grant && req.headers()['x-family-authorization'] === 'fixture-child-grant' ? 'child' : 'frame' : role;
+    const activeRole = frame ? state.grant && req.headers()['x-family-authorization'] === 'fixture-parent-grant' ? (state.deniedCapability ? 'member' : 'admin') : state.grant && req.headers()['x-family-authorization'] === 'fixture-child-grant' ? 'child' : 'frame' : role;
     const childIdentity = activeRole === 'child' ? person.id : null;
     const occurrence = { id: 'fixture-occurrence', choreId: 'fixture-routine', title: 'Synthetic last chore', personId: person.id, date: '2026-10-17', originalDate: '2026-10-17', status: state.complete ? 'completed' : 'pending', required: true, version: state.complete ? 2 : 1, subtasks: [], completion: { date: '2026-10-17', completed: state.complete, version: 0 } };
     if (url.pathname === '/api/session') data = { authType: frame ? 'frame' : 'user', role: activeRole, personId: childIdentity, household: unclaimed || state.deleted ? null : home, user: { id: 'fixture-user', name: 'Synthetic account', email: 'fixture@example.invalid' } };
@@ -41,6 +41,10 @@ async function fixture({ role = 'admin', frame = false, ready = true, allDayRead
     else if (url.pathname.endsWith('/access')) { Object.assign(device, { version: device.version + 1, desiredAccess: body.access, observedAccess: 'unknown', accessPending: true, rewardAvailable: false }); data = device; status = 202; }
     else if (url.pathname.endsWith('/resolve')) { credit.status = body.action === 'restore' ? 'available' : 'spent'; data = credit; }
     else if (url.pathname === '/api/internet/devices') data = { ...body, id: 'fixture-new-device', version: 1, controlState: 'unenrolled' };
+    else if (url.pathname === '/api/frame-access/pin') {
+      if (body.pin !== '2468') { await route.fulfill({status:403,contentType:'application/json',body:JSON.stringify({error:{code:'invalid_pin',message:'Incorrect PIN. Try again.'}})}); return; }
+      state.grant=true;data={token:'fixture-parent-grant',scope:'parent',personId:null,parentName:'Test Parent',expiresAt:'2026-10-17T18:10:00Z'};
+    }
     else if (url.pathname === '/api/frame-access/redeem') { state.grant = true; data = { token: 'fixture-child-grant', scope: 'child', personId: person.id, expiresAt: '2026-10-17T18:10:00Z' }; }
     else if (url.pathname === '/api/account/delete') {
       if (state.deleteGuard) { await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { code: 'ownership_transfer_required', message: 'Transfer ownership first.' } }) }); return; }
@@ -164,13 +168,13 @@ test('a celebration closes after the household day changes without removing the 
 
 test('an old bare-frame read cannot announce a sibling reward after a child unlock', {skip:!base},async()=>{
   const f=await fixture({frame:true,width:1280});try{
-    await f.open();await f.page.getByRole('button',{name:'Unlock to use',exact:true}).waitFor();
+    await f.open();await f.page.getByRole('button',{name:'Use reward',exact:true}).waitFor();
     await f.page.evaluate(()=>{window.rewardTitles=[];new MutationObserver(()=>{const title=document.querySelector('dialog[open] h2')?.textContent;if(title)window.rewardTitles.push(title);}).observe(document.querySelector('dialog'),{childList:true,subtree:true,attributes:true});});
     f.state.extraProgress=[{personId:'fixture-sibling',date:'2026-10-17',eligible:true,requiredCount:1,completedCount:1,remainingCount:0,pendingApprovalCount:0}];
     f.state.credits.push({...f.credit,id:'sibling-credit',personId:'fixture-sibling'});f.state.deferNextRead=true;
     await f.page.getByRole('button',{name:'Refresh status',exact:true}).click();
-    await f.page.getByRole('button',{name:'Unlock to use',exact:true}).click();await f.page.getByRole('button',{name:'Use a temporary code',exact:true}).click();await f.page.getByLabel('Unlock code',{exact:true}).fill('123456');
-    await f.page.getByRole('button',{name:'Unlock controls',exact:true}).click();await f.page.getByText('Frame controls unlocked temporarily.',{exact:true}).waitFor();
+    await f.page.getByRole('button',{name:'Use reward',exact:true}).click();await f.page.getByRole('button',{name:'Use a temporary code',exact:true}).click();await f.page.keyboard.type('123456');
+    await f.page.getByRole('button',{name:'Continue',exact:true}).click();await f.page.getByText('Frame controls unlocked temporarily.',{exact:true}).waitFor();
     assert.ok(f.state.releaseRead);f.state.releaseRead();
     await f.page.getByRole('heading',{name:'Choose one device · 60 minutes',exact:true}).waitFor();
     assert.equal((await f.page.evaluate(()=>window.rewardTitles)).some(title=>title.startsWith('Great job')),false);
@@ -181,10 +185,10 @@ test('an old bare-frame read cannot announce a sibling reward after a child unlo
 test('bare frame needs a child-scoped code before reward spending; private grant stays in memory', { skip: !base }, async () => {
   const f = await fixture({ frame: true, width: 1280 });
   try {
-    await f.open(); await f.page.getByRole('button', { name: 'Unlock to use', exact: true }).click();
-    await f.page.getByRole('button',{name:'Use a temporary code',exact:true}).click();await f.page.getByLabel('Unlock code', { exact: true }).fill('123456');
+    await f.open(); await f.page.getByRole('button', { name: 'Use reward', exact: true }).click();
+    await f.page.getByRole('button',{name:'Use a temporary code',exact:true}).click();await f.page.keyboard.type('123456');
     assert.equal(f.state.calls.filter(call => call.path === '/api/internet/redeem').length, 0);
-    await f.page.getByRole('button', { name: 'Unlock controls', exact: true }).click();
+    await f.page.getByRole('button', { name: 'Continue', exact: true }).click();
     await f.page.getByRole('heading', { name: 'Choose one device · 60 minutes', exact: true }).waitFor();
     await f.page.getByRole('radio', { name: /Synthetic console/ }).check(); await f.page.getByRole('button', { name: 'Start reward', exact: true }).click();
     await f.page.getByText('Starting · awaiting network confirmation', { exact: true }).waitFor();
@@ -399,4 +403,59 @@ test('unavailable rewards explain device eligibility before opening a picker', {
     assert.equal(await f.page.getByRole('dialog').count(), 0);
     assert.equal(f.state.calls.filter(call => call.path === '/api/internet/redeem').length, 0);
   } finally { await f.browser.close(); }
+});
+
+async function enterParentPin(page, code = '2468') {
+  for (const digit of code) await page.locator(`.parent-keypad [data-pin-key="${digit}"]`).click();
+  await page.locator('.pin-continue').click();
+}
+
+test('frame protected device controls are visible and continue only after a valid PIN', {skip:!base},async()=>{
+  const f=await fixture({frame:true,ready:true});try{
+    await f.open();
+    assert.equal(await f.page.getByText('Home network connected',{exact:true}).count(),0);
+    assert.equal(await f.page.getByText('Unlock protected controls',{exact:true}).count(),0);
+    await f.page.getByRole('button',{name:'Turn Internet on',exact:true}).click();
+    await f.page.locator('.parent-keypad').waitFor();
+    assert.equal(await f.page.locator('.parent-keypad input,.parent-keypad textarea').count(),0);
+    assert.equal(f.state.calls.filter(c=>c.path.endsWith('/access')).length,0);
+    await enterParentPin(f.page,'0000');
+    await f.page.getByText('Incorrect PIN. Try again.',{exact:true}).waitFor();
+    assert.equal(f.state.calls.filter(c=>c.path.endsWith('/access')).length,0);
+    await f.page.screenshot({path:'/tmp/family-parent-keypad.png'});
+    const saved=f.page.waitForResponse(r=>r.url().endsWith('/access'));
+    await enterParentPin(f.page);await saved;
+    const write=f.state.calls.find(c=>c.path.endsWith('/access'));
+    assert.equal(write.body.access,'allowed');assert.equal(write.headers['x-family-authorization'],'fixture-parent-grant');
+    assert.equal(f.state.calls.filter(c=>c.path.endsWith('/access')).length,1);
+    assert.deepEqual(f.state.errors,[]);
+  }finally{await f.browser.close();}
+});
+
+test('cancel, insufficient permission and a changed device never run the pending control', {skip:!base},async()=>{
+  for(const mode of ['cancel','permission','changed']) {
+    const f=await fixture({frame:true,ready:true});try{
+      await f.open();await f.page.getByRole('button',{name:'Turn Internet on',exact:true}).click();
+      if(mode==='cancel') await f.page.getByRole('button',{name:'Cancel PIN entry'}).click();
+      else {
+        if(mode==='permission') f.state.deniedCapability=true;
+        else { f.device.version++;f.device.desiredAccess='allowed';f.device.observedAccess='allowed'; }
+        await enterParentPin(f.page);
+        await f.page.locator('.parent-keypad').waitFor({state:'detached'});
+        await f.page.getByText(mode==='permission'?'This account does not have permission for that control.':'This item changed while you entered your PIN. Check its latest status and tap again.',{exact:true}).waitFor();
+      }
+      assert.equal(f.state.calls.filter(c=>c.path.endsWith('/access')).length,0);
+      assert.deepEqual(f.state.errors,[]);
+    }finally{await f.browser.close();}
+  }
+});
+
+test('task creation uses the same keypad and preserves the requested action', {skip:!base},async()=>{
+  const f=await fixture({frame:true,ready:true});try{
+    await f.open('chores');await f.page.getByRole('button',{name:'+ Add a task',exact:true}).click();
+    await enterParentPin(f.page);
+    await f.page.locator('.task-wizard').waitFor();
+    assert.equal(await f.page.locator('dialog[open] form').getAttribute('data-parent-permission'),'manageChores');
+    assert.deepEqual(f.state.errors,[]);
+  }finally{await f.browser.close();}
 });

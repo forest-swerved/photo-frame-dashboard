@@ -140,27 +140,25 @@ test('account Activity can mark read and notification settings submit account-sc
   } finally { await f.browser.close(); }
 });
 
-test('frame approval lives only in memory and the private header, with timed locking', { skip: !base }, async () => {
+test('expired parent access asks for PIN again while preserving an unfinished task draft', { skip: !base }, async () => {
   const f = await fixture({ frame: true });
   try {
-    await f.open('setup');
-    await f.page.getByRole('button', { name: 'Enter unlock code', exact: true }).click();
-    await f.page.getByRole('button',{name:'Use a temporary code',exact:true}).click();await f.page.getByLabel('Unlock code', { exact: true }).fill('123456');
-    await f.page.getByRole('button', { name: 'Unlock controls', exact: true }).click();
-    await f.page.getByText('Parent controls unlocked', { exact: true }).waitFor();
-    assert.ok(f.state.calls.some(call => call.path === '/api/household' && call.headers['x-family-authorization'] === 'fixture-private-grant'));
-    assert.equal((await f.page.locator('body').innerText()).includes('fixture-private-grant'), false);
-    assert.deepEqual(await f.page.evaluate(() => ({ local: Object.keys(localStorage), session: Object.keys(sessionStorage) })), { local: [], session: [] });
-    await f.page.getByRole('link', { name: 'Tasks', exact: true }).click();
+    await f.open('chores');
     await f.page.getByRole('button', { name: '+ Add a task', exact: true }).click();
+    await f.page.getByRole('button',{name:'Use a temporary code',exact:true}).click();await f.page.keyboard.type('123456');
+    await f.page.locator('.pin-continue').click();
     await f.page.getByLabel('Task', { exact: true }).fill('Private unsaved routine');
+    await f.page.locator('[name="personIds"]').check();
+    await f.page.locator('[data-wizard-next]').click();await f.page.locator('[data-wizard-next]').click();
     await f.page.clock.runFor(4000);
-    await f.page.waitForFunction(() => !document.querySelector('dialog').open);
-    assert.equal(await f.page.getByLabel('Task', { exact: true }).count(), 0);
-    await f.page.getByRole('link', { name: 'Settings', exact: true }).click();
-    await f.page.getByRole('button', { name: 'Enter unlock code', exact: true }).waitFor();
-    const households = f.state.calls.filter(call => call.path === '/api/household');
-    assert.equal(households.at(-1).headers['x-family-authorization'], undefined);
+    assert.equal(await f.page.getByLabel('Task', { exact: true }).inputValue(), 'Private unsaved routine');
+    const before=f.state.calls.filter(c=>c.path==='/api/chores/batch').length;
+    await f.page.locator('[data-wizard-save]').click();await f.page.locator('.parent-keypad').waitFor();
+    assert.equal(f.state.calls.filter(c=>c.path==='/api/chores/batch').length,before);
+    await f.page.keyboard.type('2468');await f.page.locator('.pin-continue').click();
+    await f.page.waitForResponse(r=>r.url().endsWith('/api/chores/batch'));
+    assert.equal(f.state.calls.find(c=>c.path==='/api/chores/batch').headers['x-family-authorization'],'fixture-pin-grant');
+    assert.deepEqual(await f.page.evaluate(() => ({ local: Object.keys(localStorage), session: Object.keys(sessionStorage) })), { local: [], session: [] });
     assert.deepEqual(f.state.errors, []);
   } finally { await f.browser.close(); }
 });
@@ -284,10 +282,10 @@ test('a delayed task save cannot close or erase a different newly opened draft',
 
 test('a four-digit parent PIN identifies the parent without a name picker and stays out of browser storage',{skip:!base},async()=>{
  const f=await fixture({frame:true});try {
-  await f.open('setup');await f.page.getByRole('button',{name:'Enter unlock code',exact:true}).click();
-  const pin=f.page.getByLabel('Parent PIN',{exact:true});await pin.fill('2468');assert.equal(await pin.getAttribute('maxlength'),'4');
+  await f.open('chores');await f.page.getByRole('button',{name:'+ Add a task',exact:true}).click();
+  await f.page.keyboard.type('24689');assert.equal(await f.page.locator('.pin-dots .filled').count(),4);
   assert.equal(await f.page.locator('dialog select[name="parentId"]').count(),0);
-  await f.page.getByRole('button',{name:'Unlock controls',exact:true}).click();await f.page.getByText('Parent controls unlocked',{exact:true}).waitFor();
+  await f.page.locator('.pin-continue').click();await f.page.locator('.task-wizard').waitFor();
   assert.ok(f.state.calls.some(c=>c.path==='/api/household'&&c.headers['x-family-authorization']==='fixture-pin-grant'));
   assert.equal((await f.page.locator('body').innerText()).includes('2468'),false);
   assert.deepEqual(await f.page.evaluate(()=>({local:Object.keys(localStorage),session:Object.keys(sessionStorage)})),{local:[],session:[]});
