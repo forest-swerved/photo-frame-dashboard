@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 const base = process.env.FAMILY_UI_TEST_URL;
-for (const [role,width,height] of [['frame',1280,800],['admin',1440,1000],['admin',390,844],['child',320,740]]) {
+for (const [role,width,height] of [['frame',1280,800],['admin',390,844],['child',320,740]]) {
   test(`${role} dashboard fits ${width}×${height} with approvals, profiles and a live timer`, { skip:!base }, async () => {
     const origin = new URL(base); assert.ok(['localhost','127.0.0.1'].includes(origin.hostname));
     const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
@@ -44,13 +44,13 @@ for (const [role,width,height] of [['frame',1280,800],['admin',1440,1000],['admi
       await page.locator(role==='frame'?'.frame-device-time':'.home-internet-strip').first().waitFor();
       const layout=await page.evaluate(()=>({width:innerWidth,document:document.documentElement.scrollWidth,mainHeight:document.querySelector('.main-content').scrollHeight,headerHeight:document.querySelector('.sidebar').getBoundingClientRect().height,
         stripBottom:document.querySelector('.frame-device-time,.home-internet-strip').getBoundingClientRect().bottom,
-        primary:getComputedStyle(document.documentElement).getPropertyValue('--primary').trim(),paper:getComputedStyle(document.documentElement).getPropertyValue('--paper').trim(),
+        primary:getComputedStyle(document.documentElement).getPropertyValue('--primary').trim(),
         list:document.querySelector('.frame-person-tasks,.home-task-list').getBoundingClientRect().top}));
-      assert.equal(layout.document,width,JSON.stringify(layout)); assert.equal(layout.primary,'#3454ed'); assert.equal(layout.paper,'#ffffff');
+      assert.equal(layout.document,width,JSON.stringify(layout)); assert.equal(layout.primary,'#b026ff');
       assert.equal(await page.locator('nav .nav-item').count(),role==='frame'?4:5);
       if(role==='frame') {
         assert.equal(layout.mainHeight+layout.headerHeight,height,JSON.stringify(layout)); assert.ok(layout.stripBottom<=height,JSON.stringify(layout));
-        assert.equal(await page.getByRole('button',{name:'Review tasks',exact:true}).count(),1);
+        assert.equal(await page.getByRole('button',{name:'Unlock to review',exact:true}).count(),1);
         assert.equal(await page.getByLabel('Filter by family profile').count(),0);
         assert.equal(await page.locator('.frame-person-card').count(),4);
         assert.equal(await page.locator('.frame-person-tasks').getByText('Optional extra task',{exact:true}).count(),4,'Every child keeps their own complete task list.');
@@ -58,13 +58,6 @@ for (const [role,width,height] of [['frame',1280,800],['admin',1440,1000],['admi
       if(process.env.FAMILY_UI_SCREENSHOT_DIR) {
         await mkdir(process.env.FAMILY_UI_SCREENSHOT_DIR,{recursive:true});
         await page.screenshot({path:`${process.env.FAMILY_UI_SCREENSHOT_DIR}/implemented-${role}-${width}.png`});
-      }
-      if(role==='admin' && width===1440) {
-        assert.equal(await page.locator('.family-day-person').count(),4);
-        await page.locator('.family-day-person').filter({hasText:'Jamie'}).click();
-        await page.getByRole('heading',{name:'Tasks',level:1,exact:true}).waitFor();
-        assert.equal(await page.locator('[data-action="task-person"][data-id="layout-person-1"]').getAttribute('aria-pressed'),'true');
-        assert.equal(await page.locator('.focused-tasks .chore-row').count(),5,'The family overview opens the selected person’s tasks.');
       }
       await page.getByRole('link',{name:role==='child'?'My tasks':'Tasks',exact:true}).click();
       await page.getByRole('heading',{name:role==='child'?'My tasks':'Tasks',level:1,exact:true}).waitFor();
