@@ -1,0 +1,174 @@
+/* A crisp, editorial dashboard. Frame geometry stays in layout.css. */
+.sidebar-label { margin: 0 14px 12px; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; }
+.paired-shell .sidebar-label { display: none; }
+.panel, .settings-rows, .settings-row, .welcome-strip { border-color: var(--line); }
+.panel, .settings-rows { border-radius: 14px; }
+.button { border-radius: 9px; font-weight: 650; }
+.nav-item { border-radius: 9px; }
+.nav-item.active { color: var(--action-ink); background: var(--action-tint); box-shadow: none; }
+.nav-item svg { width: 20px; height: 20px; flex-shrink: 0; }
+.filter-pill.selected { border-color: #cbd3fc; }
+.segmented { background: var(--surface-soft); border-color: var(--line); }
+.segment.selected { background: var(--surface); color: var(--action-ink); box-shadow: 0 1px 3px rgba(21,24,33,.08); }
+.field input, .field select, .field textarea { border-color: #dce0e7; background: var(--surface); border-radius: 9px; }
+.check-box { border-color: #bbc1cd; }
+.check-box, .filter-pill, .button, .nav-item { transition: background-color .15s, border-color .15s, color .15s; }
+.page-description { color: var(--muted); font-size: 14px; line-height: 1.5; margin-top: 8px; }
+.personal-shell .main-content { padding: 32px; }
+.personal-shell .page-heading { align-items: center; margin-bottom: 28px; }
+.personal-shell .page-heading h1 { font-size: 42px; letter-spacing: -1.8px; line-height: 1.1; font-weight: 750; }
+.personal-shell .page-heading .eyebrow { font-size: 10px; letter-spacing: 1.4px; margin-bottom: 8px; }
+.personal-shell .heading-actions { gap: 24px; }
+.personal-shell .header-clock .live-time { font-size: 23px; font-weight: 650; letter-spacing: -.8px; }
+.personal-shell .header-clock .live-date { font-size: 11px; }
+.dashboard-layout { display: grid; grid-template-columns: minmax(0,1fr); gap: 24px; }
+.dashboard-main { min-width: 0; }
+.family-day-rail { display: none; min-width: 0; }
+.compact-welcome { background: #f4f5f8; color: var(--ink); border: 1px solid var(--line); border-radius: 14px; padding: 28px; margin-bottom: 24px; gap: 24px; }
+.compact-welcome .eyebrow { color: var(--muted); font-size: 10px; letter-spacing: 1.3px; margin-bottom: 10px; }
+.compact-welcome h2 { color: var(--ink); font-size: 30px; letter-spacing: -1px; line-height: 1.12; max-width: 360px; }
+.compact-welcome .welcome-summary { color: var(--ink-soft); font-size: 13px; margin-top: 12px; }
+.daily-progress { width: 190px; border-left: 1px solid #dce0e7; padding-left: 24px; }
+.hero-progress-value { display: block; font-size: 42px; line-height: 1; font-weight: 750; letter-spacing: -1.7px; margin-bottom: 10px; }
+.hero-progress-value > span { color: #7a8292; font-size: 25px; font-weight: 500; letter-spacing: -1px; }
+.daily-progress strong { font-size: 11px; color: var(--ink-soft); font-weight: 500; }
+.daily-progress .progress-track { background: #dce0e7; height: 5px; margin-top: 12px; }
+.daily-progress .progress-track i { background: var(--action); }
+.personal-shell .today-grid { gap: 20px; grid-template-columns: repeat(2,minmax(0,1fr)); align-items: stretch; }
+.personal-shell .today-grid > .panel { padding: 22px; }
+.personal-shell .today-grid .section-heading { align-items: baseline; margin-bottom: 14px; flex-wrap: wrap; gap: 4px 12px; }
+.personal-shell .today-grid .section-heading h2 { font-size: 20px; letter-spacing: -.6px; }
+.personal-shell .today-grid .event-card { grid-template-columns: minmax(60px,80px) minmax(0,1fr); gap: 12px; padding: 18px 0; }
+.personal-shell .today-grid .event-time { font-size: 12px; }
+.personal-shell .today-grid .event-card h3 { font-size: 15px; }
+.personal-shell .today-grid .event-card p { font-size: 12px; }
+.personal-shell .today-grid .event-card > div { padding-left: 12px; }
+.personal-shell .today-grid .filter-pill { font-size: 11px; min-height: 36px; padding: 8px 11px; }
+.personal-shell .today-grid .profile-filter { gap: 5px; margin: 0 0 12px; }
+.personal-shell .compact-task { padding: 10px 0; }
+.personal-shell .chore-open strong { font-size: 15px; font-weight: 600; }
+.personal-shell .chore-open small { font-size: 11px; line-height: 1.5; }
+.personal-shell .today-grid .chore-toggle { flex-basis: 28px; width: 28px; }
+.personal-shell .today-grid .check-box { width: 23px; height: 23px; }
+.personal-shell .today-grid .soft-label { font-size: 11px; }
+.personal-shell .today-grid .text-button, .personal-shell .today-grid .more-link { font-size: 11px; }
+.personal-shell .approval-queue { background: var(--surface-soft); border: 1px solid var(--line); border-left: 3px solid var(--primary); border-radius: 12px; }
+.personal-shell .approval-queue h2 { font-size: 18px; }
+.personal-shell .home-internet-strip { margin-top: 20px; border-radius: 12px; }
+.family-day-card { padding: 20px; }
+.family-day-card .section-heading { gap: 10px; margin-bottom: 9px; }
+.family-day-card .section-heading h2 { font-size: 17px; letter-spacing: -.4px; }
+.family-day-card .text-button { font-size: 11px; }
+.family-day-person { display: flex; align-items: center; gap: 11px; text-decoration: none; padding: 17px 0; border-top: 1px solid var(--line); min-width: 0; }
+.family-day-person .avatar { width: 33px; height: 33px; font-size: 11px; }
+.family-day-person > span:nth-child(2) { flex: 1; min-width: 0; }
+.family-day-person strong { display: block; font-size: 12px; font-weight: 650; overflow-wrap: anywhere; }
+.family-day-person small { display: block; color: var(--muted); font-size: 10px; margin-top: 5px; }
+.family-day-person:hover strong { color: var(--action-ink); }
+.person-day-score { font-size: 18px; font-weight: 700; color: var(--action); }
+.day-guide { margin-top: 20px; padding: 24px 20px; background: var(--surface-soft); }
+.day-guide .eyebrow { font-size: 9px; letter-spacing: 1px; }
+.day-guide h2 { font-size: 26px; line-height: 1.1; letter-spacing: -.9px; margin: 18px 0 14px; }
+.day-guide > p:not(.eyebrow) { color: var(--muted); font-size: 12px; line-height: 1.7; }
+.day-guide .more-link { font-size: 11px; margin-top: 20px; }
+/* Session information uses the same white and grey surfaces as the rest of the app. */
+.frame-device-time.has-session, .session-card, .home-internet-strip, .device-session .session-card { background: var(--surface-soft); color: var(--ink); border: 1px solid var(--line); border-radius: 12px; }
+.frame-device-time.has-session .frame-device-name span, .frame-device-time.has-session .frame-device-name small,
+.session-card .supporting, .session-card .field-help, .session-card .eyebrow, .session-card .session-facts dt,
+.home-internet-strip p, .home-internet-strip small { color: var(--muted); }
+.frame-device-time.has-session .session-timer, .session-card .session-timer, .home-internet-strip .session-timer, .session-card .session-facts dd { color: var(--ink); }
+.frame-device-time.has-session .text-button, .session-card .text-button, .session-card summary, .home-internet-strip .text-button { color: var(--action-ink); }
+.session-card .session-controls { border-top-color: var(--line); }
+.session-card .session-controls > .text-button:first-child { background: var(--action); color: white; border-radius: 8px; }
+.access-confirmed { color: var(--complete); }
+.frame-device-time.has-session .ring-track, .session-card .ring-track { stroke: #dce0e7; }
+/* Keep the accepted child boards and wall-display layout; refresh their surfaces. */
+.frame-person-progress { background: var(--line); }
+.frame-person-count { color: var(--ink); }
+.frame-person-heading h2 { text-transform: none; letter-spacing: -.8px; }
+.frame-event-notice { border-color: var(--line); box-shadow: 0 12px 44px rgba(21,24,33,.12); }
+/* The sign-in and pairing entry use white paper and a cool grey story panel. */
+.entry-story { background: var(--surface-soft); border-top: 0; }
+.entry-story .entry-tagline { font-size: clamp(44px,5vw,72px); line-height: 1.02; letter-spacing: -2.5px; font-weight: 750; }
+.entry-story .entry-tagline em { font-style: normal; font-weight: inherit; color: var(--action); }
+.entry-art { transform: rotate(-12deg); opacity: .7; }
+.entry-art span { border-color: #d0d5e0; border-radius: 24px; background: white; box-shadow: 0 8px 28px rgba(21,24,33,.04); }
+.entry-art span:nth-child(2) { border-color: #b9c2db; background: #eef1f8; }
+.entry-art span:nth-child(3) { border-color: #8d9bc8; background: white; }
+.entry-content { max-width: 660px; }
+.auth-card h2 { font-weight: 750; }
+.entry-clock .live-time { font-weight: 600; }
+@media (min-width:701px) {
+ .personal-shell { grid-template-columns: 220px minmax(0,1fr); }
+ .personal-shell .sidebar { padding: 30px 16px 24px; }
+ .personal-shell .brand { padding: 0 10px 40px; gap: 10px; }
+ .personal-shell .brand-name { font-size: 18px; letter-spacing: -.5px; }
+ .personal-shell .brand-name small { font-size: 9px; letter-spacing: 0; margin-top: 7px; }
+ .personal-shell .brand-mark { width: 34px; height: 34px; flex-basis: 34px; }
+ .personal-shell .sidebar nav { gap: 5px; }
+ .personal-shell .nav-item { min-height: 46px; padding: 12px 14px; gap: 12px; font-size: 13px; }
+ .personal-shell .sidebar-settings { padding-top: 24px; }
+ .personal-shell .sidebar-bottom { font-size: 10px; border-top: 1px solid var(--line); margin: 15px 8px 0; padding: 20px 0 0; }
+}
+@media (min-width:1280px) {
+ .dashboard-layout { grid-template-columns: minmax(0,1fr) 240px; }
+ .family-day-rail { display: block; }
+ .personal-shell .main-content { padding: 32px 28px; }
+}
+@media (min-width:1600px) {
+ .dashboard-layout { grid-template-columns: minmax(0,1fr) 280px; gap: 28px; }
+ .personal-shell .main-content { padding: 36px 40px; }
+ .compact-welcome { padding: 32px; }
+}
+@media (min-width:701px) and (max-width:1100px) {
+ .personal-shell { grid-template-columns: 185px minmax(0,1fr); }
+ .personal-shell .main-content { padding: 26px 22px; }
+ .personal-shell .heading-actions { gap: 12px; }
+ .personal-shell .today-grid { grid-template-columns: minmax(0,1fr); }
+ .personal-shell .header-clock .live-date { max-width: 110px; }
+ .personal-shell .brand { padding-left: 0; padding-right: 0; }
+ .dashboard-add-task { font-size: 12px; padding: 10px 14px; }
+}
+@media (max-width:700px) {
+ .sidebar-label { display: none; }
+ .personal-shell .main-content { padding: 24px 16px 112px; }
+ .personal-shell .page-heading { margin-bottom: 20px; gap: 8px; }
+ .personal-shell .page-heading h1 { font-size: 34px; letter-spacing: -1.3px; }
+ .personal-shell .page-heading .eyebrow { font-size: 9px; margin-bottom: 5px; }
+ .personal-shell .page-description { font-size: 12px; max-width: 190px; }
+ .personal-shell .heading-actions { gap: 8px; }
+ .personal-shell .header-clock .live-time { font-size: 16px; }
+ .dashboard-add-task { display: none; }
+ .personal-shell .nav-item { font-size: 10px; min-height: 56px; }
+ .compact-welcome { display: flex; padding: 20px; gap: 16px; margin-bottom: 16px; align-items: center; }
+ .compact-welcome h2 { font-size: 24px; letter-spacing: -.8px; }
+ .compact-welcome .welcome-summary { font-size: 11px; margin-top: 8px; }
+ .compact-welcome .eyebrow { font-size: 8px; letter-spacing: 1px; margin-bottom: 8px; }
+ .daily-progress { width: 112px; padding-left: 16px; margin: 0; }
+ .hero-progress-value { font-size: 32px; margin-bottom: 7px; }
+ .hero-progress-value > span { font-size: 19px; }
+ .daily-progress strong { font-size: 10px; line-height: 1.5; display: block; }
+ .daily-progress .progress-track { margin-top: 8px; }
+ .dashboard-layout, .dashboard-main { display: contents; }
+ .personal-shell .today-grid { display: contents; }
+ .personal-shell .today-grid > .panel { padding: 20px; margin-top: 16px; }
+ .personal-shell .today-grid .chores-panel { margin-top: 0; }
+ .personal-shell .today-grid .event-card { grid-template-columns: 80px minmax(0,1fr); }
+ .personal-shell .today-grid .section-heading h2 { font-size: 21px; }
+ .personal-shell .today-grid .chore-open strong { font-size: 16px; }
+ .personal-shell .today-grid .chore-open small { font-size: 12px; }
+ .personal-shell .today-grid .filter-pill { min-height: 40px; font-size: 12px; }
+ .personal-shell .today-grid .text-button, .personal-shell .today-grid .more-link { font-size: 12px; }
+ .personal-shell .home-internet-strip { margin: 16px 0 0; }
+ .personal-shell .today-content > .dashboard-layout { order: 1; }
+ .personal-shell .compact-welcome { order: 1; }
+ .personal-shell .school-day-note, .personal-shell .approval-queue { order: 2; }
+ .personal-shell .chores-panel { order: 3; }
+ .personal-shell .home-internet-strip { order: 4; }
+ .personal-shell .agenda-panel { order: 5; }
+ .entry-story { border-bottom: 1px solid var(--line); }
+ .entry-story .entry-tagline { font-size: 39px; letter-spacing: -1.5px; }
+}
+@media (prefers-reduced-motion:reduce) {
+ .check-box, .filter-pill, .button, .nav-item { transition: none; }
+}
