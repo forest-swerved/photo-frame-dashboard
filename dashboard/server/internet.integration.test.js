@@ -642,6 +642,23 @@ test('reward reservation, frame authorization and durable provider reconciliatio
       const final = (await internetSnapshot(db, parent, { env, now: new Date(deadline + 1000) })).devices.find(d => d.id === freeDevice.id).access;
       assert.equal(final.desiredMode, 'off'); assert.equal(final.confirmedMode, 'off');
     });
+    await t.test('a deny disabled during timed activation cannot be confirmed and recovery closes the allowance', async () => {
+      const at = new Date(+now + 12600000), d = await deviceRow(freeDevice.id);
+      const grant = await startInternetSession(db, parent, { personId: child.personId, deviceId: d.id, minutes: 2, mutationId: randomUUID() }, { env, now: at });
+      const replace = provider.replacePolicy; let interfered = false;
+      provider.replacePolicy = async (...args) => {
+        const result = await replace(...args);
+        if (args[3].enabled && args[1] !== d.deny_policy_id && !interfered) { interfered = true; policies.get(d.deny_policy_id).enabled = false; }
+        return result;
+      };
+      try { assert.equal((await worker(at)).state, 'checking'); } finally { provider.replacePolicy = replace; }
+      const row = (await db.query('SELECT * FROM family_internet_sessions WHERE id=$1', [grant.id])).rows[0];
+      assert.equal(row.observed_state, 'unknown'); assert.equal(row.started_at, null);
+      assert.equal(policies.get(d.deny_policy_id).enabled, true);
+      assert.equal(policies.get(row.policy_id).enabled, false);
+      await changeInternetSession(db, parent, row.id, { action: 'end', expectedVersion: row.version, mutationId: randomUUID() }, { now: at });
+      assert.equal((await worker(at)).state, 'ended');
+    });
     await t.test('a timed retry keeps its deadline and a paused drift repair preserves unused time', async () => {
       const at = new Date(+now + 13200000);
       const grant = await startInternetSession(db, parent, { personId: child.personId, deviceId: freeDevice.id, minutes: 2, mutationId: randomUUID() }, { env, now: at });

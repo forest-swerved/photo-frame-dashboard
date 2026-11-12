@@ -59,11 +59,11 @@ async function adoptCreatedPolicy(db, session, policy) {
   session.policy_id = policy.id;
 }
 
-async function assertSessionPolicyScope(db, provider, session, device, integration, policies, plannedPolicy = null, env = process.env) {
+async function assertSessionPolicyScope(db, provider, session, device, integration, policies, plannedPolicy = null, env = process.env, allowUnblockedBase = false) {
   const ordering = await provider.ordering(integration.site_id, integration.source_zone_id, integration.external_zone_id);
   const sessions = (await db.query('SELECT * FROM family_internet_sessions WHERE household_id=$1 AND device_id=$2', [session.household_id, device.id])).rows;
   inspectDevicePolicyScope({ device, integration, policies, orderedIds: ordering.orderedFirewallPolicyIds, sessions,
-    plannedSessionId: session.id, plannedPolicy, env });
+    plannedSessionId: session.id, plannedPolicy, env, denyEnabled: allowUnblockedBase ? undefined : true });
   return ordering;
 }
 
@@ -191,7 +191,7 @@ async function applyCommand(db, command, env, provider, now, clock) {
   if (command.action === 'allow') {
     // A parent may switch indefinite access to a timed window. Restore the
     // permanent deny first, under this session's ownership, before granting.
-    await assertSessionPolicyScope(db, provider, session, device, integration, policies, null, env);
+    await assertSessionPolicyScope(db, provider, session, device, integration, policies, null, env, true);
     const deny = policies.find(p => p.id === device.deny_policy_id);
     if (deny.enabled === false) {
       await assertWriteOwnership(db, command, clock);
@@ -340,6 +340,15 @@ export async function processInternetJobs(db, { env = process.env, now = new Dat
   let outcome;
   try { outcome = await (command.device_id ? applyDeviceCommand : applyCommand)(db, command, env, provider, now, clock); }
   catch (error) {
+    if (command.session_id && command.action === 'allow') {
+      try {
+        const loaded = await loadCommand(db, command, env);
+        if (loaded) {
+          const sessions = (await db.query('SELECT * FROM family_internet_sessions WHERE household_id=$1 AND device_id=$2', [command.household_id, loaded.device.id])).rows;
+          await restrictDeviceAccess({ ...loaded, sessions, provider, env, assertOwnership: () => assertWriteOwnership(db, command, clock) });
+        }
+      } catch { /* Keep uncertain outcomes explicit; retries retain the deadline. */ }
+    }
     return { processed: 1, expiredQueued, error: typeof error?.code === 'string' && /^[a-z_]{1,64}$/.test(error.code) ? error.code : 'network_unavailable',
       state: await (command.device_id ? deviceCommandFailed : commandFailed)(db, command, error, clock()) };
   }
