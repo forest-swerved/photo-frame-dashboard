@@ -74,7 +74,7 @@ test('ordinary access is usable while unverified all-day controls stay hidden', 
   const f = await fixture({ ready: true, allDayReady: false });
   try {
     await f.open();
-    await f.page.getByRole('button', { name: 'Grant Internet time', exact: true }).click();
+    await f.page.getByRole('button', { name: 'On for a duration', exact: true }).click();
     await f.page.getByText('Choose minutes. All-day access is not available yet.', { exact: true }).waitFor();
     assert.equal(await f.page.getByRole('checkbox', { name: 'All day', exact: true }).count(), 0);
     await f.page.getByRole('button', { name: 'Request access window', exact: true }).click();
@@ -89,7 +89,7 @@ test('inactive controls remain honest, inventory is editable, and Apple push exc
   const f = await fixture({ ready: false });
   try {
     await f.open(); await f.page.getByText('Not enrolled · Internet blocking not configured', { exact: true }).waitFor();
-    assert.equal(await f.page.getByRole('button', { name: 'Grant Internet time', exact: true }).isDisabled(), true);
+    assert.equal(await f.page.getByRole('button', { name: 'On for a duration', exact: true }).isDisabled(), true);
     if (process.env.FAMILY_UI_SCREENSHOT_DIR) await f.page.screenshot({ path: `${process.env.FAMILY_UI_SCREENSHOT_DIR}/devices-phone.png`, fullPage: true });
     await f.page.getByRole('button', { name: '+ Add a device', exact: true }).click();
     await f.page.getByLabel('Device name').fill('Synthetic tablet'); await f.page.getByLabel('Device type', { exact: true }).selectOption('tablet');
@@ -120,7 +120,7 @@ test('child completes last chore, saves credit, then selects one device for a co
     await f.page.getByText('Starting · awaiting network confirmation', { exact: true }).waitFor();
     await f.page.getByText(/Internet last confirmed blocked/).waitFor();
     const calls = f.state.calls.filter(call => call.path === '/api/internet/redeem'); assert.equal(calls.length, 1); assert.equal(calls[0].body.deviceId, 'fixture-device'); assert.ok(calls[0].body.mutationId);
-    assert.equal(await f.page.getByRole('button', { name: /Grant Internet time|End now|Reward settings/ }).count(), 0); assert.deepEqual(f.state.errors, []);
+    assert.equal(await f.page.getByRole('button', { name: /On for a duration|End now|Reward settings/ }).count(), 0); assert.deepEqual(f.state.errors, []);
   } finally { await f.browser.close(); }
 });
 
@@ -202,7 +202,7 @@ test('bare frame needs a child-scoped code before reward spending; private grant
 test('parents grant all-day time, inspect local countdown, and issue CAS pause without inventing a block', { skip: !base }, async () => {
   const f = await fixture({ width: 1280 });
   try {
-    await f.open(); await f.page.getByRole('button', { name: 'Grant Internet time', exact: true }).click();
+    await f.open(); await f.page.getByRole('button', { name: 'On for a duration', exact: true }).click();
     await f.page.getByLabel('All day', { exact: true }).check(); await f.page.getByRole('button', { name: 'Request access window', exact: true }).click();
     await f.page.getByText('Starting · awaiting network confirmation · All day', { exact: true }).waitFor();
     const grant = f.state.calls.find(call => call.path === '/api/internet/grants').body; assert.equal(grant.allDay, true); assert.equal(Object.hasOwn(grant, 'minutes'), false);
@@ -371,14 +371,15 @@ test('local wall-clock changes do not add or remove elapsed session time', { ski
 test('parent device control stays pending and an uncertain On can be cut off with one tap', { skip: !base }, async () => {
   const f = await fixture();
   try {
-    await f.open(); await f.page.getByRole('button', { name: 'Turn Internet on', exact: true }).click();
-    await f.page.getByText('Changing Internet access · waiting for confirmation', { exact: true }).waitFor();
+    await f.open(); await f.page.getByRole('button', { name: 'On until turned off', exact: true }).click();
+    await f.page.locator('.managed-device').getByText('Request saved. Waiting for router confirmation.', { exact: true }).waitFor();
     await f.page.getByRole('button', { name: 'Turn Internet off', exact: true }).click();
     const calls = f.state.calls.filter(c => c.path.endsWith('/access'));
     assert.deepEqual(calls.map(c => [c.body.access, c.body.expectedVersion]), [['allowed', 4], ['blocked', 5]]);
     await f.page.getByRole('button', { name: 'Turn Internet off', exact: true }).waitFor();
-    assert.equal(await f.page.getByRole('button', { name: 'Turn Internet off', exact: true }).isDisabled(), true);
-    assert.equal(await f.page.getByRole('button', { name: 'Grant Internet time', exact: true }).isDisabled(), true);
+    await f.page.waitForFunction(() => document.querySelector('[data-action="device-access"][data-access="blocked"]')?.disabled === false);
+    assert.equal(await f.page.getByRole('button', { name: 'Turn Internet off', exact: true }).isDisabled(), false);
+    assert.equal(await f.page.getByRole('button', { name: 'On for a duration', exact: true }).isDisabled(), true);
     assert.deepEqual(f.state.errors, []);
   } finally { await f.browser.close(); }
 });
@@ -416,7 +417,7 @@ test('frame protected device controls are visible and continue only after a vali
     await f.open();
     assert.equal(await f.page.getByText('Home network connected',{exact:true}).count(),0);
     assert.equal(await f.page.getByText('Unlock protected controls',{exact:true}).count(),0);
-    await f.page.getByRole('button',{name:'Turn Internet on',exact:true}).click();
+    await f.page.getByRole('button',{name:'On until turned off',exact:true}).click();
     await f.page.locator('.parent-keypad').waitFor();
     assert.equal(await f.page.locator('.parent-keypad input,.parent-keypad textarea').count(),0);
     assert.equal(f.state.calls.filter(c=>c.path.endsWith('/access')).length,0);
@@ -436,7 +437,7 @@ test('frame protected device controls are visible and continue only after a vali
 test('cancel, insufficient permission and a changed device never run the pending control', {skip:!base},async()=>{
   for(const mode of ['cancel','permission','changed']) {
     const f=await fixture({frame:true,ready:true});try{
-      await f.open();await f.page.getByRole('button',{name:'Turn Internet on',exact:true}).click();
+      await f.open();await f.page.getByRole('button',{name:'On until turned off',exact:true}).click();
       if(mode==='cancel') await f.page.getByRole('button',{name:'Cancel PIN entry'}).click();
       else {
         if(mode==='permission') f.state.deniedCapability=true;
@@ -466,10 +467,42 @@ test('stale status and failed Off never offer new time, while Off can be retried
   try {
     Object.assign(f.device, { accessVerifiedAt: '2026-10-17T17:00:00Z', accessPending: true, accessError: 'policy_review_required', observedAccess: 'unknown' });
     await f.open();
-    assert.equal(await f.page.getByRole('button', { name: 'Grant Internet time', exact: true }).isDisabled(), true);
-    assert.equal(await f.page.getByRole('button', { name: 'Turn Internet on', exact: true }).count(), 0);
+    assert.equal(await f.page.getByRole('button', { name: 'On for a duration', exact: true }).isDisabled(), true);
+    assert.equal(await f.page.getByRole('button', { name: 'On until turned off', exact: true }).isDisabled(), true);
     await f.page.getByRole('button', { name: 'Turn Internet off', exact: true }).click();
     assert.deepEqual(f.state.calls.filter(c => c.path.endsWith('/access')).map(c => c.body.access), ['blocked']);
+    assert.deepEqual(f.state.errors, []);
+  } finally { await f.browser.close(); }
+});
+
+test('three explicit modes show router uncertainty and Retry preserves the requested mode', { skip: !base }, async () => {
+  const f = await fixture();
+  try {
+    Object.assign(f.device, { desiredAccess: 'allowed', observedAccess: 'unknown', accessPending: true, accessError: 'unifi_unavailable',
+      access: { desiredMode: 'on', confirmedMode: 'unknown', phase: 'attention', retryable: true, verifiedAt: null,
+        message: 'Access is not confirmed. Retry the requested mode or choose Off.' } });
+    await f.open();
+    await f.page.getByText('Requested: On until turned off · Router: Not confirmed', { exact: true }).waitFor();
+    assert.equal(await f.page.getByRole('button', { name: 'Turn Internet off', exact: true }).isEnabled(), true);
+    assert.equal(await f.page.getByRole('button', { name: 'On for a duration', exact: true }).isDisabled(), true);
+    await f.page.getByRole('button', { name: 'Retry requested mode', exact: true }).click();
+    assert.deepEqual(f.state.calls.filter(call => call.path.endsWith('/access')).map(call => call.body.access), ['allowed']);
+    assert.deepEqual(f.state.errors, []);
+    if (process.env.FAMILY_UI_SCREENSHOT_DIR) await f.page.screenshot({ path: `${process.env.FAMILY_UI_SCREENSHOT_DIR}/device-attention.png`, fullPage: true });
+  } finally { await f.browser.close(); }
+});
+
+test('a confirmed indefinite On can be changed directly to a duration', { skip: !base }, async () => {
+  const f = await fixture();
+  try {
+    Object.assign(f.device, { desiredAccess: 'allowed', observedAccess: 'allowed',
+      access: { desiredMode: 'on', confirmedMode: 'on', phase: 'confirmed', verifiedAt: f.device.accessVerifiedAt, message: 'Router configuration confirmed.' } });
+    await f.open();
+    await f.page.getByRole('button', { name: 'On for a duration', exact: true }).click();
+    await f.page.getByLabel('Minutes', { exact: true }).fill('15');
+    await f.page.getByRole('button', { name: 'Request access window', exact: true }).click();
+    assert.equal(f.state.calls.find(call => call.path === '/api/internet/grants')?.body.minutes, 15);
+    assert.equal(f.state.calls.filter(call => call.path.endsWith('/access')).length, 0, 'The server changes modes atomically.');
     assert.deepEqual(f.state.errors, []);
   } finally { await f.browser.close(); }
 });
