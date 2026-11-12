@@ -7,6 +7,7 @@ import { ensureDailyOccurrences, setOccurrenceCompletion, changeChoreOccurrence,
 import { changeInternetSession, internetSnapshot, saveManagedDevice, changeDeviceAccess, saveRewardPolicy, startInternetSession, syncChoreReward, resolveRewardReview } from './internet.js';
 import { createFrameAccessCode, frameAuthorization, redeemFrameAccess, parentCapabilities, changeMemberCapabilities, transferOwnership, revokeFrameAccessAfterRecovery } from './capabilities.js';
 import { ipv4OnlyScope, managedPolicyPlan, requiredPilotChecks, reviewedPolicyFingerprint } from './unifi.js';
+import { auditInternetDevices } from './internet-enforcement.js';
 import { processInternetJobs } from './internet-worker.js';
 import { verifySchema } from './verify-schema.js';
 import { liveStatus } from './live-status.js';
@@ -564,6 +565,26 @@ test('reward reservation, frame authorization and durable provider reconciliatio
       assert.equal((await liveStatus(db,frame,{now})).calendar,idleCalendar.calendar,'Calendar keepalive reads cannot create a refresh loop.');
       await db.query('UPDATE family_calendar_sync_jobs SET last_successful_at=$2 WHERE household_id=$1',[household.id,new Date(+now+3000)]);
       assert.notEqual((await liveStatus(db,frame,{now})).calendar,idleCalendar.calendar);
+    });
+    await t.test('idle audit detects drift, queues a safe cutoff and repeated Off retries the existing command', async () => {
+      await control(freeDevice.id, 'blocked'); await worker(new Date(+now + 60000));
+      const d = await deviceRow(freeDevice.id), baseline = d.reviewed_policy_fingerprint;
+      policies.get(d.deny_policy_id).enabled = false;
+      const at = new Date(+now + 120000);
+      await auditInternetDevices(db, { env, provider, now: at });
+      assert.equal((await deviceRow(freeDevice.id)).observed_access, 'unknown');
+      assert.equal((await deviceRow(freeDevice.id)).access_error, 'policy_review_required');
+      const before = (await db.query("SELECT count(*)::int AS n FROM family_internet_commands WHERE device_id=$1 AND state='pending'", [freeDevice.id])).rows[0].n;
+      assert.equal(before, 1);
+      await control(freeDevice.id, 'blocked');
+      assert.equal((await db.query("SELECT count(*)::int AS n FROM family_internet_commands WHERE device_id=$1 AND state='pending'", [freeDevice.id])).rows[0].n, before);
+      for (let n = 0; n < 8; n++) await worker(new Date(+at + n * 31000));
+      assert.equal(policies.get(d.deny_policy_id).enabled, true);
+      assert.equal((await deviceRow(freeDevice.id)).reviewed_policy_fingerprint, baseline, 'Recovery never silently accepts drift.');
+      await auditInternetDevices(db, { env, provider, now: new Date(+at + 400000) });
+      assert.equal((await deviceRow(freeDevice.id)).observed_access, 'blocked');
+      assert.equal((await deviceRow(freeDevice.id)).access_error, null);
+      assert.equal((await db.query('SELECT last_error FROM family_network_integrations')).rows[0].last_error, null);
     });
     await t.test('a committed control kicks background work without waiting for provider completion',async()=>{
       let finish;const pending=new Promise(resolve=>finish=resolve);let queued=0,scheduled=0;

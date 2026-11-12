@@ -227,7 +227,7 @@ export async function handleRequest(request, options = {}) {
       const env = options.env || process.env;
       requireValue(typeof env.CRON_SECRET === 'string' && env.CRON_SECRET.length >= 32, 503, 'internet_jobs_unconfigured', 'Internet scheduling is not configured.');
       requireValue(digest(request.headers.get('authorization') || '') === digest(`Bearer ${env.CRON_SECRET}`), 401, 'unauthenticated', 'Unauthorized.');
-      return json(await processInternetJobs(db, { env, ...options.internetJobs }));
+      return json(await processInternetJobs(db, { env, audit: true, ...options.internetJobs }));
     }
     if (route === 'media/jobs/cleanup' && request.method === 'GET') {
       const env = options.env || process.env;
