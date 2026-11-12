@@ -376,8 +376,9 @@ test('parent device control stays pending and an uncertain On can be cut off wit
     await f.page.getByRole('button', { name: 'Turn Internet off', exact: true }).click();
     const calls = f.state.calls.filter(c => c.path.endsWith('/access'));
     assert.deepEqual(calls.map(c => [c.body.access, c.body.expectedVersion]), [['allowed', 4], ['blocked', 5]]);
-    await f.page.getByRole('button', { name: 'Turn Internet on', exact: true }).waitFor();
-    assert.equal(await f.page.getByRole('button', { name: 'Turn Internet on', exact: true }).isDisabled(), true);
+    await f.page.getByRole('button', { name: 'Turn Internet off', exact: true }).waitFor();
+    assert.equal(await f.page.getByRole('button', { name: 'Turn Internet off', exact: true }).isDisabled(), true);
+    assert.equal(await f.page.getByRole('button', { name: 'Grant Internet time', exact: true }).isDisabled(), true);
     assert.deepEqual(f.state.errors, []);
   } finally { await f.browser.close(); }
 });
@@ -458,4 +459,17 @@ test('task creation uses the same keypad and preserves the requested action', {s
     assert.equal(await f.page.locator('dialog[open] form').getAttribute('data-parent-permission'),'manageChores');
     assert.deepEqual(f.state.errors,[]);
   }finally{await f.browser.close();}
+});
+
+test('stale status and failed Off never offer new time, while Off can be retried', { skip: !base }, async () => {
+  const f = await fixture();
+  try {
+    Object.assign(f.device, { accessVerifiedAt: '2026-10-17T17:00:00Z', accessPending: true, accessError: 'policy_review_required', observedAccess: 'unknown' });
+    await f.open();
+    assert.equal(await f.page.getByRole('button', { name: 'Grant Internet time', exact: true }).isDisabled(), true);
+    assert.equal(await f.page.getByRole('button', { name: 'Turn Internet on', exact: true }).count(), 0);
+    await f.page.getByRole('button', { name: 'Turn Internet off', exact: true }).click();
+    assert.deepEqual(f.state.calls.filter(c => c.path.endsWith('/access')).map(c => c.body.access), ['blocked']);
+    assert.deepEqual(f.state.errors, []);
+  } finally { await f.browser.close(); }
 });

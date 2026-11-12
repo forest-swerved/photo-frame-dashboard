@@ -331,6 +331,10 @@ export async function changeDeviceAccess(db, principal, id, body, { env = proces
     requireValue(device.version === body.expectedVersion, 409, 'version_conflict', 'This device changed. Refresh and try again.');
     await requireReady(client, householdId, device, env);
     const pending = (await client.query("SELECT * FROM family_internet_commands WHERE device_id=$1 AND state IN ('pending','leased','attention')", [id])).rows;
+    if (body.access === 'blocked' && device.desired_access === 'blocked' && pending.length && pending.every(command => command.action === 'block')) {
+      await client.query("UPDATE family_internet_commands SET available_at=$2 WHERE device_id=$1 AND state='pending'", [id, now]);
+      return deviceDto({ ...device, access_pending: true }, true);
+    }
     requireValue(!pending.length || body.access === 'blocked' && pending.every(command => command.action === 'allow'),
       409, 'device_access_pending', 'Wait for the current device control to be confirmed.');
     if (pending.length) await client.query("UPDATE family_internet_commands SET available_at=$2 WHERE device_id=$1 AND state='pending'", [id, now]);

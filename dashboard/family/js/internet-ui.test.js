@@ -69,3 +69,14 @@ test('earned picker contains only currently blocked pool devices, including newl
   assert.deepEqual(rewardDevices({ ...data, sessions: [{ personId: 'andre', deviceId: 'other', state: 'starting' }] }, 'andre'), []);
   assert.deepEqual(rewardDevices({ ...data, integration: { state: 'attention' } }, 'andre'), []);
 });
+
+test('stale and failed device state can only request off; grants need fresh confirmation', async () => {
+  const { deviceControlState } = await import('./internet-ui.js');
+  const now = Date.now(), device = { desiredAccess: 'blocked', observedAccess: 'blocked', accessVerifiedAt: new Date(now).toISOString() };
+  assert.deepEqual(deviceControlState(device, [], now), { on: false, stale: false, canGrant: true });
+  for (const changed of [{ accessVerifiedAt: null }, { accessVerifiedAt: new Date(now - 180001).toISOString() }, { accessError: 'policy_review_required' }, { observedAccess: 'unknown' }]) {
+    const control = deviceControlState({ ...device, ...changed }, [], now);
+    assert.equal(control.on, true); assert.equal(control.canGrant, false);
+  }
+  assert.equal(deviceControlState(device, [{ state: 'active', desiredState: 'allowed' }], now).canGrant, false);
+});

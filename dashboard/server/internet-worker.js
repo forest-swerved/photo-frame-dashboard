@@ -3,15 +3,12 @@ import { isDeepStrictEqual } from 'node:util';
 import { Temporal } from '@js-temporal/polyfill';
 import { one, transaction } from './database.js';
 import { requireValue } from './errors.js';
-import { createUniFiClient, managedPolicyPlan, managementHost, networkChecksPassed, applePushReady, policyContentFingerprint, policyFieldValue, policyOrdering, reviewedPolicyFingerprint, verifyNetworkScope } from './unifi.js';
+import { createUniFiClient, managedPolicyPlan, managementHost, networkChecksPassed, applePushReady, policyContentFingerprint, policyOrdering, reviewedPolicyFingerprint, verifyNetworkScope } from './unifi.js';
+import { sameManagedPolicy, restrictDeviceAccess, auditInternetDevices } from './internet-enforcement.js';
 import { internetEvent, internetNotification, preparationRemaining, queueInternetCommand, sessionDeadline, validateTimedWindow } from './internet.js';
 
 const terminal = row => ['ended', 'failed'].includes(row.state);
-const writableFields = ['enabled', 'source', 'destination', 'action', 'ipProtocolScope', 'schedule', 'connectionStateFilter', 'ipsecFilter', 'description'];
-export function sameManagedPolicy(actual, expected) {
-  return actual?.metadata?.origin === 'USER_DEFINED' && writableFields.every(key =>
-    isDeepStrictEqual(policyFieldValue(actual, key), policyFieldValue(expected, key)));
-}
+export { sameManagedPolicy } from './internet-enforcement.js';
 export function sessionOrdering(existing, managementId, denyId, sessionId) {
   const ordering = policyOrdering(existing), before = ordering.beforeSystemDefined;
   requireValue(before.includes(managementId) && before.includes(denyId) && before.indexOf(managementId) < before.indexOf(denyId),
@@ -331,12 +328,27 @@ async function commandFailed(db, command, error, now) {
     return 'checking';
   });
 }
-export async function processInternetJobs(db, { env = process.env, now = new Date(), provider, clock = () => new Date() } = {}) {
+export async function processInternetJobs(db, { env = process.env, now = new Date(), provider, clock = () => new Date(), audit = false } = {}) {
+  provider ||= createUniFiClient({ env });
+  if (audit) await auditInternetDevices(db, { env, provider, now });
   const expiredQueued = await scanSessions(db, now), command = await claimCommand(db, now);
   if (!command) return { processed: 0, expiredQueued };
   let outcome;
-  try { outcome = await (command.device_id ? applyDeviceCommand : applyCommand)(db, command, env, provider || createUniFiClient({ env }), now, clock); }
-  catch (error) { return { processed: 1, expiredQueued, state: await (command.device_id ? deviceCommandFailed : commandFailed)(db, command, error, clock()) }; }
+  try { outcome = await (command.device_id ? applyDeviceCommand : applyCommand)(db, command, env, provider, now, clock); }
+  catch (error) {
+    // Inventory drift must prevent new access, but must not prevent an exact,
+    // owned restriction. Keep the original error until full review succeeds.
+    if (command.action === 'block') {
+      try {
+        const device = await one(db, `SELECT d.* FROM family_managed_devices d WHERE d.household_id=$1 AND d.removed_at IS NULL
+          AND d.id=coalesce($2::uuid,(SELECT device_id FROM family_internet_sessions WHERE id=$3))`, [command.household_id, command.device_id, command.session_id]);
+        const integration = await one(db, 'SELECT * FROM family_network_integrations WHERE household_id=$1', [command.household_id]);
+        const sessions = (await db.query('SELECT * FROM family_internet_sessions WHERE household_id=$1 AND device_id=$2', [command.household_id, device?.id])).rows;
+        await restrictDeviceAccess({ device, integration, sessions, provider, env, assertOwnership: () => assertWriteOwnership(db, command, clock) });
+      } catch { /* Never claim blocking from a partial or ambiguous repair. */ }
+    }
+    return { processed: 1, expiredQueued, state: await (command.device_id ? deviceCommandFailed : commandFailed)(db, command, error, clock()) };
+  }
   return { processed: 1, expiredQueued, state: await (command.device_id ? publishDeviceCommand : publishCommand)(db, command, outcome, clock()) };
 }
 
