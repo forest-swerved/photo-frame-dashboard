@@ -208,7 +208,7 @@ test('reward reservation, frame authorization and durable provider reconciliatio
       const management = { ...plan.management, id: randomUUID() }, deny = { ...plan.deny, id: randomUUID() };
       policies.set(management.id, management); policies.set(deny.id, deny); ordered = [management.id, deny.id];
       for (const id of foreignAfterIds) policies.set(id, { id, name: 'Existing after-system security rule', enabled: true,
-        action: { type: 'BLOCK' }, source: { zoneId: sourceZone }, destination: { zoneId: externalZone } });
+        action: { type: 'BLOCK' }, source: { zoneId: sourceZone, trafficFilter: { type: 'MAC_ADDRESS', macAddressFilter: { macAddresses: ['02:00:00:00:ff:ff'] } } }, destination: { zoneId: externalZone } });
       afterOrdered = [...foreignAfterIds];
       await db.query(`INSERT INTO family_network_integrations(household_id,site_id,source_zone_id,external_zone_id,state,management_host,pilot_checks,management_verified_at)
         VALUES($1,$2,$3,$4,'ready','forest-family-frame.vercel.app',$5::jsonb,$6)`, [household.id, site, sourceZone, externalZone, JSON.stringify(Object.fromEntries(requiredPilotChecks.map(key => [key, true]))), now]);
@@ -431,6 +431,9 @@ test('reward reservation, frame authorization and durable provider reconciliatio
       const data = await snapshot(child);
       assert.equal(data.sessions.some(s => s.id === session.id), false);
       assert.equal(data.devices.find(d => d.id === sharedDevice.id).rewardAvailable, false);
+      assert.equal(data.devices.find(d => d.id === sharedDevice.id).access.desiredMode, 'timed');
+      assert.equal(data.devices.find(d => d.id === sharedDevice.id).access.sessionId, null);
+      assert.equal(data.devices.find(d => d.id === sharedDevice.id).access.endsAt, null);
       assert.equal((await worker()).state, 'active');
       const off = await control(sharedDevice.id, 'blocked'); assert.equal(off.accessPending, true); assert.equal(off.observedAccess, 'unknown');
       for (let n = 0; n < 4; n++) await worker(new Date(now.getTime() + (n + 1) * 2000));
@@ -447,10 +450,10 @@ test('reward reservation, frame authorization and durable provider reconciliatio
       try { assert.equal((await worker()).state, 'checking'); } finally { provider.replacePolicy = replace; }
       assert.equal((await deviceRow(freeDevice.id)).observed_access, 'unknown');
       const off = await control(freeDevice.id, 'blocked'); assert.equal(off.accessPending, true);
-      assert.equal((await worker()).state, 'allowed', 'Reconcile the old applied On before publishing the newer cutoff.');
-      assert.equal((await worker()).state, 'blocked');
+      assert.equal((await worker()).state, 'blocked', 'The latest Off takes priority over a queued old On.');
+      assert.equal((await worker()).processed, 0);
       const final = await deviceRow(freeDevice.id); assert.equal(final.desired_access, 'blocked'); assert.equal(final.observed_access, 'blocked'); assert.equal(policies.get(final.deny_policy_id).enabled, true);
-      const digests = (await db.query("SELECT DISTINCT reviewed_policy_fingerprint FROM family_managed_devices WHERE control_state='ready'")).rows; assert.equal(digests.length, 1, 'Only the known enabled-bit change rebases every ready device.');
+      const digests = (await db.query("SELECT DISTINCT reviewed_policy_fingerprint FROM family_managed_devices WHERE control_state='ready'")).rows; assert.equal(digests.length, 1, 'Device changes do not rewrite enrollment review records.');
     });
     await t.test('confirmed parent cutoff clears terminal network uncertainty without rewriting reward accounting', async () => {
       const id = randomUUID();
@@ -573,7 +576,7 @@ test('reward reservation, frame authorization and durable provider reconciliatio
       const at = new Date(+now + 120000);
       await auditInternetDevices(db, { env, provider, now: at });
       assert.equal((await deviceRow(freeDevice.id)).observed_access, 'unknown');
-      assert.equal((await deviceRow(freeDevice.id)).access_error, 'policy_review_required');
+      assert.equal((await deviceRow(freeDevice.id)).access_error, 'management_policy_changed');
       const before = (await db.query("SELECT count(*)::int AS n FROM family_internet_commands WHERE device_id=$1 AND state='pending'", [freeDevice.id])).rows[0].n;
       assert.equal(before, 1);
       await control(freeDevice.id, 'blocked');
@@ -585,6 +588,108 @@ test('reward reservation, frame authorization and durable provider reconciliatio
       assert.equal((await deviceRow(freeDevice.id)).observed_access, 'blocked');
       assert.equal((await deviceRow(freeDevice.id)).access_error, null);
       assert.equal((await db.query('SELECT last_error FROM family_network_integrations')).rows[0].last_error, null);
+    });
+    await t.test('unrelated policy changes stay isolated; an overlapping rule cannot prevent a safe restriction', async () => {
+      const at = new Date(+now + 3600000), d = await deviceRow(freeDevice.id);
+      const extra = { ...structuredClone(policies.get(d.deny_policy_id)), id: randomUUID(), enabled: true,
+        action: { type: 'ALLOW' }, description: 'Unrelated test device', source: { zoneId: sourceZone,
+          trafficFilter: { type: 'MAC_ADDRESS', macAddressFilter: { macAddresses: ['02:00:00:ff:ff:ee'] } } } };
+      policies.set(extra.id, extra); ordered.unshift(extra.id);
+      try {
+        await control(freeDevice.id, 'allowed'); assert.equal((await worker(at)).state, 'allowed');
+        extra.source = structuredClone(policies.get(d.deny_policy_id).source); policies.set(extra.id, extra);
+        await control(freeDevice.id, 'blocked'); assert.equal((await worker(at)).state, 'checking');
+        assert.equal(policies.get(d.deny_policy_id).enabled, true, 'Off narrows access even when another rule prevents confirmation.');
+        assert.equal((await deviceRow(freeDevice.id)).access_error, 'device_policy_conflict');
+        await auditInternetDevices(db, { env, provider, now: new Date(+at + 60000) });
+        assert.equal((await deviceRow(device.id)).access_error, null, 'Another device does not inherit this conflict.');
+      } finally { policies.delete(extra.id); ordered = ordered.filter(id => id !== extra.id); }
+      assert.equal((await worker(new Date(+at + 120000))).state, 'blocked');
+      assert.equal((await deviceRow(freeDevice.id)).reviewed_policy_fingerprint, d.reviewed_policy_fingerprint);
+    });
+    await t.test('three failed On attempts escalate, stop automatic enabling and permit one explicit retry', async () => {
+      const at = new Date(+now + 7200000);
+      await control(freeDevice.id, 'allowed'); failRead = true;
+      try {
+        for (const seconds of [0, 31, 92]) assert.equal((await worker(new Date(+at + seconds * 1000))).state, 'checking');
+        assert.equal((await worker(new Date(+at + 1000000))).processed, 0, 'An old On cannot unexpectedly succeed later.');
+        const status = (await snapshot(parent)).devices.find(d => d.id === freeDevice.id).access;
+        assert.equal(status.phase, 'attention'); assert.equal(status.desiredMode, 'on'); assert.equal(status.confirmedMode, 'unknown');
+      } finally { failRead = false; }
+      const commandsBefore = (await db.query('SELECT count(*)::int AS n FROM family_internet_commands WHERE device_id=$1', [freeDevice.id])).rows[0].n;
+      await control(freeDevice.id, 'allowed'); assert.equal((await worker(new Date(+at + 1001000))).state, 'allowed');
+      assert.equal((await db.query('SELECT count(*)::int AS n FROM family_internet_commands WHERE device_id=$1', [freeDevice.id])).rows[0].n, commandsBefore);
+      await control(freeDevice.id, 'blocked'); assert.equal((await worker(new Date(+at + 1002000))).state, 'blocked');
+    });
+    await t.test('indefinite On becomes timed access, repairs its own disabled allowance and keeps the original cutoff', async () => {
+      const at = new Date(+now + 10800000);
+      await control(freeDevice.id, 'allowed'); assert.equal((await worker(at)).state, 'allowed');
+      const grant = await startInternetSession(db, parent, { personId: child.personId, deviceId: freeDevice.id, minutes: 2, mutationId: randomUUID() }, { env, now: at });
+      assert.equal((await deviceRow(freeDevice.id)).desired_access, 'blocked');
+      assert.equal((await worker(at)).state, 'active');
+      let active = (await db.query('SELECT * FROM family_internet_sessions WHERE id=$1', [grant.id])).rows[0];
+      const deadline = +new Date(active.ends_at), policyId = active.policy_id, created = calls.creates;
+      assert.equal(policies.get((await deviceRow(freeDevice.id)).deny_policy_id).enabled, true);
+      const status = (await internetSnapshot(db, parent, { env, now: at })).devices.find(d => d.id === freeDevice.id).access;
+      assert.equal(status.desiredMode, 'timed'); assert.equal(status.confirmedMode, 'timed'); assert.equal(status.phase, 'confirmed');
+      policies.get(policyId).enabled = false;
+      await auditInternetDevices(db, { env, provider, now: new Date(+at + 60000) });
+      assert.equal((await worker(new Date(+at + 60000))).state, 'active');
+      active = (await db.query('SELECT * FROM family_internet_sessions WHERE id=$1', [grant.id])).rows[0];
+      assert.equal(+new Date(active.ends_at), deadline); assert.equal(active.policy_id, policyId); assert.equal(calls.creates, created);
+      assert.equal((await worker(new Date(deadline + 1000))).state, 'ended');
+      assert.equal(policies.get(policyId).enabled, false);
+      const final = (await internetSnapshot(db, parent, { env, now: new Date(deadline + 1000) })).devices.find(d => d.id === freeDevice.id).access;
+      assert.equal(final.desiredMode, 'off'); assert.equal(final.confirmedMode, 'off');
+    });
+    await t.test('a deny disabled during timed activation cannot be confirmed and recovery closes the allowance', async () => {
+      const at = new Date(+now + 12600000), d = await deviceRow(freeDevice.id);
+      const grant = await startInternetSession(db, parent, { personId: child.personId, deviceId: d.id, minutes: 2, mutationId: randomUUID() }, { env, now: at });
+      const replace = provider.replacePolicy; let interfered = false;
+      provider.replacePolicy = async (...args) => {
+        const result = await replace(...args);
+        if (args[3].enabled && args[1] !== d.deny_policy_id && !interfered) { interfered = true; policies.get(d.deny_policy_id).enabled = false; }
+        return result;
+      };
+      try { assert.equal((await worker(at)).state, 'checking'); } finally { provider.replacePolicy = replace; }
+      const row = (await db.query('SELECT * FROM family_internet_sessions WHERE id=$1', [grant.id])).rows[0];
+      assert.equal(row.observed_state, 'unknown'); assert.equal(row.started_at, null);
+      assert.equal(policies.get(d.deny_policy_id).enabled, true);
+      assert.equal(policies.get(row.policy_id).enabled, false);
+      await changeInternetSession(db, parent, row.id, { action: 'end', expectedVersion: row.version, mutationId: randomUUID() }, { now: at });
+      assert.equal((await worker(at)).state, 'ended');
+    });
+    await t.test('a timed retry keeps its deadline and a paused drift repair preserves unused time', async () => {
+      const at = new Date(+now + 13200000);
+      const grant = await startInternetSession(db, parent, { personId: child.personId, deviceId: freeDevice.id, minutes: 2, mutationId: randomUUID() }, { env, now: at });
+      failRead = true;
+      try { for (const seconds of [0,31,92]) await worker(new Date(+at + seconds * 1000)); } finally { failRead = false; }
+      let row = (await db.query('SELECT * FROM family_internet_sessions WHERE id=$1', [grant.id])).rows[0];
+      const deadline = +new Date(row.ends_at);
+      await assert.rejects(changeInternetSession(db, child, row.id, { action: 'retry', expectedVersion: row.version, mutationId: randomUUID() }, { now: at }), e => e.status === 403);
+      await changeInternetSession(db, parent, row.id, { action: 'retry', expectedVersion: row.version, mutationId: randomUUID() }, { now: new Date(+at + 100000) });
+      assert.equal((await worker(new Date(+at + 100000))).state, 'active');
+      row = (await db.query('SELECT * FROM family_internet_sessions WHERE id=$1', [grant.id])).rows[0];
+      assert.equal(+new Date(row.ends_at), deadline);
+      await changeInternetSession(db, parent, row.id, { action: 'pause', expectedVersion: row.version, mutationId: randomUUID() }, { now: new Date(+at + 110000) });
+      assert.equal((await worker(new Date(+at + 110000))).state, 'paused');
+      row = (await db.query('SELECT * FROM family_internet_sessions WHERE id=$1', [grant.id])).rows[0];
+      const remaining = row.remaining_seconds;
+      policies.get((await deviceRow(freeDevice.id)).deny_policy_id).enabled = false;
+      await auditInternetDevices(db, { env, provider, now: new Date(+at + 180000) });
+      assert.equal((await worker(new Date(+at + 180000))).state, 'paused');
+      row = (await db.query('SELECT * FROM family_internet_sessions WHERE id=$1', [grant.id])).rows[0];
+      assert.equal(row.remaining_seconds, remaining); assert.equal(row.ends_at, null);
+      await changeInternetSession(db, parent, row.id, { action: 'end', expectedVersion: row.version, mutationId: randomUUID() }, { now: new Date(+at + 180000) });
+      assert.equal((await worker(new Date(+at + 180000))).state, 'ended');
+    });
+    await t.test('an audit cannot overwrite a newer parent action captured during its provider read', async () => {
+      const at = new Date(+now + 14400000), original = provider.policies; let changed = false;
+      provider.policies = async (...args) => { const result = await original(...args); if (!changed) { changed = true; await control(freeDevice.id, 'allowed'); } return result; };
+      try { await auditInternetDevices(db, { env, provider, now: at }); } finally { provider.policies = original; }
+      assert.equal((await deviceRow(freeDevice.id)).observed_access, 'unknown');
+      assert.equal((await worker(at)).state, 'allowed');
+      await control(freeDevice.id, 'blocked'); assert.equal((await worker(at)).state, 'blocked');
     });
     await t.test('a committed control kicks background work without waiting for provider completion',async()=>{
       let finish;const pending=new Promise(resolve=>finish=resolve);let queued=0,scheduled=0;

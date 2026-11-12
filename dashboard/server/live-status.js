@@ -20,6 +20,10 @@ export async function liveStatus(db, principal, { now = new Date() } = {}) {
     (SELECT coalesce(jsonb_agg(jsonb_build_array(d.id,d.version,d.control_state,d.default_access,d.desired_access,d.observed_access,d.access_verified_at,d.access_error,d.management_verified_at,d.last_seen_at,d.online,
       EXISTS(SELECT 1 FROM family_internet_commands c WHERE c.household_id=d.household_id AND c.device_id=d.id AND c.state IN ('pending','leased','attention'))) ORDER BY d.id),'[]') FROM family_managed_devices d WHERE d.household_id=$1 AND d.removed_at IS NULL AND ($2::uuid IS NULL OR $2=ANY(d.person_ids))) AS devices,
     (SELECT coalesce(jsonb_agg(jsonb_build_array(s.id,s.version,s.state,s.desired_state,s.observed_state,s.verified_at,s.started_at,s.ends_at,s.remaining_seconds,s.allocated_seconds,s.all_day,s.last_error,s.ended_at,s.policy_snapshot->'preparation') ORDER BY s.id),'[]') FROM (SELECT * FROM family_internet_sessions WHERE household_id=$1 AND ($2::uuid IS NULL OR person_id=$2) ORDER BY requested_at DESC LIMIT 100) s) AS sessions,
+    (SELECT coalesce(jsonb_agg(jsonb_build_array(c.id,c.state,c.action,c.last_error) ORDER BY c.id),'[]') FROM family_internet_commands c
+      WHERE c.household_id=$1 AND c.state IN ('pending','leased','attention') AND ($2::uuid IS NULL
+        OR EXISTS(SELECT 1 FROM family_managed_devices d WHERE d.household_id=$1 AND d.id=c.device_id AND $2=ANY(d.person_ids))
+        OR EXISTS(SELECT 1 FROM family_internet_sessions s WHERE s.household_id=$1 AND s.id=c.session_id AND s.person_id=$2))) AS commands,
     (SELECT coalesce(jsonb_agg(jsonb_build_array(c.id,c.status,c.expires_at,c.expires_at>$4) ORDER BY c.id),'[]') FROM (SELECT * FROM family_reward_credits WHERE household_id=$1 AND ($2::uuid IS NULL OR person_id=$2) ORDER BY created_at DESC LIMIT 100) c) AS credits,
     (SELECT coalesce(jsonb_agg(jsonb_build_array(person_id,version) ORDER BY person_id),'[]') FROM family_reward_policies WHERE household_id=$1 AND ($2::uuid IS NULL OR person_id=$2)) AS policies,
     (SELECT coalesce(jsonb_agg(jsonb_build_array(r.id,r.version,r.status,r.expires_at,r.expires_at>$4) ORDER BY r.id),'[]') FROM (SELECT * FROM family_access_requests WHERE household_id=$1 AND ($2::uuid IS NULL OR person_id=$2) ORDER BY (status='pending') DESC,requested_at DESC LIMIT 100) r) AS requests,
@@ -31,6 +35,6 @@ export async function liveStatus(db, principal, { now = new Date() } = {}) {
   const scope = [householdId, personId, principal.role, capabilities, date];
   const household = digest(JSON.stringify([scope,row.home,row.people,row.routines,row.tasks,row.completions,row.school,row.exceptions]));
   return { serverTime: now.toISOString(), household,
-    internet: digest(JSON.stringify([household,row.devices,row.sessions,row.credits,row.policies,row.requests,row.integration])),
+    internet: digest(JSON.stringify([household,row.devices,row.sessions,row.commands,row.credits,row.policies,row.requests,row.integration])),
     calendar: digest(JSON.stringify([scope,row.home,row.connection,row.calendar,row.calendar_jobs])) };
 }

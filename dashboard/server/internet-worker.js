@@ -3,7 +3,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { Temporal } from '@js-temporal/polyfill';
 import { one, transaction } from './database.js';
 import { requireValue } from './errors.js';
-import { createUniFiClient, managedPolicyPlan, managementHost, networkChecksPassed, applePushReady, policyContentFingerprint, policyOrdering, reviewedPolicyFingerprint, verifyNetworkScope } from './unifi.js';
+import { createUniFiClient, managedPolicyPlan, managementHost, networkChecksPassed, applePushReady, policyContentFingerprint, policyOrdering, verifyNetworkScope } from './unifi.js';
+import { inspectDevicePolicyScope } from './internet-policy-scope.js';
 import { sameManagedPolicy, restrictDeviceAccess, auditInternetDevices } from './internet-enforcement.js';
 import { internetEvent, internetNotification, preparationRemaining, queueInternetCommand, sessionDeadline, validateTimedWindow } from './internet.js';
 
@@ -58,25 +59,11 @@ async function adoptCreatedPolicy(db, session, policy) {
   session.policy_id = policy.id;
 }
 
-async function assertReviewedState(db, provider, session, device, integration, policies, plannedPolicy = null) {
+async function assertSessionPolicyScope(db, provider, session, device, integration, policies, plannedPolicy = null, env = process.env, allowUnblockedBase = false) {
   const ordering = await provider.ordering(integration.site_id, integration.source_zone_id, integration.external_zone_id);
-  const known = (await db.query('SELECT id,policy_id,policy_fingerprint,planned_policy_fingerprint FROM family_internet_sessions WHERE household_id=$1 AND policy_id IS NOT NULL', [session.household_id])).rows;
-  const ignored = [];
-  const plannedFingerprint = plannedPolicy && policyContentFingerprint(plannedPolicy);
-  for (const registered of known) {
-    const policy = policies.find(item => item.id === registered.policy_id);
-    if (!policy) continue;
-    const fingerprint = policyContentFingerprint(policy);
-    requireValue(policy.enabled === false || registered.policy_fingerprint && fingerprint === registered.policy_fingerprint
-      || registered.id === session.id && registered.planned_policy_fingerprint && fingerprint === registered.planned_policy_fingerprint
-      || registered.id === session.id && plannedFingerprint && fingerprint === plannedFingerprint,
-    503, 'session_policy_changed', 'A session allowance changed outside Family Frame. A parent must review it.');
-    ignored.push(policy.id);
-  }
-  const actual = reviewedPolicyFingerprint(policies, ordering?.orderedFirewallPolicyIds,
-    { managementId: device.management_policy_id, denyId: device.deny_policy_id, ignoredSessionIds: ignored });
-  requireValue(device.reviewed_policy_fingerprint && actual === device.reviewed_policy_fingerprint,
-    503, 'policy_review_required', 'Firewall rules or their order changed after the access pilot. A parent must review them.');
+  const sessions = (await db.query('SELECT * FROM family_internet_sessions WHERE household_id=$1 AND device_id=$2', [session.household_id, device.id])).rows;
+  inspectDevicePolicyScope({ device, integration, policies, orderedIds: ordering.orderedFirewallPolicyIds, sessions,
+    plannedSessionId: session.id, plannedPolicy, env, denyEnabled: allowUnblockedBase ? undefined : true });
   return ordering;
 }
 
@@ -106,9 +93,9 @@ async function claimCommand(db, now) {
     // Retain an in-flight command's lease when a parent changes the desired
     // state. A later BLOCK must never race an older ALLOW at the provider.
     if (await one(client, "SELECT id FROM family_internet_commands WHERE state='leased' AND lease_until>$1 LIMIT 1", [now])) return null;
-    const row = await one(client, `SELECT * FROM family_internet_commands WHERE ((state='pending' AND available_at<=$1)
+    const row = await one(client, `SELECT * FROM family_internet_commands WHERE ((state IN ('pending','attention') AND available_at<=$1 AND (state='pending' OR action='block'))
       OR (state='leased' AND lease_until<=$1)) AND (device_id IS NULL OR NOT EXISTS(SELECT 1 FROM family_internet_commands older
-        WHERE older.device_id=family_internet_commands.device_id AND older.session_version<family_internet_commands.session_version AND older.state IN ('pending','leased','attention'))) ORDER BY available_at,id LIMIT 1 FOR UPDATE SKIP LOCKED`, [now]);
+        WHERE older.device_id=family_internet_commands.device_id AND older.session_version<family_internet_commands.session_version AND older.state='leased' AND older.lease_until>$1)) ORDER BY (action='block') DESC,available_at,id LIMIT 1 FOR UPDATE SKIP LOCKED`, [now]);
     if (!row) return null;
     const leaseId = randomUUID();
     return one(client, "UPDATE family_internet_commands SET state='leased',lease_id=$2,lease_until=$3,attempts=attempts+1 WHERE id=$1 RETURNING *", [row.id, leaseId, new Date(now.getTime() + 180_000)]);
@@ -196,7 +183,22 @@ async function applyCommand(db, command, env, provider, now, clock) {
   if (command.action === 'allow') await verifyNetworkScope(provider, integration);
   const session = command.action === 'allow' ? await prepareActivation(db, command, clock) : loaded.session;
   const plan = managedPolicyPlan({ deviceId: device.id, macAddresses: device.mac_addresses, sourceZoneId: integration.source_zone_id, destinationZoneId: integration.external_zone_id }, env);
-  const policies = await provider.policies(site);
+  if (command.action === 'block') {
+    const sessions = (await db.query('SELECT * FROM family_internet_sessions WHERE household_id=$1 AND device_id=$2', [session.household_id, device.id])).rows;
+    await restrictDeviceAccess({ device, integration, sessions, provider, env, assertOwnership: () => assertWriteOwnership(db, command, clock) });
+  }
+  let policies = await provider.policies(site);
+  if (command.action === 'allow') {
+    // A parent may switch indefinite access to a timed window. Restore the
+    // permanent deny first, under this session's ownership, before granting.
+    await assertSessionPolicyScope(db, provider, session, device, integration, policies, null, env, true);
+    const deny = policies.find(p => p.id === device.deny_policy_id);
+    if (deny.enabled === false) {
+      await assertWriteOwnership(db, command, clock);
+      await provider.replacePolicy(site, deny.id, deny, { enabled: true });
+      policies = await provider.policies(site);
+    }
+  }
   const management = policies.find(p => p.id === device.management_policy_id), deny = policies.find(p => p.id === device.deny_policy_id);
   if (device.allow_apple_push) {
     const applePlan = managedPolicyPlan({ deviceId: device.id, macAddresses: device.mac_addresses, sourceZoneId: integration.source_zone_id,
@@ -211,7 +213,7 @@ async function applyCommand(db, command, env, provider, now, clock) {
   if (command.action === 'block') {
     requireValue(matches.length <= 8, 503, 'duplicate_policy', 'Duplicate session policies require a parent review.');
     requireValue(sameManagedPolicy(management, plan.management) && sameManagedPolicy(deny, plan.deny), 503, 'management_policy_changed', 'The permanent Family Frame access or blocking policy changed. A parent must review it.');
-    await assertReviewedState(db, provider, session, device, integration, policies);
+    await assertSessionPolicyScope(db, provider, session, device, integration, policies, null, env);
     for (const duplicate of matches) if (duplicate.enabled) {
       await assertWriteOwnership(db, command, clock);
       await provider.replacePolicy(site, duplicate.id, duplicate, { enabled: false });
@@ -219,7 +221,7 @@ async function applyCommand(db, command, env, provider, now, clock) {
       requireValue(observed.enabled === false, 503, 'block_unconfirmed', 'UniFi has not confirmed that the session allowance is disabled.');
     }
     const verifiedPolicies = await provider.policies(site);
-    await assertReviewedState(db, provider, session, device, integration, verifiedPolicies);
+    await assertSessionPolicyScope(db, provider, session, device, integration, verifiedPolicies, null, env);
     const verifiedPolicy = verifiedPolicies.find(item => item.id === session.policy_id);
     requireValue(!verifiedPolicy || verifiedPolicy.enabled === false, 503, 'block_unconfirmed', 'The session allowance is still active.');
     return { observed: 'blocked', policyId: policy?.id || null, policyFingerprint: verifiedPolicy ? policyContentFingerprint(verifiedPolicy) : null };
@@ -230,7 +232,7 @@ async function applyCommand(db, command, env, provider, now, clock) {
   // can be recognized without silently creating a different schedule on retry.
   const startAt = !session.all_day && ['start', 'resume'].includes(session.pending_action) ? session.activation_planned_at : command.created_at;
   const expected = scheduledSessionPolicy(session, device, integration, session.timezone, clock(), { startAt, env });
-  await assertReviewedState(db, provider, session, device, integration, policies, expected);
+  await assertSessionPolicyScope(db, provider, session, device, integration, policies, expected, env);
   if (!policy) {
     requireValue(!session.policy_creation_started_at, 503, 'policy_creation_uncertain', 'The previous policy creation is being reconciled. End the session if no policy appears.');
     const creationPolicy = { ...expected, enabled: false };
@@ -275,7 +277,7 @@ async function applyCommand(db, command, env, provider, now, clock) {
   const verifiedPolicies = await provider.policies(site);
   const verifiedPolicy = verifiedPolicies.find(item => item.id === policy.id);
   requireValue(sameManagedPolicy(verifiedPolicy, expected), 503, 'allow_unconfirmed', 'UniFi did not consistently confirm the scheduled allowance.');
-  const verifiedOrder = await assertReviewedState(db, provider, session, device, integration, verifiedPolicies, expected);
+  const verifiedOrder = await assertSessionPolicyScope(db, provider, session, device, integration, verifiedPolicies, expected, env);
   requireValue(isDeepStrictEqual(verifiedOrder.orderedFirewallPolicyIds, order), 503, 'order_unconfirmed', 'UniFi has not confirmed the session policy order.');
   await verifyNetworkScope(provider, integration);
   return { observed: 'allowed', policyId: policy.id, policyFingerprint: policyContentFingerprint(verifiedPolicy) };
@@ -291,12 +293,14 @@ async function publishCommand(db, command, outcome, now) {
       await client.query("UPDATE family_internet_commands SET state='superseded',lease_id=NULL,lease_until=NULL WHERE id=$1", [command.id]); return 'superseded';
     }
     const state = outcome.observed === 'allowed' ? 'active' : row.pending_action === 'pause' ? 'paused' : 'ended';
-    const remaining = state === 'paused' ? Math.max(0, Math.ceil((new Date(row.ends_at) - now) / 1000)) : state === 'ended' ? 0 : row.remaining_seconds;
+    const remaining = state === 'paused' && row.ends_at ? Math.max(0, Math.ceil((new Date(row.ends_at) - now) / 1000))
+      : state === 'ended' ? 0 : row.remaining_seconds;
     const snapshot = state === 'paused' && row.policy_snapshot.preparation ? { ...row.policy_snapshot,
       preparation: { remainingSeconds: Math.min(remaining, preparationRemaining(row, now)), endsAt: null } } : row.policy_snapshot;
     const updated = await one(client, `UPDATE family_internet_sessions SET state=$2,observed_state=$3,verified_at=$4,policy_id=$5,policy_fingerprint=$7,last_error=NULL,
       started_at=CASE WHEN $3='allowed' THEN coalesce(started_at,$4) ELSE started_at END,ended_at=CASE WHEN $2='ended' THEN $4 ELSE NULL END,
       remaining_seconds=$6,ends_at=CASE WHEN $2='paused' AND NOT all_day THEN NULL ELSE ends_at END,pending_action=NULL,version=version+1,policy_snapshot=$8::jsonb WHERE id=$1 RETURNING *`, [row.id, state, outcome.observed, now, outcome.policyId, remaining, outcome.policyFingerprint || null, JSON.stringify(snapshot)]);
+    await client.query("UPDATE family_managed_devices SET observed_access='blocked',access_verified_at=$3,access_error=NULL WHERE household_id=$1 AND id=$2 AND desired_access='blocked'", [row.household_id, row.device_id, now]);
     if (row.credit_id && state === 'active') await client.query("UPDATE family_reward_credits SET status='spent' WHERE id=$1 AND reserved_by=$2", [row.credit_id, row.id]);
     // Only a known never-attempted ALLOW is safe to refund automatically.
     // Ambiguous grants stay tied to their session for explicit parent review.
@@ -323,7 +327,7 @@ async function commandFailed(db, command, error, now) {
     await client.query("UPDATE family_internet_sessions SET state='checking',observed_state='unknown',last_error=$2 WHERE id=$1", [row.id, code]);
     // Uncertain outcomes are never refunded. Continue reconciliation; a parent
     // can always request an end while reservations remain held.
-    await client.query("UPDATE family_internet_commands SET state='pending',available_at=$2,last_error=$3,lease_id=NULL,lease_until=NULL WHERE id=$1", [command.id, new Date(now.getTime() + Math.min(300, 15 * 2 ** Math.min(command.attempts, 4)) * 1000), code]);
+    await client.query("UPDATE family_internet_commands SET state=$4,available_at=$2,last_error=$3,lease_id=NULL,lease_until=NULL WHERE id=$1", [command.id, new Date(now.getTime() + (command.attempts >= 3 ? 300 : 15 * 2 ** command.attempts) * 1000), code, command.attempts >= 3 ? 'attention' : 'pending']);
     await internetNotification(client, { householdId: row.household_id, personId: row.person_id, sessionId: row.id, type: 'enforcement_failed', key: `enforcement-failed:${row.id}:${command.session_version}`, now });
     return 'checking';
   });
@@ -336,105 +340,50 @@ export async function processInternetJobs(db, { env = process.env, now = new Dat
   let outcome;
   try { outcome = await (command.device_id ? applyDeviceCommand : applyCommand)(db, command, env, provider, now, clock); }
   catch (error) {
-    // Inventory drift must prevent new access, but must not prevent an exact,
-    // owned restriction. Keep the original error until full review succeeds.
-    if (command.action === 'block') {
+    if (command.session_id && command.action === 'allow') {
       try {
-        const device = await one(db, `SELECT d.* FROM family_managed_devices d WHERE d.household_id=$1 AND d.removed_at IS NULL
-          AND d.id=coalesce($2::uuid,(SELECT device_id FROM family_internet_sessions WHERE id=$3))`, [command.household_id, command.device_id, command.session_id]);
-        const integration = await one(db, 'SELECT * FROM family_network_integrations WHERE household_id=$1', [command.household_id]);
-        const sessions = (await db.query('SELECT * FROM family_internet_sessions WHERE household_id=$1 AND device_id=$2', [command.household_id, device?.id])).rows;
-        await restrictDeviceAccess({ device, integration, sessions, provider, env, assertOwnership: () => assertWriteOwnership(db, command, clock) });
-      } catch { /* Never claim blocking from a partial or ambiguous repair. */ }
+        const loaded = await loadCommand(db, command, env);
+        if (loaded) {
+          const sessions = (await db.query('SELECT * FROM family_internet_sessions WHERE household_id=$1 AND device_id=$2', [command.household_id, loaded.device.id])).rows;
+          await restrictDeviceAccess({ ...loaded, sessions, provider, env, assertOwnership: () => assertWriteOwnership(db, command, clock) });
+        }
+      } catch { /* Keep uncertain outcomes explicit; retries retain the deadline. */ }
     }
-    return { processed: 1, expiredQueued, state: await (command.device_id ? deviceCommandFailed : commandFailed)(db, command, error, clock()) };
+    return { processed: 1, expiredQueued, error: typeof error?.code === 'string' && /^[a-z_]{1,64}$/.test(error.code) ? error.code : 'network_unavailable',
+      state: await (command.device_id ? deviceCommandFailed : commandFailed)(db, command, error, clock()) };
   }
   return { processed: 1, expiredQueued, state: await (command.device_id ? publishDeviceCommand : publishCommand)(db, command, outcome, clock()) };
 }
 
-// A parent changes only the exact enrolled device's permanent deny.enabled.
-// A successful readback rebases the reviewed inventory for the whole family;
-// no unrelated policy or ordering change is accepted as part of that rebase.
+// Each command owns one device generation. Unrelated device rules are neither
+// rewritten nor rebased. A stale applied command is followed by the latest intent.
 async function applyDeviceCommand(db, command, env, provider, now, clock) {
   const device = await one(db, 'SELECT * FROM family_managed_devices WHERE household_id=$1 AND id=$2 AND removed_at IS NULL', [command.household_id, command.device_id]);
-  if (!device || device.version !== command.session_version && !command.before_fingerprint) return { superseded: true };
+  if (!device || device.version !== command.session_version) return { superseded: true };
   const integration = await one(db, 'SELECT * FROM family_network_integrations WHERE household_id=$1', [command.household_id]);
-  requireValue(integration?.state === 'ready' && integration.management_host === managementHost(env) && integration.management_verified_at
-    && networkChecksPassed(integration, device.id) && device.control_state === 'ready' && device.management_verified_at,
-  503, 'network_not_ready', 'Device control requires verified Family Frame access and Internet blocking.');
-  if (command.action === 'allow') await verifyNetworkScope(provider, integration);
-  if (await one(db, `SELECT id FROM family_internet_sessions WHERE household_id=$1 AND device_id=$2
-    AND state NOT IN ('ended','failed') LIMIT 1`, [command.household_id, device.id])) return { waiting: true };
-  const site = integration.site_id;
-  const policies = await provider.policies(site), order = await provider.ordering(site, integration.source_zone_id, integration.external_zone_id);
-  const sessions = (await db.query('SELECT policy_id,policy_fingerprint,device_id FROM family_internet_sessions WHERE household_id=$1 AND policy_id IS NOT NULL', [command.household_id])).rows;
-  const ignored = [];
-  for (const session of sessions) {
-    const policy = policies.find(p => p.id === session.policy_id);
-    if (!policy) continue;
-    requireValue(policy.enabled === false || session.policy_fingerprint && policyContentFingerprint(policy) === session.policy_fingerprint,
-      503, 'session_policy_changed', 'A session policy changed outside Family Frame.');
-    ignored.push(policy.id);
+  requireValue(integration && device.management_policy_id && device.deny_policy_id, 503, 'network_not_ready', 'Device enrollment is unavailable.');
+  if (command.action === 'allow') {
+    requireValue(integration.state === 'ready' && integration.management_host === managementHost(env) && integration.management_verified_at
+      && networkChecksPassed(integration, device.id) && device.control_state === 'ready' && device.management_verified_at,
+      503, 'network_not_ready', 'Device access requires verified network setup.');
+    await verifyNetworkScope(provider, integration);
   }
-  for (const session of sessions.filter(row => row.device_id === device.id)) {
-    const policy = policies.find(p => p.id === session.policy_id);
-    if (policy?.enabled) {
-      // A terminal but unconfirmed allowance still needs cleanup. Its exact
-      // registered content was checked above; never disable a foreign policy.
-      await assertWriteOwnership(db, command, clock);
-      await provider.replacePolicy(site, policy.id, policy, { enabled: false });
-      requireValue((await provider.policy(site, policy.id))?.enabled === false, 503, 'device_session_unconfirmed', 'A previous allowance is still being checked.');
-      policy.enabled = false;
-    }
-  }
-  const fingerprint = values => reviewedPolicyFingerprint(values, order?.orderedFirewallPolicyIds,
-    { managementId: device.management_policy_id, denyId: device.deny_policy_id, ignoredSessionIds: ignored });
-  const before = fingerprint(policies);
-  const enrolled = (await db.query("SELECT * FROM family_managed_devices WHERE household_id=$1 AND removed_at IS NULL AND control_state='ready' ORDER BY id", [command.household_id])).rows;
-  const plan = managedPolicyPlan({ deviceId: device.id, macAddresses: device.mac_addresses, sourceZoneId: integration.source_zone_id,
-    destinationZoneId: integration.external_zone_id, allowApplePush: device.allow_apple_push }, env);
-  const deny = policies.find(p => p.id === device.deny_policy_id);
-  requireValue(deny && typeof deny.enabled === 'boolean' && sameManagedPolicy(deny, { ...plan.deny, enabled: deny.enabled })
-    && sameManagedPolicy(policies.find(p => p.id === device.management_policy_id), plan.management)
-    && (!device.allow_apple_push || applePushReady(integration, device.id) && sameManagedPolicy(policies.find(p => p.id === device.apple_push_policy_id), plan.applePush)),
-  503, 'management_policy_changed', 'The enrolled management, notification or blocking policy changed.');
+  const sessions = (await db.query('SELECT * FROM family_internet_sessions WHERE household_id=$1 AND device_id=$2', [command.household_id, device.id])).rows;
+  const assertOwnership = () => assertWriteOwnership(db, command, clock);
+  if (command.action === 'block') await restrictDeviceAccess({ device, integration, sessions, provider, env, assertOwnership });
+  if (sessions.some(row => !terminal(row))) return { waiting: true };
+  const site = integration.site_id, policies = await provider.policies(site), order = await provider.ordering(site, integration.source_zone_id, integration.external_zone_id);
+  const { deny } = inspectDevicePolicyScope({ device, integration, sessions, policies, orderedIds: order.orderedFirewallPolicyIds, env, requireAllowance: true });
   const enabled = command.action === 'block';
-  if (command.before_fingerprint) {
-    requireValue(before === command.before_fingerprint || before === command.after_fingerprint, 503, 'policy_review_required', 'The firewall changed during device-control reconciliation.');
-  } else {
-    for (const other of enrolled) {
-      const observed = reviewedPolicyFingerprint(policies, order?.orderedFirewallPolicyIds,
-        { managementId: other.management_policy_id, denyId: other.deny_policy_id, ignoredSessionIds: ignored });
-      requireValue(other.reviewed_policy_fingerprint === observed, 503, 'policy_review_required', 'Firewall rules changed after the access pilot. A parent must review them.');
-    }
-    command.before_fingerprint = before;
-    command.after_fingerprint = fingerprint(policies.map(p => p.id === deny.id ? { ...p, enabled } : p));
-    await assertWriteOwnership(db, command, clock);
-    await db.query("UPDATE family_internet_commands SET before_fingerprint=$3,after_fingerprint=$4 WHERE id=$1 AND lease_id=$2", [command.id, command.lease_id, command.before_fingerprint, command.after_fingerprint]);
-  }
-  if (device.version !== command.session_version && before === command.before_fingerprint) {
-    return { observed: deny.enabled ? 'blocked' : 'allowed', before, after: before, enrolledIds: enrolled.map(row => row.id) };
-  }
-  requireValue(enrolled.every(row => row.reviewed_policy_fingerprint === command.before_fingerprint), 503, 'policy_review_required', 'The reviewed device inventory changed during reconciliation.');
   if (deny.enabled !== enabled) {
-    requireValue(before === command.before_fingerprint, 503, 'policy_review_required', 'The expected policy change was not found.');
     if (command.action === 'allow') await verifyNetworkScope(provider, integration);
-    await assertWriteOwnership(db, command, clock);
+    await assertOwnership();
     await provider.replacePolicy(site, deny.id, deny, { enabled });
   }
   const readback = await provider.policies(site), ordering = await provider.ordering(site, integration.source_zone_id, integration.external_zone_id);
-  for (const session of sessions) {
-    const policy = readback.find(p => p.id === session.policy_id);
-    requireValue(!policy || policy.enabled === false || session.policy_fingerprint && policyContentFingerprint(policy) === session.policy_fingerprint,
-      503, 'session_policy_changed', 'A session policy changed while confirming device control.');
-  }
-  requireValue(sameManagedPolicy(readback.find(p => p.id === deny.id), { ...plan.deny, enabled }), 503, 'device_access_unconfirmed', 'UniFi did not confirm the device control.');
-  for (const other of enrolled) {
-    const observed = reviewedPolicyFingerprint(readback, ordering?.orderedFirewallPolicyIds,
-      { managementId: other.management_policy_id, denyId: other.deny_policy_id, ignoredSessionIds: ignored });
-    requireValue(observed === command.after_fingerprint, 503, 'policy_review_required', 'A different firewall or ordering change appeared during the device control.');
-  }
-  return { observed: enabled ? 'blocked' : 'allowed', before: command.before_fingerprint, after: command.after_fingerprint, enrolledIds: enrolled.map(row => row.id) };
+  inspectDevicePolicyScope({ device, integration, sessions, policies: readback, orderedIds: ordering.orderedFirewallPolicyIds, env, denyEnabled: enabled, requireAllowance: true });
+  if (command.action === 'allow') await verifyNetworkScope(provider, integration);
+  return { observed: enabled ? 'blocked' : 'allowed' };
 }
 async function publishDeviceCommand(db, command, outcome, now) {
   return transaction(db, async client => {
@@ -446,12 +395,9 @@ async function publishDeviceCommand(db, command, outcome, now) {
       return 'waiting_for_sessions';
     }
     const device = await one(client, 'SELECT * FROM family_managed_devices WHERE household_id=$1 AND id=$2 FOR UPDATE', [command.household_id, command.device_id]);
-    if (outcome.superseded || !device) {
+    if (outcome.superseded || !device || device.version !== command.session_version) {
       await client.query("UPDATE family_internet_commands SET state='superseded',lease_id=NULL,lease_until=NULL WHERE id=$1", [command.id]); return 'superseded';
     }
-    const rebased = await client.query(`UPDATE family_managed_devices SET reviewed_policy_fingerprint=$3 WHERE household_id=$1
-      AND id=ANY($2::uuid[]) AND control_state='ready' AND reviewed_policy_fingerprint=$4`, [command.household_id, outcome.enrolledIds, outcome.after, outcome.before]);
-    requireValue(rebased.rowCount === outcome.enrolledIds.length, 409, 'policy_review_required', 'The enrolled device inventory changed before confirmation.');
     if (outcome.observed === 'blocked') await client.query(`UPDATE family_internet_sessions SET observed_state='blocked',verified_at=$3
       WHERE household_id=$1 AND device_id=$2 AND state IN ('ended','failed') AND observed_state<>'blocked'`, [command.household_id, device.id, now]);
     await client.query('UPDATE family_managed_devices SET observed_access=$3,access_verified_at=$4,access_error=NULL WHERE household_id=$1 AND id=$2', [command.household_id, device.id, outcome.observed, now]);
@@ -467,7 +413,12 @@ async function deviceCommandFailed(db, command, error, now) {
     const owned = await one(client, "SELECT * FROM family_internet_commands WHERE id=$1 AND state='leased' AND lease_id=$2 FOR UPDATE", [command.id, command.lease_id]);
     if (!owned) return 'superseded';
     await client.query("UPDATE family_managed_devices SET observed_access='unknown',access_error=$3 WHERE household_id=$1 AND id=$2 AND version=$4", [command.household_id, command.device_id, code, command.session_version]);
-    await client.query("UPDATE family_internet_commands SET state='pending',available_at=$2,last_error=$3,lease_id=NULL,lease_until=NULL WHERE id=$1", [command.id, new Date(now.getTime() + Math.min(300, 15 * 2 ** Math.min(command.attempts, 4)) * 1000), code]);
+    await client.query("UPDATE family_internet_commands SET state=$4,available_at=$2,last_error=$3,lease_id=NULL,lease_until=NULL WHERE id=$1", [command.id, new Date(now.getTime() + (command.attempts >= 3 ? 300 : 15 * 2 ** command.attempts) * 1000), code, command.attempts >= 3 ? 'attention' : 'pending']);
+    if (command.attempts >= 3) {
+      const device = await one(client, 'SELECT person_ids FROM family_managed_devices WHERE household_id=$1 AND id=$2', [command.household_id, command.device_id]);
+      await internetNotification(client, { householdId: command.household_id, personId: device?.person_ids[0], deviceId: command.device_id,
+        type: 'enforcement_failed', key: `device-enforcement:${command.id}`, now });
+    }
     return 'checking';
   });
 }

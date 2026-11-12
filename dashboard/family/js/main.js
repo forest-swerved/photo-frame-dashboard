@@ -807,7 +807,7 @@ const forms = {
 };
 
 function protectedPermission(name, element) {
-  if (['device-add','device-edit','device-access','device-grant','device-remove','session-control','reward-policies','reward-policy-edit','reward-review','internet-history'].includes(name)) return 'manageInternet';
+  if (['device-add','device-edit','device-access','device-retry','device-grant','device-remove','session-control','reward-policies','reward-policy-edit','reward-review','internet-history'].includes(name)) return 'manageInternet';
   if (['add-chore','edit-chore','delete-chore','review-tasks','occurrence-action','chore-breaks','revoke-break','school-calendar'].includes(name) || name === 'task-mode' && element.dataset.mode === 'routines') return 'manageChores';
   if (name === 'unpair-local') return 'parent';
   return null;

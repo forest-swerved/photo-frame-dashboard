@@ -1,3 +1,4 @@
+import { deviceAccessState } from './internet-state.js';
 import { randomUUID } from 'node:crypto';
 import { Temporal } from '@js-temporal/polyfill';
 import { one, transaction } from './database.js';
@@ -216,7 +217,9 @@ export async function internetSnapshot(db, principal, { env = process.env, now =
       FROM family_managed_devices d WHERE d.household_id=$1 AND d.removed_at IS NULL AND ($2::uuid IS NULL OR $2=ANY(d.person_ids)) ORDER BY d.name,d.id`, [householdId, personFilter]);
     await client.query("UPDATE family_access_requests SET status='expired',version=version+1 WHERE household_id=$1 AND status='pending' AND expires_at<=$2", [householdId, now]);
     const requests = await client.query("SELECT * FROM family_access_requests WHERE household_id=$1 AND ($2::uuid IS NULL OR person_id=$2) ORDER BY (status='pending') DESC,requested_at DESC LIMIT 100", [householdId, personFilter]);
-    const sessions = await client.query('SELECT * FROM family_internet_sessions WHERE household_id=$1 AND ($2::uuid IS NULL OR person_id=$2) ORDER BY requested_at DESC LIMIT 100', [householdId, personFilter]);
+    const sessions = await client.query("SELECT * FROM family_internet_sessions WHERE household_id=$1 AND ($2::uuid IS NULL OR person_id=$2) ORDER BY (state NOT IN ('ended','failed')) DESC,requested_at DESC LIMIT 100", [householdId, personFilter]);
+    const deviceSessions = personFilter ? (await client.query("SELECT * FROM family_internet_sessions WHERE household_id=$1 AND device_id=ANY($2::uuid[]) AND state NOT IN ('ended','failed')", [householdId, devices.rows.map(row => row.id)])).rows : sessions.rows;
+    const commands = (await client.query("SELECT device_id,session_id,state,last_error FROM family_internet_commands WHERE household_id=$1 AND state IN ('pending','leased','attention')", [householdId])).rows;
     const integration = await one(client, 'SELECT * FROM family_network_integrations WHERE household_id=$1', [householdId]);
     let configured = false, managementHost = 'forest-family-frame.vercel.app';
     try { unifiConfiguration(env); managementHost = configuredManagementHost(env); configured = true; } catch { /* Inactive state is explicit. */ }
@@ -228,7 +231,13 @@ export async function internetSnapshot(db, principal, { env = process.env, now =
         scheduleSupport: scheduleSupport(integration, principal.household.timezone, now),
         managementAccessVerifiedAt: iso(integration?.management_verified_at), lastCheckedAt: iso(integration?.last_checked_at), error: integration?.last_error || null },
       policies: people.map(person => policyDto(policies.rows.find(p => p.person_id === person.id)) || defaultRewardPolicy(person.id)),
-      credits: credits.rows.map(creditDto), devices: devices.rows.map(row => deviceDto(row, parent)), sessions: sessions.rows.map(sessionDto), requests: requests.rows.map(accessRequestDto), progress };
+      credits: credits.rows.map(creditDto), devices: devices.rows.map(row => {
+        const access = deviceAccessState(row, deviceSessions, commands, now);
+        if (personFilter && access.sessionId && !sessions.rows.some(session => session.id === access.sessionId)) {
+          access.sessionId = null; access.endsAt = null; access.retryable = false;
+        }
+        return { ...deviceDto(row, parent), access };
+      }), sessions: sessions.rows.map(sessionDto), requests: requests.rows.map(accessRequestDto), progress };
   });
 }
 
@@ -331,13 +340,13 @@ export async function changeDeviceAccess(db, principal, id, body, { env = proces
     requireValue(device.version === body.expectedVersion, 409, 'version_conflict', 'This device changed. Refresh and try again.');
     await requireReady(client, householdId, device, env);
     const pending = (await client.query("SELECT * FROM family_internet_commands WHERE device_id=$1 AND state IN ('pending','leased','attention')", [id])).rows;
-    if (body.access === 'blocked' && device.desired_access === 'blocked' && pending.length && pending.every(command => command.action === 'block')) {
-      await client.query("UPDATE family_internet_commands SET available_at=$2 WHERE device_id=$1 AND state='pending'", [id, now]);
+    const action = body.access === 'allowed' ? 'allow' : 'block';
+    if (device.desired_access === body.access && pending.some(command => command.session_version === device.version && command.action === action)) {
+      await client.query("UPDATE family_internet_commands SET state='pending',attempts=0,available_at=$2 WHERE device_id=$1 AND session_version=$3 AND state IN ('pending','attention')", [id, now, device.version]);
       return deviceDto({ ...device, access_pending: true }, true);
     }
-    requireValue(!pending.length || body.access === 'blocked' && pending.every(command => command.action === 'allow'),
-      409, 'device_access_pending', 'Wait for the current device control to be confirmed.');
-    if (pending.length) await client.query("UPDATE family_internet_commands SET available_at=$2 WHERE device_id=$1 AND state='pending'", [id, now]);
+    // New explicit intent replaces queued work, but never steals a live lease.
+    await client.query("UPDATE family_internet_commands SET state='superseded',lease_id=NULL,lease_until=NULL WHERE device_id=$1 AND state IN ('pending','attention')", [id]);
     // Finish every allowance first, including an ALLOW still awaiting confirmation.
     const sessions = (await client.query("SELECT * FROM family_internet_sessions WHERE household_id=$1 AND device_id=$2 AND state NOT IN ('ended','failed') FOR UPDATE", [householdId, id])).rows;
     for (const session of sessions) {
@@ -382,9 +391,10 @@ async function createInternetSession(client, principal, body, { reward = false, 
   requireValue(device && device.person_ids.includes(personId), 404, 'not_found', 'That device is not assigned to this child.');
   requireValue(!reward || (device.default_access || 'blocked') === 'blocked', 409, 'device_not_reward', 'This device is controlled by parents and is not in the earned-time pool.');
   const integration = await requireReady(client, householdId, device, env);
-  requireValue(device.desired_access === 'blocked' && device.observed_access === 'blocked' && device.access_verified_at
+  const convertToTimed = parent && device.desired_access === 'allowed' && device.observed_access === 'allowed' && !device.access_error;
+  requireValue((convertToTimed || device.desired_access === 'blocked' && device.observed_access === 'blocked') && device.access_verified_at
     && !await one(client, "SELECT id FROM family_internet_commands WHERE device_id=$1 AND state IN ('pending','leased','attention')", [device.id]),
-  409, 'device_not_blocked', 'Choose a device whose Internet blocking is confirmed.');
+  409, 'device_not_blocked', 'Wait for the current device mode to be confirmed before choosing timed access.');
   if (reward) {
     const last = await one(client, 'SELECT state,observed_state,verified_at FROM family_internet_sessions WHERE household_id=$1 AND device_id=$2 ORDER BY requested_at DESC,id DESC LIMIT 1', [householdId, device.id]);
     requireValue(!last || terminal.has(last.state) && last.observed_state === 'blocked' && last.verified_at, 409, 'device_not_blocked', 'Choose a device whose Internet blocking is confirmed.');
@@ -409,6 +419,10 @@ async function createInternetSession(client, principal, body, { reward = false, 
     const used = await one(client, "SELECT coalesce(sum(allocated_seconds),0)::int AS seconds FROM family_internet_sessions WHERE household_id=$1 AND person_id=$2 AND requested_at>=$3 AND state<>'failed'", [householdId, personId, from]);
     requireValue(used.seconds + seconds <= policy.dailyLimitMinutes * 60, 409, 'daily_limit', 'This reward exceeds today’s limit. Ask a parent for an adjustment.');
   }
+  if (convertToTimed) {
+    await client.query("UPDATE family_managed_devices SET desired_access='blocked',observed_access='unknown',access_error=NULL,version=version+1 WHERE id=$1", [device.id]);
+    await internetEvent(client, { householdId, deviceId: device.id, personId, type: 'device_mode_requested', actor: principal.actor, details: { mode: 'timed' }, now });
+  }
   const id = randomUUID();
   const row = await one(client, `INSERT INTO family_internet_sessions(id,household_id,person_id,device_id,credit_id,source,state,desired_state,requested_at,ends_at,remaining_seconds,allocated_seconds,reason,all_day,policy_snapshot,created_by,pending_action)
     VALUES($1,$2,$3,$4,$5,$6,'starting','allowed',$7,$8,$9,$14,$10,$11,$12::jsonb,$13,'start') RETURNING *`,
@@ -425,12 +439,18 @@ async function createInternetSession(client, principal, body, { reward = false, 
 
 export async function changeInternetSession(db, principal, id, body, { now = new Date() } = {}) {
   await requireCapability(db, principal, 'manageInternet'); uuidField(id); versionField(body.expectedVersion);
-  requireValue(['pause', 'resume', 'end', 'adjust', 'all_day'].includes(body.action), 422, 'invalid_action', 'Choose a session action.');
+  requireValue(['pause', 'resume', 'end', 'adjust', 'all_day', 'retry'].includes(body.action), 422, 'invalid_action', 'Choose a session action.');
   return idempotent(db, principal, body, `session:${id}`, async (client, householdId) => {
     const row = await one(client, 'SELECT * FROM family_internet_sessions WHERE household_id=$1 AND id=$2 FOR UPDATE', [householdId, id]);
     if (!row) throw notFound();
     requireValue(row.version === body.expectedVersion, 409, 'version_conflict', 'This session changed. Refresh and try again.');
     requireValue(!terminal.has(row.state), 409, 'session_ended', 'This session has ended.');
+    if (body.action === 'retry') {
+      requireValue(row.desired_state === 'blocked' || !row.ends_at || new Date(row.ends_at) > now, 409, 'window_elapsed', 'This window has ended. Choose Off.');
+      const retried = await client.query("UPDATE family_internet_commands SET state='pending',attempts=0,available_at=$3 WHERE session_id=$1 AND session_version=$2 AND state IN ('pending','attention')", [row.id, row.version, now]);
+      requireValue(retried.rowCount > 0, 409, 'session_checking', 'The router is already processing this request.');
+      return sessionDto(row);
+    }
     // Uncertain commands retain reservations and may only be ended. Never
     // issue another allow while a previous provider outcome is unresolved.
     requireValue(['active', 'paused'].includes(row.state) || body.action === 'end', 409, 'session_checking', 'The network is confirming this session. You may end it or wait.');

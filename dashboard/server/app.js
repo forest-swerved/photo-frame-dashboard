@@ -16,8 +16,7 @@ import { setOccurrenceCompletion, changeChoreOccurrence, choreHistory, choreExce
 import { parentCapabilities, changeMemberCapabilities, createFrameAccessCode, redeemFrameAccess, frameAuthorization, transferOwnership, parentPinSettings, redeemParentPin } from './capabilities.js';
 import { deleteAccount } from './account-deletion.js';
 import { internetSnapshot, saveRewardPolicy, saveManagedDevice, changeDeviceAccess, startInternetSession, changeInternetSession, internetHistory, syncChoreReward, resolveRewardReview, requestDeviceAccess, decideDeviceAccess } from './internet.js';
-import { processInternetJobs } from './internet-worker.js';
-import { drainInternetQueue, startsInternetWork } from './internet-queue.js';
+import { drainInternetQueue, reconcileInternetQueue, startsInternetWork } from './internet-queue.js';
 import { liveStatus } from './live-status.js';
 import { saveSchoolCalendar, schoolCalendarSnapshot } from './school-calendar.js';
 
@@ -227,7 +226,7 @@ export async function handleRequest(request, options = {}) {
       const env = options.env || process.env;
       requireValue(typeof env.CRON_SECRET === 'string' && env.CRON_SECRET.length >= 32, 503, 'internet_jobs_unconfigured', 'Internet scheduling is not configured.');
       requireValue(digest(request.headers.get('authorization') || '') === digest(`Bearer ${env.CRON_SECRET}`), 401, 'unauthenticated', 'Unauthorized.');
-      return json(await processInternetJobs(db, { env, audit: true, ...options.internetJobs }));
+      return json(await reconcileInternetQueue(db, { env, jobOptions: options.internetJobs }));
     }
     if (route === 'media/jobs/cleanup' && request.method === 'GET') {
       const env = options.env || process.env;

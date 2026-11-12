@@ -5,14 +5,14 @@ import { escapeHtml as h, mutationId, dateFormatter, dateInZone, addDays, dateLa
 export const liveSession = session => !['ended', 'failed'].includes(session.state);
 export function deviceAccessProblem(device) {
   if(!device.accessError) return '';
-  return ['policy_review_required','management_policy_changed','session_policy_changed','network_scope_changed'].includes(device.accessError)
+  return ['policy_review_required','management_policy_changed','session_policy_changed','network_scope_changed','device_policy_conflict'].includes(device.accessError)
     ? 'Network rules need parent review · access not confirmed' : 'Internet change could not be confirmed · retrying';
 }
 export function deviceControlState(device, sessions, now) {
   const stale = !device.accessVerifiedAt || !Number.isFinite(Date.parse(device.accessVerifiedAt)) || now - Date.parse(device.accessVerifiedAt) > 180000;
-  const uncertain = stale || Boolean(device.accessError) || device.observedAccess === 'unknown';
+  const uncertain = stale || Boolean(device.accessError) || device.observedAccess === 'unknown' || ['attention','stale'].includes(device.access?.phase);
   const on = uncertain || device.desiredAccess === 'allowed' || device.observedAccess === 'allowed' || sessions.some(session => liveSession(session) && session.desiredState === 'allowed');
-  return { stale, on, canGrant: !uncertain && device.desiredAccess === 'blocked' && device.observedAccess === 'blocked' && !device.accessPending && !sessions.some(liveSession) };
+  return { stale, on, canGrant: !uncertain && ['blocked','allowed'].includes(device.desiredAccess) && device.desiredAccess === device.observedAccess && !device.accessPending && !sessions.some(liveSession) };
 }
 export function remainingTime(session, now) {
   if (!liveSession(session)) return null;
@@ -217,10 +217,34 @@ export function createInternetUI(ctx) {
   }
   function deviceCard(device) {
     const sessions = state.data.sessions.filter(session=>liveSession(session)&&session.deviceId===device.id);
-    const { on, stale, canGrant } = deviceControlState(device, sessions, now());
-    const status = device.controlState==='unenrolled' ? 'Not enrolled · Internet blocking not configured' : device.controlState==='attention' ? 'Needs attention · access unconfirmed' : deviceAccessProblem(device) ? deviceAccessProblem(device) : device.accessPending ? 'Changing Internet access · waiting for confirmation' : stale ? 'Status is stale · waiting for a fresh network check' : device.observedAccess==='unknown' ? 'Internet access unconfirmed' : device.observedAccess==='allowed' ? 'Internet on · allowed by parent' : sessions.some(session=>session.desiredState==='allowed') ? 'Internet time in progress' : 'Internet off · blocking confirmed';
-    return `<article class="panel managed-device" data-key="managed-device-${h(device.id)}"><div class="device-card-heading">${deviceArtworkImage(device)}<div class="device-card-labels"><p class="eyebrow">${h(kinds[device.kind] || 'Device')}</p><h3>${h(device.name)}</h3><span class="soft-label">${h(device.personIds.map(personName).join(', '))}</span></div></div><p class="device-status">${h(status)}</p><p class="field-help">Last verified: ${h(stamp(device.accessVerifiedAt))}</p><p class="field-help">${device.online===true ? 'Connected to the home network' : device.online===false ? 'Not currently seen on the home network' : 'Connection state unknown'}</p><div class="device-session">${sessions.map(session=>sessionCard(session)).join('')}</div>${showControls() ? `<div class="occurrence-controls">${ctx.button(on?'Turn Internet off':'Turn Internet on','device-access','button button-small',`data-id="${h(device.id)}" ${!ready()||device.controlState!=='ready'||device.accessPending&&device.desiredAccess!=='allowed'&&!device.accessError||state.writing.has(device.id)?'disabled':''}`)}${ctx.button('Grant Internet time','device-grant','text-button',`data-id="${h(device.id)}" ${!ready()||device.controlState!=='ready'||!canGrant?'disabled':''}`)}${device.controlState==='unenrolled'?ctx.button('Edit device','device-edit','text-button',`data-id="${h(device.id)}"`):''}</div><p class="field-help">The on/off switch stays set until you change it. A timed allowance ends automatically.</p>` : ''}<details class="device-explanation"><summary>Device details & access rules</summary><p>${device.defaultAccess==='allowed'?'Free to use · Parent control only':'Blocked by default · Earned-time pool'}</p>${device.lastSeenAt?`<p>Last seen ${h(stamp(device.lastSeenAt))}</p>`:''}${device.allowApplePush?'<p>Apple push transport stays available.</p>':''}${device.controlState!=='unenrolled'&&manager()?'<p>Enrollment must be reviewed before identity or assignment changes.</p>':''}</details></article>`;
+    const { stale, canGrant } = deviceControlState(device, sessions, now());
+    const access = device.access;
+    const status = device.controlState==='unenrolled' ? 'Not enrolled · Internet blocking not configured'
+      : access ? access.message : deviceAccessProblem(device) || (device.accessPending ? 'Request saved. Waiting for router confirmation.'
+      : stale ? 'Waiting for a fresh router check.' : device.observedAccess==='unknown' ? 'Internet access unconfirmed'
+      : device.observedAccess==='allowed' ? 'Internet on · allowed by parent' : sessions.some(session=>session.desiredState==='allowed') ? 'Internet time in progress' : 'Internet off · blocking confirmed');
+    const unavailable = !ready() || device.controlState !== 'ready' || state.writing.has(device.id);
+    const pending = device.accessPending || access?.phase === 'pending' || state.writing.has(device.id);
+    const attention = Boolean(device.accessError) || access?.phase === 'attention';
+    const mode = access?.confirmedMode || (sessions.some(session => session.state === 'active' && session.observedState === 'allowed') ? 'timed' : device.observedAccess === 'allowed' ? 'on' : device.observedAccess === 'blocked' ? 'off' : 'unknown');
+    const uncertain = attention || pending || stale || mode === 'unknown' || Boolean(state.error);
+    const label = attention ? 'Needs attention' : pending ? 'Updating access' : uncertain ? 'Checking access' : mode === 'off' ? 'Internet off' : 'Internet on';
+    const detail = state.error ? 'Unable to refresh access. Try Refresh status.' : uncertain ? status : mode === 'timed' ? `Turns off ${stamp(access?.endsAt || sessions.find(session => session.state === 'active')?.endsAt)}` : mode === 'on' ? 'Until you turn it off' : 'Ready when you give time';
+    const controls = `<div class="device-actions" role="group" aria-label="Internet mode for ${h(device.name)}">
+      ${ctx.button('Give time','device-grant','button',`aria-label="On for a duration" data-id="${h(device.id)}" ${unavailable || !canGrant ? 'disabled' : ''}`)}
+      ${ctx.button('Turn off','device-access','button button-secondary',`aria-label="Turn Internet off" data-id="${h(device.id)}" data-access="blocked" ${unavailable || !uncertain && mode === 'off' && !sessions.length ? 'disabled' : ''}`)}
+    </div><div class="device-secondary-actions">
+      ${ctx.button('Access options ↗','device-access','text-button',`aria-label="Access options" data-id="${h(device.id)}" data-access="allowed" ${unavailable || stale || attention || pending ? 'disabled' : ''}`)}
+      ${access?.retryable || device.accessError ? ctx.button('Retry requested mode','device-retry','text-button',`data-id="${h(device.id)}" ${unavailable ? 'disabled' : ''}`) : ''}
+      ${device.controlState==='unenrolled' ? ctx.button('Edit device','device-edit','text-button',`data-id="${h(device.id)}"`) : ''}
+    </div>`;
+    return `<article class="panel managed-device" data-key="managed-device-${h(device.id)}" data-access-state="${attention ? 'attention' : uncertain ? 'pending' : mode}">
+      <div class="device-card-heading">${deviceArtworkImage(device)}<div class="device-card-labels"><p class="eyebrow">${h(kinds[device.kind] || 'Device')}</p><h3>${h(device.name)}</h3><span class="soft-label">${h(device.personIds.map(personName).join(', '))}</span></div></div>
+      <div class="device-access-summary" role="status"><span class="device-access-indicator" aria-hidden="true"></span><div><strong>${h(label)}</strong><p>${h(detail)}</p></div></div>
+      <div class="device-session">${sessions.map(session=>sessionCard(session)).join('')}</div>${showControls() ? controls : ''}
+      <details class="device-explanation"><summary>Connection details</summary><p>Last verified: ${h(stamp(access?.verifiedAt || device.accessVerifiedAt))}</p><p>${device.online===true ? 'Connected to the home network' : device.online===false ? 'Not currently seen on the home network' : 'Connection state unknown'}</p><p>${device.defaultAccess==='allowed'?'Free to use · Parent control only':'Blocked by default · Earned-time pool'}</p>${device.lastSeenAt?`<p>Last seen ${h(stamp(device.lastSeenAt))}</p>`:''}${device.allowApplePush?'<p>Apple push transport stays available.</p>':''}</details></article>`;
   }
+
   function view() {
     const data=state.data;
     if (!data) return `${integrationPanel()}<p class="quiet-empty">${state.error ? h(state.error) : 'Loading family devices…'}</p>${ctx.button('Refresh status','internet-refresh','text-button')}`;
@@ -261,14 +285,44 @@ export function createInternetUI(ctx) {
     });
     if (!device) ctx.dialog.querySelector('[name="kind"]').onchange = event => { ctx.dialog.querySelector('[name="allowApplePush"]').checked = ['phone', 'tablet'].includes(event.target.value); };
   }
-  function grant(device) {
+  function grant(device, indefinite = false) {
     const operationId = mutationId(), choices = people().filter(person => device.personIds.includes(person.id));
-    ctx.openDialog(`Grant time · ${device.name}`, `<div class="form-stack"><label class="field"><span>Child</span><select name="personId" aria-label="Child">${choices.map(person => `<option value="${h(person.id)}">${h(person.name)}</option>`).join('')}</select></label>${ctx.field('Minutes', 'minutes', '60', { type: 'number', extra: 'min="1" max="1439" step="1"' })}${allDayAvailable() ? check('All day', 'allDay', false)+`<p class="field-help">All day ends at ${h(midnight())}. This is separate from earned rewards.</p>` : '<p class="field-help">Choose minutes. All-day access is not available yet.</p>'}<p class="field-help">Timed sessions include a free five-minute get-ready buffer before usage time. Adding time to an existing session extends its countdown.</p>${ctx.field('Reason (optional)', 'reason', '', { required: false, max: 500 })}<button class="button" type="submit">Request access window</button></div>`, async (form, element) => {
-      const allDay = form.has('allDay');
-      const result = await write('/api/internet/grants', { method: 'POST', body: { personId: form.get('personId'), deviceId: device.id, ...(allDay ? { allDay: true } : { minutes: Number(form.get('minutes')) }), reason: form.get('reason').trim() || undefined, mutationId: operationId } }, element);
-      if (!result) return; ctx.dialog.close(); ctx.toast('Access requested. Network confirmation is pending.'); await load();
+    const canTime = deviceControlState(device, state.data.sessions.filter(session => session.deviceId === device.id), now()).canGrant;
+    ctx.openDialog(`Internet · ${device.name}`, `<div class="form-stack access-sheet">
+      <p class="access-sheet-intro">Choose how long Internet stays on. You can turn it off at any time.</p>
+      <fieldset class="access-modes"><legend>Access duration</legend>
+        <label><input type="radio" name="accessMode" value="timed" ${!indefinite ? 'checked' : ''} ${!canTime ? 'disabled' : ''}><span><strong>Give time</strong><small>Turns off automatically</small></span></label>
+        <label><input type="radio" name="accessMode" value="on" ${indefinite ? 'checked' : ''}><span><strong>Until turned off</strong><small>No automatic cutoff</small></span></label>
+      </fieldset>
+      <div data-timed-fields class="form-stack">
+        <label class="field"><span>For</span><select name="personId" aria-label="Child">${choices.map(person => `<option value="${h(person.id)}">${h(person.name)}</option>`).join('')}</select></label>
+        <div class="duration-presets" role="group" aria-label="Quick duration">${[15,30,60,120].map(minutes=>`<button type="button" data-duration="${minutes}" aria-pressed="${minutes===60}">${minutes<60?`${minutes} min`:`${minutes/60} ${minutes===60?'hour':'hours'}`}</button>`).join('')}</div>
+        ${ctx.field('Minutes', 'minutes', '60', { type: 'number', extra: 'min="1" max="1439" step="1"' })}
+        ${allDayAvailable() ? check('All day', 'allDay', false)+`<p class="field-help">All day ends at ${h(midnight())}.</p>` : ''}
+        <p class="access-cutoff-note">Includes five free minutes to get ready. The router keeps the cutoff even when this app is closed.</p>
+      </div>
+      <p data-indefinite-note class="access-cutoff-note" hidden>Internet will stay on until a parent turns it off. This replaces any current timed session.</p>
+      <details data-access-note><summary>Add a note</summary>${ctx.field('Reason (optional)', 'reason', '', { required: false, max: 500 })}</details>
+      <button class="button" type="submit">${indefinite ? 'Turn Internet on' : 'Start Internet time'}</button></div>`, async (form, element) => {
+      const on = form.get('accessMode') === 'on', allDay = form.has('allDay');
+      const result = await write(on ? `/api/internet/devices/${encodeURIComponent(device.id)}/access` : '/api/internet/grants', { method: 'POST', body: on
+        ? { access: 'allowed', expectedVersion: device.version, mutationId: operationId }
+        : { personId: form.get('personId'), deviceId: device.id, ...(allDay ? { allDay: true } : { minutes: Number(form.get('minutes')) }), reason: form.get('reason').trim() || undefined, mutationId: operationId } }, element);
+      if (!result) return; ctx.dialog.close(); ctx.toast('Request saved. Waiting for router confirmation.'); await load();
     });
+    const form = ctx.dialog.querySelector('form'), timed = form.querySelector('[data-timed-fields]'), minutes = form.elements.minutes;
+    const sync = () => {
+      const on = form.elements.accessMode.value === 'on', allDay = form.elements.allDay?.checked;
+      timed.hidden = on; form.querySelector('[data-indefinite-note]').hidden = !on; form.querySelector('[data-access-note]').hidden = on;
+      timed.querySelectorAll('input,select,button').forEach(input => { input.disabled = on; });
+      minutes.disabled = on || allDay;
+      form.querySelectorAll('[data-duration]').forEach(button => button.setAttribute('aria-pressed', String(!allDay && Number(minutes.value) === Number(button.dataset.duration))));
+      form.querySelector('[type="submit"]').textContent = on ? 'Turn Internet on' : 'Start Internet time';
+    };
+    form.querySelectorAll('[data-duration]').forEach(button => { button.onclick = () => { minutes.value = button.dataset.duration; if (form.elements.allDay) form.elements.allDay.checked = false; sync(); }; });
+    form.addEventListener('input', sync); form.addEventListener('change', sync); sync();
   }
+
   async function changeSession(session, action, deltaMinutes = null, element = null, reason = '') {
     if (state.writing.has(session.id)) return;
     const started = epoch(); let released = false;
@@ -295,14 +349,21 @@ export function createInternetUI(ctx) {
     if (name === 'reward-use') { const credit = state.data?.credits.find(item => item.id === element.dataset.id); if (credit) picker(credit); return true; }
     if (name === 'device-add') { if (manager()) editDevice(); return true; }
     if (name === 'device-edit') { const device = state.data?.devices.find(item => item.id === element.dataset.id); if (manager() && device?.controlState === 'unenrolled') editDevice(device); return true; }
-    if (name === 'device-access') {
+    if (name === 'device-access' || name === 'device-retry') {
       const device = state.data?.devices.find(item => item.id === element.dataset.id);
-      if (!manager() || !ready() || device?.controlState !== 'ready' || device.accessPending && device.desiredAccess !== 'allowed' && !device.accessError || state.writing.has(device.id)) return true;
-      const access = deviceControlState(device, state.data.sessions.filter(session => session.deviceId === device.id), now()).on ? 'blocked' : 'allowed';
+      if (!manager() || !ready() || device?.controlState !== 'ready' || state.writing.has(device.id)) return true;
+      if (name === 'device-retry' && device.access?.sessionId) {
+        const session = state.data.sessions.find(item => item.id === device.access.sessionId);
+        if (session) await changeSession(session, 'retry', null, element);
+        return true;
+      }
+      const access = name === 'device-retry' ? device.desiredAccess : element.dataset.access;
+      if (!['blocked','allowed'].includes(access)) return true;
+      if (name === 'device-access' && access === 'allowed') { grant(device, true); return true; }
       state.writing.add(device.id); element.disabled = true;
       try {
         const result = await write(`/api/internet/devices/${encodeURIComponent(device.id)}/access`, { method: 'POST', body: { access, expectedVersion: device.version, mutationId: mutationId() } });
-        if (result) { ctx.toast('Device control requested. Waiting for UniFi confirmation.'); await load(); }
+        if (result) { ctx.toast('Request saved. Waiting for router confirmation.'); await load(); }
       } finally { state.writing.delete(device.id); ctx.render(); }
       return true;
     }
@@ -351,7 +412,7 @@ export function createInternetUI(ctx) {
   function actionVersion(name, id) {
     const list = name.startsWith('device-') ? state.data?.devices : name === 'session-control' ? state.data?.sessions : name.startsWith('reward-') ? state.data?.credits : [];
     const item = list?.find(row=>row.id===id);
-    return item ? JSON.stringify([item.id,item.version,item.status,item.state,item.desiredAccess,item.observedAccess]) : null;
+    return item ? JSON.stringify([item.id,item.version,item.status,item.state,item.desiredAccess,item.observedAccess,item.access?.desiredMode,item.access?.sessionId, name.startsWith('device-') ? state.data.sessions.filter(session=>session.deviceId===id&&liveSession(session)).map(session=>[session.id,session.version]) : null]) : null;
   }
   function tick() {
     const time = now();
