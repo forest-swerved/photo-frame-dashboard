@@ -680,6 +680,18 @@ final class AppModelTests: XCTestCase {
         var quiet = NotificationPreferences(); quiet.quietStart = "21:00"; quiet.quietEnd = "07:00"
         await attachLayout(NavigationStack { NotificationPreferencesScreen(initial: quiet) }.environmentObject(model), name: "Synthetic notification preferences - native time pickers")
     }
+    func testSessionDetailLayouts() async {
+        let (model, api, _, _) = fixture()
+        api.data.people = [Person(id: InternetFixtures.child, name: "Andre", color: "#00748c", version: 1)]
+        let active = InternetFixtures.session()
+        api.internetData = InternetFixtures.snapshot(role: "admin", sessions: [active])
+        await model.start()
+        await attachLayout(NavigationStack { InternetSessionDetail(network: model.internet, original: active) }.environmentObject(model), name: "Session detail - active")
+        let paused = InternetFixtures.session(state: "paused", version: 2, observed: "blocked", end: nil, remaining: 1800)
+        api.internetData = InternetFixtures.snapshot(role: "admin", sessions: [paused])
+        await model.internet.refresh()
+        await attachLayout(NavigationStack { InternetSessionDetail(network: model.internet, original: paused) }.environmentObject(model).environment(\.dynamicTypeSize, .accessibility1), name: "Session detail - paused large text")
+    }
     private func attachLayout<Content: View>(_ content: Content, name: String) async {
         guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else { return XCTFail("Simulator window scene is required") }
         let previous = scene.windows.first(where: \.isKeyWindow)

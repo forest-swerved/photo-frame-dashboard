@@ -262,50 +262,119 @@ struct InternetSessionDetail: View {
     @State private var allDayConfirmation = false
     var body: some View {
         let item = network.currentSession(original)
-        List {
-            Section {
-                Text(network.devices.first(where: { $0.id == item.deviceId })?.name ?? "Managed device").font(.title2.bold())
-                Text(model.snapshot?.people.first(where: { $0.id == item.personId })?.name ?? "Family member").font(.headline).foregroundStyle(Brand.cyanInk)
-                TimelineView(.periodic(from: .now, by: 1)) { _ in
-                    Text(item.statusLabel(at: network.serverNow)).font(.headline)
-                    if !item.isTerminal { Text(InternetSession.durationLabel(item.displayRemaining(at: network.serverNow))).font(.largeTitle.bold()).monospacedDigit() }
-                    Text(item.countdownLabel(at: network.serverNow)).font(.caption).foregroundStyle(Brand.muted)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(network.devices.first(where: { $0.id == item.deviceId })?.name ?? "Managed device")
+                        .font(.title.bold()).accessibilityAddTraits(.isHeader)
+                    Text("\(model.snapshot?.people.first(where: { $0.id == item.personId })?.name ?? "Family member") · \(item.source == "reward" ? "Earned reward" : "Parent allowance")")
+                        .font(.subheadline).foregroundStyle(Brand.muted)
                 }
-                Text(item.source == "reward" ? "Earned task reward" : "Parent allowance").font(.subheadline)
-                if item.allDay { Text("All day, until household midnight. A paused all-day window still ends at its original midnight.").font(.caption).foregroundStyle(Brand.muted) }
-            }
-            Section("Times · \(model.session?.household.timezone ?? "household timezone")") {
-                timestamp("Requested", item.requestedAt)
-                timestamp("Started", item.startedAt)
-                if item.preparationEndsAt != nil { timestamp("Usage begins", item.preparationEndsAt) }
-                timestamp(item.state == "paused" && !item.allDay ? "Previous end" : "Scheduled end", item.endsAt)
-                timestamp("Network last confirmed", item.verifiedAt)
-                if item.endedAt != nil { timestamp("Ended", item.endedAt) }
-            }
-            if let reason = item.reason { Section("Reason") { Text(reason) } }
-            if let error = item.lastError { Section("Network report") { Text(error).foregroundStyle(Brand.red) } }
-            if let message = network.message { Section { Text(message).foregroundStyle(Brand.red) } }
-            if network.canManage && !item.isTerminal {
-                Section("Parent controls") {
-                    if item.state == "active" { Button("Pause Internet access") { Task { _ = await network.act(item, action: "pause") } }.disabled(!network.canChange) }
-                    if item.state == "paused" { Button("Resume remaining time") { Task { _ = await network.act(item, action: "resume") } }.disabled(!network.canChange || item.remaining(at: network.serverNow) <= 0) }
-                    if item.isStable {
-                        Button("Add or remove time") { adjustment = true }.disabled(!network.canChange)
-                        if network.supportsAllDay { Button("Allow all day until midnight") { allDayConfirmation = true }.disabled(!network.canChange) }
+                FrameCard(instrument: true) {
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        VStack(alignment: .leading, spacing: 10) {
+                            Label(network.isStale ? "Last known status" : item.statusLabel(at: network.serverNow),
+                                  systemImage: network.isStale ? "wifi.exclamationmark" : "wifi")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(item.hasVerifiedAccess && !network.isStale ? Brand.lime : Brand.instrumentMuted)
+                            if !item.isTerminal {
+                                Text(InternetSession.durationLabel(item.displayRemaining(at: network.serverNow)))
+                                    .font(.system(size: 56, weight: .bold, design: .rounded))
+                                    .monospacedDigit().minimumScaleFactor(0.5).lineLimit(1)
+                                Text(item.countdownLabel(at: network.serverNow))
+                                    .font(.subheadline).foregroundStyle(Brand.instrumentMuted)
+                            }
+                            if let end = item.endsAt.flatMap(Dates.instant), item.state != "paused" || item.allDay {
+                                Divider().overlay(Brand.instrumentMuted.opacity(0.3))
+                                Label("\(item.isTerminal ? "Scheduled end" : "Ends") \(Dates.time(end, in: model.zone))", systemImage: "clock")
+                                    .font(.headline)
+                            }
+                        }
                     }
-                    Button("End session and block Internet", role: .destructive) { endConfirmation = true }.disabled(!network.canChange)
+                    if item.allDay {
+                        Text("All-day access ends at household midnight, even when paused.")
+                            .font(.footnote).foregroundStyle(Brand.instrumentMuted)
+                    }
                 }
-            }
-            Section { Text("The server and home network enforce this window. The countdown is informational. A pending change stays pending until the network confirms it.").font(.footnote).foregroundStyle(Brand.muted) }
-        }.navigationTitle("Internet session").navigationBarTitleDisplayMode(.inline).refreshable { await network.refresh() }
+                if network.isStale {
+                    Label("Refresh to confirm access. Controls are unavailable until status is current.", systemImage: "arrow.clockwise")
+                        .font(.subheadline).foregroundStyle(Brand.attentionInk)
+                    Button("Refresh status") { Task { await network.refresh() } }.buttonStyle(.bordered)
+                }
+                if let error = item.lastError { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(Brand.red) }
+                if let message = network.message { Text(message).foregroundStyle(Brand.red) }
+                if network.canManage && !item.isTerminal {
+                    VStack(spacing: 12) {
+                        if item.state == "active" {
+                            Button { Task { _ = await network.act(item, action: "pause") } } label: {
+                                actionLabel("Pause Internet", symbol: "pause.fill").foregroundStyle(.white)
+                            }.buttonStyle(.borderedProminent).disabled(!network.canChange)
+                        }
+                        if item.state == "paused" {
+                            Button { Task { _ = await network.act(item, action: "resume") } } label: {
+                                actionLabel("Resume Internet", symbol: "play.fill").foregroundStyle(.white)
+                            }.buttonStyle(.borderedProminent).disabled(!network.canChange || item.remaining(at: network.serverNow) <= 0)
+                        }
+                        if item.isStable {
+                            Button { adjustment = true } label: {
+                                actionLabel("Adjust time", symbol: "plusminus")
+                            }.buttonStyle(.bordered).disabled(!network.canChange)
+                            if network.supportsAllDay {
+                                Button { allDayConfirmation = true } label: {
+                                    actionLabel("Allow until midnight", symbol: "moon")
+                                }.buttonStyle(.bordered).disabled(!network.canChange)
+                            }
+                        }
+                        if network.isChanging { ProgressView("Updating access…") }
+                        Button(role: .destructive) { endConfirmation = true } label: {
+                            actionLabel("End session & block Internet", symbol: "stop.fill")
+                        }.buttonStyle(.bordered).tint(Brand.danger).disabled(!network.canChange)
+                    }.controlSize(.large)
+                }
+                if let reason = item.reason, !reason.isEmpty {
+                    FrameCard {
+                        Text("Session note").font(.headline)
+                        Text(reason).font(.subheadline)
+                    }
+                }
+                FrameCard {
+                    DisclosureGroup("Session details") {
+                        VStack(alignment: .leading, spacing: 16) {
+                            Text(model.session?.household.timezone ?? "Household timezone")
+                                .font(.caption).foregroundStyle(Brand.muted)
+                            timestamp("Requested", item.requestedAt)
+                            timestamp("Started", item.startedAt)
+                            if item.preparationEndsAt != nil { timestamp("Usage begins", item.preparationEndsAt) }
+                            timestamp(item.state == "paused" && !item.allDay ? "Previous end" : "Scheduled end", item.endsAt)
+                            timestamp("Network last confirmed", item.verifiedAt)
+                            if item.endedAt != nil { timestamp("Ended", item.endedAt) }
+                        }.padding(.top, 12)
+                    }.font(.headline)
+                }
+                Text("Access changes are confirmed by your home network. A countdown reaching zero does not confirm blocking.")
+                    .font(.footnote).foregroundStyle(Brand.muted)
+            }.padding(20).frame(maxWidth: 600).frame(maxWidth: .infinity)
+        }.background(Brand.background).foregroundStyle(Brand.ink).tint(Brand.actionInk)
+            .navigationTitle("Internet session").navigationBarTitleDisplayMode(.inline)
+            .refreshable { await network.refresh() }
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             .sheet(isPresented: $adjustment) { InternetTimeEditor(network: network, session: item) }
             .confirmationDialog("End this session?", isPresented: $endConfirmation, titleVisibility: .visible) { Button("End session", role: .destructive) { Task { _ = await network.act(item, action: "end") } }; Button("Cancel", role: .cancel) { } }
             .confirmationDialog("Allow this device until household midnight?", isPresented: $allDayConfirmation, titleVisibility: .visible) { Button("Allow all day") { Task { _ = await network.act(item, action: "all_day") } }; Button("Cancel", role: .cancel) { } }
     }
-    @ViewBuilder private func timestamp(_ title: String, _ value: String?) -> some View {
-        if let value, let date = Dates.instant(value) { LabeledContent(title, value: "\(Dates.dayLabel(Dates.day(date, in: model.zone))) · \(Dates.time(date, in: model.zone))") }
-        else { LabeledContent(title, value: "Not confirmed") }
+    private func actionLabel(_ title: String, symbol: String) -> some View {
+        Label(title, systemImage: symbol)
+            .font(.headline).frame(maxWidth: .infinity, minHeight: 28)
+            .multilineTextAlignment(.center).padding(.vertical, 4)
+    }
+    private func timestamp(_ title: String, _ value: String?) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.subheadline).foregroundStyle(Brand.muted)
+            if let value, let date = Dates.instant(value) {
+                Text("\(Dates.dayLabel(Dates.day(date, in: model.zone))) · \(Dates.time(date, in: model.zone))")
+                    .font(.subheadline.weight(.medium))
+            } else { Text("Not confirmed").font(.subheadline) }
+        }.accessibilityElement(children: .combine)
     }
 }
 
