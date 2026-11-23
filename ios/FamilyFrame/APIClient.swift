@@ -35,6 +35,7 @@ protocol FamilyAPI: AnyObject {
     func joinFamily(invitation: String) async throws -> AccountOutcome
     func cancelAccountOnboarding() async
     func serviceStatus() async throws -> MobileServiceStatus
+    func deviceWidgetCredential() async throws -> DeviceWidgetCredential?
     func currentSession() async throws -> MobileSession
     func signOut() async throws
     func household(date: String) async throws -> HouseholdSnapshot
@@ -123,6 +124,10 @@ final class APIClient: FamilyAPI {
         configuration.timeoutIntervalForResource = 40
         configuration.httpCookieAcceptPolicy = .onlyFromMainDocumentDomain
         session = URLSession(configuration: configuration, delegate: redirectDelegate, delegateQueue: nil)
+    }
+    func deviceWidgetCredential() async throws -> DeviceWidgetCredential? {
+        let value: DeviceWidgetCredential = try await send("/api/mobile/widget-credential")
+        return value
     }
     private func send<T: Decodable>(_ path: String, method: String = "GET", body: Data? = nil,
                                      authorization: String? = nil, wrapped: Bool = true, authenticated: Bool = true, contentType: String = "application/json") async throws -> T {
@@ -380,3 +385,6 @@ final class APIClient: FamilyAPI {
     }
 
 }
+
+// Test clients and alternate transports do not provision lock-screen credentials.
+extension FamilyAPI { func deviceWidgetCredential() async throws -> DeviceWidgetCredential? { nil } }

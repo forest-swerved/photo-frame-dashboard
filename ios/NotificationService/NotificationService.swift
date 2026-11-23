@@ -1,5 +1,6 @@
 import UIKit
 import UserNotifications
+import WidgetKit
 
 // Device illustrations are bundled, so attaching one never needs Internet,
 // family credentials, shared storage, or an untrusted URL from a push.
@@ -9,6 +10,7 @@ final class NotificationService: UNNotificationServiceExtension {
     private var content: UNNotificationContent?
 
     override func didReceive(_ request: UNNotificationRequest, withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
+        WidgetCenter.shared.reloadTimelines(ofKind: "FamilyDeviceStatus")
         lock.lock(); handler = contentHandler; content = request.content; lock.unlock()
         guard let updated = request.content.mutableCopy() as? UNMutableNotificationContent,
               ["FAMILY_INTERNET", "FAMILY_ACCESS_REQUEST", "FAMILY_PREVIEW"].contains(updated.categoryIdentifier),

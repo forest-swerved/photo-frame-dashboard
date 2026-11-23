@@ -13,6 +13,9 @@ struct FamilyFrameApp: App {
             }
             .environmentObject(model).tint(Brand.actionInk).preferredColorScheme(.light)
             .task { await model.start() }
+            .onOpenURL { url in
+                if url.scheme == "familyframe", url.host == "devices" { model.selectedTab = 3; Task { await model.refresh() } }
+            }
             .task(id: phase) {
                 guard phase == .active else { return }
                 ParentLocationReporter.shared.resume()

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import WidgetKit
 import UserNotifications
 import UIKit
 
@@ -48,6 +49,7 @@ final class AppModel: ObservableObject {
     private var calendarReadAt: Date?
     private var confirmedOccurrences: [String: ChoreOccurrence] = [:]
     private var credential: MobileCredential?
+    private var widgetRefreshedAt: Date?
     private var generation = 0
     private var hasStarted = false
     private var registeredPushKey: String?
@@ -102,7 +104,7 @@ final class AppModel: ObservableObject {
                     lastUpdated = savedCache.savedAt
                 }
                 await refresh(includePreferences: true)
-            } else { try keychain.clear(); cache.clear() }
+            } else { try keychain.clear(); cache.clear(); clearDeviceWidget() }
         } catch { message = error.localizedDescription }
     }
     func signIn(email: String, password: String, invitation: String = "") async -> Bool {
@@ -205,7 +207,25 @@ final class AppModel: ObservableObject {
         _ = await (household, events, activity, settings, network)
         guard started == generation, !Task.isCancelled else { return }
         persistCache()
+        await refreshDeviceWidget(generation: started)
         if let token = NotificationController.shared.currentToken { await registerPush(token) }
+    }
+    private func refreshDeviceWidget(generation started: Int) async {
+        guard session?.isChild == false else { clearDeviceWidget(); return }
+        guard widgetRefreshedAt.map({ now().timeIntervalSince($0) >= 60 }) ?? true else { return }
+        do {
+            guard let value = try await api.deviceWidgetCredential(), started == generation, !Task.isCancelled else { return }
+            try DeviceWidgetStore.save(value)
+            widgetRefreshedAt = now()
+            WidgetCenter.shared.reloadTimelines(ofKind: DeviceWidgetStore.kind)
+        } catch {
+            // Never let widget availability interfere with ordinary app refresh.
+            if started == generation, (error as? APIError)?.isAuthenticationFailure == true { clearDeviceWidget() }
+        }
+    }
+    private func clearDeviceWidget() {
+        DeviceWidgetStore.clear(); widgetRefreshedAt = nil
+        WidgetCenter.shared.reloadTimelines(ofKind: DeviceWidgetStore.kind)
     }
     private func refreshHousehold(generation started: Int) async {
         let uncertaintyAtStart = uncertaintyVersion
@@ -640,6 +660,7 @@ final class AppModel: ObservableObject {
         message = reason
     }
     private func clearDashboard() {
+        clearDeviceWidget()
         activityReadTask?.cancel(); activityReadTask = nil
         internet.bind(nil)
         media.bind(nil)

@@ -1,3 +1,4 @@
+import { widgetCredential, deviceWidgetSnapshot } from './device-widget.js';
 import { locations, changeLocationSharing, reportLocation, locationMap, cleanupLocations, locationHistory, changeLocationHistory, deleteLocationHistory, refreshParentLocation } from './locations.js';
 import { listMedia, mediaContent, uploadPhoto, reserveVideo, finishVideo, removeMedia, cleanupMedia } from './media.js';
 import { randomUUID } from 'node:crypto';
@@ -117,6 +118,7 @@ export async function dispatch(request, db, principal, route, options = {}) {
       catch { /* Report missing provider setup without exposing configuration. */ }
       return json({ pushConfigured, schedulingConfigured: Boolean((options.env || process.env).CRON_SECRET), serverTime: new Date().toISOString() });
     }
+    if (route === 'mobile/widget-credential' && method === 'GET') return json(await widgetCredential(db, principal, options));
     if (route === 'mobile/session' && method === 'GET') return json(mobileSessionData(principal));
     if (route === 'mobile/session' && method === 'DELETE') return json(await revokeMobile(db, principal, principal.mobileSessionId));
     if (route === 'mobile/push-installations' && method === 'POST') return json(await registerPush(db, principal, await readJson(request), options.env));
@@ -222,6 +224,7 @@ export async function handleRequest(request, options = {}) {
     if (route === 'health' && request.method === 'GET') return json({ ok: true });
     if (['mobile/pairings','mobile/pairings/redeem'].includes(route) && request.method === 'POST') throw new ApiError(410, 'child_accounts_required', 'Children now use their own email accounts and a parent invitation.');
     db = options.db || sharedPool(options.env);
+    if (route === 'widget/devices' && request.method === 'GET') return json(await deviceWidgetSnapshot(request, db, options));
     if (route === 'internet/jobs/process' && request.method === 'GET') {
       const env = options.env || process.env;
       requireValue(typeof env.CRON_SECRET === 'string' && env.CRON_SECRET.length >= 32, 503, 'internet_jobs_unconfigured', 'Internet scheduling is not configured.');
