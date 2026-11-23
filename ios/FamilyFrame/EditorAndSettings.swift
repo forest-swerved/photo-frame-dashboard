@@ -300,6 +300,13 @@ struct SettingsScreen: View {
     var body: some View {
         List {
             if model.session?.isChild == false { Section("Family map") { NavigationLink("Location sharing") { ParentLocationSettings() } } }
+            if model.session?.isChild == false {
+                Section("Lock Screen widget") {
+                    Label("Device access", systemImage: "lock.rectangle")
+                    Text("Touch and hold your Lock Screen, choose Customize → Lock Screen → Add Widgets, then choose Family Frame. The wide widget shows up to two devices and a count of any others; tap it to open Devices.").font(.footnote)
+                    Text("Shows kids’ timers and default-off devices with Internet on. Updates follow iOS scheduling; check the timestamp. Device and child names may be visible on your Lock Screen.").font(.footnote).foregroundStyle(Brand.muted)
+                }
+            }
             Section("Frame collection") { NavigationLink("Photos & videos") { MediaLibraryScreen() } }
             Section {
                 HStack(spacing: 14) {
