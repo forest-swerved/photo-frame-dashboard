@@ -86,6 +86,7 @@ final class NotificationController: NSObject, ObservableObject, UNUserNotificati
 
 final class FamilyAppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        DeviceLiveActivityController.shared.start()
         NotificationController.shared.prepare()
         ParentLocationReporter.shared.resume()
         return true

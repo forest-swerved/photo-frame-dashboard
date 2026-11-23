@@ -68,7 +68,6 @@ struct DeviceStatusContainer: View {
     let entry: DeviceStatusEntry
     var body: some View { DeviceStatusWidgetView(entry: entry, inline: family == .accessoryInline) }
 }
-@main
 struct FamilyDeviceWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: DeviceWidgetStore.kind, provider: DeviceStatusProvider()) { DeviceStatusContainer(entry: $0) }
@@ -76,4 +75,9 @@ struct FamilyDeviceWidget: Widget {
             .description("Kids’ device timers and default-off devices with Internet on. Tap to view current status.")
             .supportedFamilies([.accessoryRectangular, .accessoryInline, .systemSmall])
     }
+}
+
+@main
+struct FamilyDeviceWidgets: WidgetBundle {
+    var body: some Widget { DeviceLiveActivity(); FamilyDeviceWidget() }
 }

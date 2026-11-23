@@ -301,7 +301,11 @@ struct SettingsScreen: View {
         List {
             if model.session?.isChild == false { Section("Family map") { NavigationLink("Location sharing") { ParentLocationSettings() } } }
             if model.session?.isChild == false {
-                Section("Lock Screen widget") {
+                Section("Automatic Lock Screen activity") {
+                    LiveActivityConnectionStatus()
+                    Text("Appears automatically while kids have device time running or a default-off device has Internet on. Disappears after access ends. No widget placement is needed. Allow Live Activities in iOS Settings for Family Frame.").font(.footnote).foregroundStyle(Brand.muted)
+                }
+                Section("Optional pinned widget") {
                     Label("Device access", systemImage: "lock.rectangle")
                     Text("Touch and hold your Lock Screen, choose Customize → Lock Screen → Add Widgets, then choose Family Frame. The wide widget shows up to two devices and a count of any others; tap it to open Devices.").font(.footnote)
                     Text("Shows kids’ timers and default-off devices with Internet on. Updates follow iOS scheduling; check the timestamp. Device and child names may be visible on your Lock Screen.").font(.footnote).foregroundStyle(Brand.muted)
@@ -528,4 +532,9 @@ struct MobileDevicesScreen: View {
         loading = true; defer { loading = false }
         do { devices = try await model.devices(); error = nil } catch { self.error = error.localizedDescription }
     }
+}
+
+struct LiveActivityConnectionStatus: View {
+    @ObservedObject private var controller = DeviceLiveActivityController.shared
+    var body: some View { Label(controller.message, systemImage: "waveform.path").font(.subheadline) }
 }

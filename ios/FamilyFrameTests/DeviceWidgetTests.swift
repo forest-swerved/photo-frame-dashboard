@@ -40,3 +40,23 @@ final class DeviceWidgetTests: XCTestCase {
         }
     }
 }
+
+extension DeviceWidgetTests {
+    func testLiveActivityDecodesServerEpochsAndRenders() throws {
+        let json = """
+        {"items":[{"id":"one","person":"Alex","device":"Console","status":"Time running","endsAt":1900000000,"preparationEndsAt":null},{"id":"two","person":"Sam","device":"iPad","status":"Internet on","endsAt":null,"preparationEndsAt":null}],"totalCount":2,"checkedAt":1800000000}
+        """
+        let fixtureEnd = Date().timeIntervalSince1970 + 3720
+        let previewJSON = json.replacingOccurrences(of: "1900000000", with: String(fixtureEnd))
+        let state = try JSONDecoder().decode(DeviceAccessActivityAttributes.ContentState.self, from: Data(previewJSON.utf8))
+        XCTAssertEqual(state.items[0].end, Date(timeIntervalSince1970: fixtureEnd))
+        XCTAssertNil(state.items[1].end)
+        XCTAssertEqual(try JSONDecoder().decode(DeviceAccessActivityAttributes.ContentState.self, from: JSONEncoder().encode(state)), state)
+        for stale in [false, true] {
+            let view = DeviceAccessLiveView(state: state, stale: stale).frame(width: 370).background(Color.black).foregroundStyle(.white)
+            let renderer = ImageRenderer(content: view); renderer.scale = 3
+            guard let image = renderer.uiImage else { return XCTFail("Live Activity did not render") }
+            let attachment = XCTAttachment(image: image); attachment.name = "Live Activity stale \(stale)"; attachment.lifetime = .keepAlways; add(attachment)
+        }
+    }
+}

@@ -7,7 +7,7 @@ export const APNS_HOSTS = Object.freeze({ sandbox: 'https://api.sandbox.push.app
 const tokenCache = new Map();
 const knownReasons = new Set(['BadDeviceToken', 'DeviceTokenNotForTopic', 'Unregistered', 'TooManyRequests', 'TooManyProviderTokenUpdates',
   'ExpiredProviderToken', 'InvalidProviderToken', 'Forbidden', 'PayloadTooLarge', 'BadTopic', 'MissingTopic', 'ServiceUnavailable',
-  'InternalServerError', 'Shutdown', 'IdleTimeout', 'BadExpirationDate', 'BadPriority', 'BadCollapseId', 'BadPath', 'MethodNotAllowed']);
+  'InternalServerError', 'TopicDisallowed', 'Shutdown', 'IdleTimeout', 'BadExpirationDate', 'BadPriority', 'BadCollapseId', 'BadPath', 'MethodNotAllowed']);
 
 export function apnsConfiguration(env = process.env, environment = 'production') {
   requireValue(typeof environment === 'string' && Object.hasOwn(APNS_HOSTS, environment), 422, 'invalid_push_device', 'This push installation is invalid.');
@@ -64,12 +64,19 @@ export function classifyApnsResult(result, attempt = 1) {
   return { state: 'pending', reason, retrySeconds, disable: false };
 }
 
-export async function sendApns({ token, environment, notificationId, expiresAt, payload, pushType = 'alert' }, env = process.env) {
+export const sendApns = (message, env = process.env) => sendNotification(message, env, false);
+export const sendLiveActivityApns = (message, env = process.env) => sendNotification(message, env, true);
+
+async function sendNotification({ token, environment, notificationId, expiresAt, payload, pushType = 'alert' }, env, liveActivity) {
   requireValue(Object.hasOwn(APNS_HOSTS, environment) && typeof token === 'string' && /^[0-9a-f]{64,400}$/i.test(token) && token.length % 2 === 0,
     422, 'invalid_push_device', 'This push installation is invalid.');
   const config = apnsConfiguration(env, environment);
   requireValue(['alert','background'].includes(pushType),422,'invalid_push_payload','Invalid push type.');
   requireValue(pushType!=='background'||(payload?.aps?.['content-available']===1&&Object.keys(payload.aps).length===1),422,'invalid_push_payload','Background updates must be silent.');
+  if (liveActivity) {
+    requireValue(['start','update','end'].includes(payload?.aps?.event),422,'invalid_push_payload','Invalid activity event.');
+    pushType = 'liveactivity';
+  }
   const encoded = JSON.stringify(payload);
   requireValue(Buffer.byteLength(encoded) <= 4096, 422, 'invalid_push_payload', 'This notification is too large.');
   const jwt = await providerToken(env, new Date(), environment);
@@ -92,7 +99,7 @@ export async function sendApns({ token, environment, notificationId, expiresAt, 
       client.on('error', () => finish({ accepted: false, status: 0, reason: 'transport_error' }));
       client.on('goaway', () => finish({ accepted: false, status: 0, reason: 'transport_error' }));
       stream = client.request({ ':method': 'POST', ':path': `/3/device/${token.toLowerCase()}`, authorization: `bearer ${jwt}`,
-        'apns-topic': config.topic, 'apns-push-type': pushType, 'apns-priority': pushType==='background'?'5':'10', 'apns-id': notificationId,
+        'apns-topic': liveActivity ? `${config.topic}.push-type.liveactivity` : config.topic, 'apns-push-type': pushType, 'apns-priority': pushType==='background' || (liveActivity && payload.aps.event==='update') ? '5':'10', 'apns-id': notificationId,
         'apns-collapse-id': notificationId, 'apns-expiration': String(Math.floor(new Date(expiresAt).getTime() / 1000)), 'content-type': 'application/json' });
       let headers = {};
       let body = '';

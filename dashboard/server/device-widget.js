@@ -41,7 +41,10 @@ export async function deviceWidgetSnapshot(request, db, { env = process.env, now
   requireValue(match && /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(match[1]) && Number(match[2]) * 1000 > +now, 401, 'widget_session_required', 'Open Family Frame to reconnect your widget.');
   const row = await activeSession(db, match[1], now);
   requireValue(row && timingSafeEqual(Buffer.from(match[3], 'hex'), Buffer.from(signature(row, match[2], env), 'hex')), 401, 'widget_session_revoked', 'Open Family Frame to reconnect your widget.');
-  const household = row.household_id;
+  return readDeviceWidgetSnapshot(db, row.household_id, now);
+}
+
+export async function readDeviceWidgetSnapshot(db, household, now = new Date()) {
   const devices = (await db.query('SELECT * FROM family_managed_devices WHERE household_id=$1 AND removed_at IS NULL ORDER BY name,id', [household])).rows;
   const sessions = (await db.query("SELECT * FROM family_internet_sessions WHERE household_id=$1 AND state NOT IN ('ended','failed')", [household])).rows;
   const commands = (await db.query("SELECT device_id,session_id,state,last_error FROM family_internet_commands WHERE household_id=$1 AND state IN ('pending','leased','attention')", [household])).rows;
