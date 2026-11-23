@@ -21,6 +21,7 @@
 <key>UIBackgroundModes</key><array><string>location</string>
         <string>remote-notification</string></array>
 <key>ITSAppUsesNonExemptEncryption</key><false/>
+<key>NSSupportsLiveActivities</key><true/>
 <key>WidgetKeychainGroup</key><string>$(AppIdentifierPrefix)com.swerved.familyframe.device-widget</string>
 <key>CFBundleURLTypes</key><array><dict><key>CFBundleURLSchemes</key><array><string>familyframe</string></array></dict></array>
 </dict></plist>

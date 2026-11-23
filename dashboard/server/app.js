@@ -1,3 +1,4 @@
+import { registerLiveActivity, reportLiveActivity, processLiveActivities } from './live-activities.js';
 import { widgetCredential, deviceWidgetSnapshot } from './device-widget.js';
 import { locations, changeLocationSharing, reportLocation, locationMap, cleanupLocations, locationHistory, changeLocationHistory, deleteLocationHistory, refreshParentLocation } from './locations.js';
 import { listMedia, mediaContent, uploadPhoto, reserveVideo, finishVideo, removeMedia, cleanupMedia } from './media.js';
@@ -118,6 +119,7 @@ export async function dispatch(request, db, principal, route, options = {}) {
       catch { /* Report missing provider setup without exposing configuration. */ }
       return json({ pushConfigured, schedulingConfigured: Boolean((options.env || process.env).CRON_SECRET), serverTime: new Date().toISOString() });
     }
+    if (route === 'mobile/live-activity' && method === 'POST') return json(await registerLiveActivity(db, principal, await readJson(request), options));
     if (route === 'mobile/widget-credential' && method === 'GET') return json(await widgetCredential(db, principal, options));
     if (route === 'mobile/session' && method === 'GET') return json(mobileSessionData(principal));
     if (route === 'mobile/session' && method === 'DELETE') return json(await revokeMobile(db, principal, principal.mobileSessionId));
@@ -224,6 +226,11 @@ export async function handleRequest(request, options = {}) {
     if (route === 'health' && request.method === 'GET') return json({ ok: true });
     if (['mobile/pairings','mobile/pairings/redeem'].includes(route) && request.method === 'POST') throw new ApiError(410, 'child_accounts_required', 'Children now use their own email accounts and a parent invitation.');
     db = options.db || sharedPool(options.env);
+    if (route === 'live-activity/tokens' && request.method === 'POST') {
+      const result = await reportLiveActivity(request, db, await readJson(request), options);
+      await processLiveActivities(db, { env: options.env, registrationId: result.registrationId });
+      return json(result);
+    }
     if (route === 'widget/devices' && request.method === 'GET') return json(await deviceWidgetSnapshot(request, db, options));
     if (route === 'internet/jobs/process' && request.method === 'GET') {
       const env = options.env || process.env;
@@ -248,7 +255,9 @@ export async function handleRequest(request, options = {}) {
       const env = options.env || process.env;
       requireValue(typeof env.CRON_SECRET === 'string' && env.CRON_SECRET.length >= 32, 503, 'notifications_unconfigured', 'Notification scheduling is not configured.');
       requireValue(digest(request.headers.get('authorization') || '') === digest(`Bearer ${env.CRON_SECRET}`), 401, 'unauthenticated', 'Unauthorized.');
-      return json(await processNotifications(db, { env }));
+      const notifications = await processNotifications(db, { env });
+      const liveActivities = await processLiveActivities(db, { env });
+      return json({ ...notifications, liveActivities });
     }
     if (route.startsWith('auth/')) return await authGateway(request, route.slice(5), db, options);
     if (route === 'mobile/pairings/redeem' && request.method === 'POST') {

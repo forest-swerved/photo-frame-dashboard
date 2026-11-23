@@ -36,6 +36,7 @@ protocol FamilyAPI: AnyObject {
     func cancelAccountOnboarding() async
     func serviceStatus() async throws -> MobileServiceStatus
     func deviceWidgetCredential() async throws -> DeviceWidgetCredential?
+    func registerLiveActivity(installationID: String, enabled: Bool, environment: String) async throws -> LiveActivityRegistration?
     func currentSession() async throws -> MobileSession
     func signOut() async throws
     func household(date: String) async throws -> HouseholdSnapshot
@@ -127,6 +128,11 @@ final class APIClient: FamilyAPI {
     }
     func deviceWidgetCredential() async throws -> DeviceWidgetCredential? {
         let value: DeviceWidgetCredential = try await send("/api/mobile/widget-credential")
+        return value
+    }
+    func registerLiveActivity(installationID: String, enabled: Bool, environment: String) async throws -> LiveActivityRegistration? {
+        struct Request: Encodable { let installationId: String; let enabled: Bool; let environment: String }
+        let value: LiveActivityRegistration = try await send("/api/mobile/live-activity", method: "POST", body: encoded(Request(installationId: installationID, enabled: enabled, environment: environment)))
         return value
     }
     private func send<T: Decodable>(_ path: String, method: String = "GET", body: Data? = nil,
@@ -388,3 +394,5 @@ final class APIClient: FamilyAPI {
 
 // Test clients and alternate transports do not provision lock-screen credentials.
 extension FamilyAPI { func deviceWidgetCredential() async throws -> DeviceWidgetCredential? { nil } }
+
+extension FamilyAPI { func registerLiveActivity(installationID: String, enabled: Bool, environment: String) async throws -> LiveActivityRegistration? { nil } }

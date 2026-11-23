@@ -49,6 +49,7 @@ final class AppModel: ObservableObject {
     private var calendarReadAt: Date?
     private var confirmedOccurrences: [String: ChoreOccurrence] = [:]
     private var credential: MobileCredential?
+    private var liveActivityRefreshedAt: Date?
     private var widgetRefreshedAt: Date?
     private var generation = 0
     private var hasStarted = false
@@ -208,7 +209,19 @@ final class AppModel: ObservableObject {
         guard started == generation, !Task.isCancelled else { return }
         persistCache()
         await refreshDeviceWidget(generation: started)
+        await refreshLiveActivity(generation: started)
         if let token = NotificationController.shared.currentToken { await registerPush(token) }
+    }
+    private func refreshLiveActivity(generation started: Int) async {
+        guard let current = session, !current.isChild else { DeviceLiveActivityController.shared.clear(); return }
+        guard liveActivityRefreshedAt.map({ now().timeIntervalSince($0) >= 60 }) ?? true else { return }
+        do {
+            let id = try keychain.installationID()
+            guard let registration = try await api.registerLiveActivity(installationID: id, enabled: DeviceLiveActivityController.shared.enabled, environment: NotificationController.shared.environment),
+                  started == generation, !Task.isCancelled else { return }
+            try await DeviceLiveActivityController.shared.activate(registration, identity: current.cacheIdentity)
+            if started == generation { liveActivityRefreshedAt = now() }
+        } catch { /* The main app remains usable if ActivityKit registration needs a retry. */ }
     }
     private func refreshDeviceWidget(generation started: Int) async {
         guard session?.isChild == false else { clearDeviceWidget(); return }
@@ -224,6 +237,7 @@ final class AppModel: ObservableObject {
         }
     }
     private func clearDeviceWidget() {
+        liveActivityRefreshedAt = nil; DeviceLiveActivityController.shared.clear()
         DeviceWidgetStore.clear(); widgetRefreshedAt = nil
         WidgetCenter.shared.reloadTimelines(ofKind: DeviceWidgetStore.kind)
     }
