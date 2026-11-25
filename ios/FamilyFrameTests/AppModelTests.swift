@@ -692,6 +692,26 @@ final class AppModelTests: XCTestCase {
         await model.internet.refresh()
         await attachLayout(NavigationStack { InternetSessionDetail(network: model.internet, original: paused) }.environmentObject(model).environment(\.dynamicTypeSize, .accessibility1), name: "Session detail - paused large text")
     }
+    func testChildSavedTimeCappedRewardAndAlarmLayouts() async throws {
+        let (model, api, _, _) = fixture(role: "child", personID: InternetFixtures.child)
+        var snapshot = InternetFixtures.snapshot(credits: (0..<10).map { InternetFixtures.credit(id: "saved-\($0)", earnedDate: "2026-10-0\($0)") })
+        snapshot.savedCapMinutes = 600
+        api.internetData = snapshot
+        await model.start(); await model.internet.refresh()
+        XCTAssertEqual(model.internet.savedTime(for: InternetFixtures.child).savedMinutes, 600)
+        XCTAssertTrue(model.internet.savedTime(for: InternetFixtures.child).isFull)
+        // Earned with the bank full: it expires at the end of its own household day.
+        let extra = RewardCredit(id: "today-only", personId: InternetFixtures.child, earnedDate: "2026-10-17", minutes: 60, status: "available", expiresAt: "2026-10-18T06:00:00Z", policyVersion: 1, useOrLose: true)
+        var earned = InternetFixtures.snapshot(credits: snapshot.credits + [extra], progress: [InternetFixtures.progress()])
+        earned.savedCapMinutes = 600
+        api.internetData = earned; await model.internet.refresh()
+        XCTAssertEqual(model.internet.earnedReward?.id, "today-only", "A reward earned at the cap is announced as soon as it appears.")
+        XCTAssertEqual(model.internet.savedTime(for: InternetFixtures.child).next?.id, "today-only")
+        await attachLayout(ScrollView { VStack(spacing: 16) { RewardHomeCard(network: model.internet); SavedTimeCard(network: model.internet) }.padding() }.background(Brand.background).environmentObject(model), name: "Child saved time - full bank and use-or-lose reward")
+        let alarm = try JSONDecoder().decode(ChoreOccurrence.self, from: Data(#"{"id":"alarm","choreId":"alarm-routine","date":"2026-10-17","originalDate":"2026-10-17","title":"Synthetic alarm task","personId":"synthetic-child","required":false,"instructions":"","subtasks":[],"requiresApproval":false,"status":"pending","version":1,"completion":{"date":"2026-10-17","completed":false,"version":0},"dueTime":"11:30","definitionSource":"routine","routineVersion":1,"alarm":true}"#.utf8))
+        XCTAssertTrue(TaskAlarm.state(of: alarm, today: "2026-10-17", zone: model.zone, now: instant).ringing)
+        await attachLayout(TaskAlarmScreen(occurrence: alarm).environmentObject(model), name: "Task alarm")
+    }
     private func attachLayout<Content: View>(_ content: Content, name: String) async {
         guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else { return XCTFail("Simulator window scene is required") }
         let previous = scene.windows.first(where: \.isKeyWindow)
@@ -702,6 +722,8 @@ final class AppModelTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(150))
         let image = UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true) }
         let attachment = XCTAttachment(image: image); attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+        // Optional: TEST_RUNNER_FAMILY_UI_SHOTS=<directory> also saves each layout as a PNG for a visual check.
+        if let folder = ProcessInfo.processInfo.environment["FAMILY_UI_SHOTS"] { try? image.pngData()?.write(to: URL(fileURLWithPath: folder).appendingPathComponent(name.replacingOccurrences(of: " ", with: "-") + ".png")) }
         XCTAssertEqual(image.size.width, 402)
     }
     func testRevokedSessionClearsCachedDataRatherThanCallingItOffline() async {

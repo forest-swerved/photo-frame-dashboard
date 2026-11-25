@@ -127,6 +127,14 @@ administrator can also choose **Revoke** beside a frame in Setup. Pair it again 
 if access expires, is revoked, or its cookies are cleared. Power-cycle testing is needed to
 confirm that this frame retains its pairing and reopens the dashboard after boot.
 
+## Saved time, child PINs and alarms
+
+Each child's card on the frame ends with their time bank: how much Internet time is saved, how full the ten-hour bank is, and a **Use time** button. A parent sets each child's four-digit PIN in **Setup → Family profiles → Edit → Set frame PIN** (or in the iOS app under Family frame access). The child taps **Use time**, types their PIN, picks a device and starts. The frame locks again by itself. A child without a PIN uses a code from their own phone instead.
+
+Saved time stops at ten hours. A reward earned with the bank full is **use it or lose it**: it must be used that day and is gone at midnight. Rewards only build up to ten hours if **Days to save a reward** for that child is at least ten.
+
+To make a task an alarm, give it a **Due by** time, one child, and tick **Sound an alarm until it is done**. At that time the frame shows a full-screen alarm and rings, ignoring the frame's mute, volume and quiet hours, until the child taps **Done** (and enters their PIN when one is set) or **Snooze 10 minutes**. A parent can also stop it by excusing the task for the day. It ends at midnight if nobody confirms it.
+
 ## What has and has not been proved
 
 The implementation has passed its production build and regression checks for sign-in state,
