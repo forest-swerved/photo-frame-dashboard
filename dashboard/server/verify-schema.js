@@ -52,6 +52,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     await verifyAccountDeletionBoundary(pool);
     console.log(`Verified ${count} server-only household tables and the private three-column auth session boundary.`);
   })
-    .catch(() => { console.error('Household schema permission verification failed.'); process.exitCode = 1; })
+    .catch(error => { console.error(`Household schema permission verification failed${error?.name === 'AssertionError' ? `: ${error.message}` : typeof error?.code === 'string' && /^[0-9A-Z]{5}$/.test(error.code) ? ` (${error.code}: ${error.message})` : ''}.`); process.exitCode = 1; })
     .finally(() => pool.end());
 }

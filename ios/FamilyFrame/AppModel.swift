@@ -52,6 +52,7 @@ final class AppModel: ObservableObject {
     private var liveActivityRefreshedAt: Date?
     private var widgetRefreshedAt: Date?
     private var generation = 0
+    private var widgetCleared = false
     private var hasStarted = false
     private var registeredPushKey: String?
     private var isRegisteringPush = false
@@ -213,7 +214,7 @@ final class AppModel: ObservableObject {
         if let token = NotificationController.shared.currentToken { await registerPush(token) }
     }
     private func refreshLiveActivity(generation started: Int) async {
-        guard let current = session, !current.isChild else { DeviceLiveActivityController.shared.clear(); return }
+        guard let current = session, !current.isChild else { return } // A child's widget state is cleared once, in refreshDeviceWidget.
         guard liveActivityRefreshedAt.map({ now().timeIntervalSince($0) >= 60 }) ?? true else { return }
         do {
             let id = try keychain.installationID()
@@ -224,7 +225,9 @@ final class AppModel: ObservableObject {
         } catch { /* The main app remains usable if ActivityKit registration needs a retry. */ }
     }
     private func refreshDeviceWidget(generation started: Int) async {
-        guard session?.isChild == false else { clearDeviceWidget(); return }
+        // Clear once per sign-in rather than on every 25-second refresh.
+        guard session?.isChild == false else { if !widgetCleared { widgetCleared = true; clearDeviceWidget() }; return }
+        widgetCleared = false
         guard widgetRefreshedAt.map({ now().timeIntervalSince($0) >= 60 }) ?? true else { return }
         do {
             guard let value = try await api.deviceWidgetCredential(), started == generation, !Task.isCancelled else { return }
@@ -275,7 +278,7 @@ final class AppModel: ObservableObject {
             let result = try await api.notifications()
             guard started == generation, !Task.isCancelled else { return }
             // A response started before mark-as-read must not restore the badge.
-            let read = Dictionary(uniqueKeysWithValues: notifications.compactMap { item in item.readAt.map { (item.id, $0) } })
+            let read = Dictionary(notifications.compactMap { item in item.readAt.map { (item.id, $0) } }, uniquingKeysWith: { first, _ in first })
             notifications = result.map { item in var current = item; current.readAt = current.readAt ?? read[item.id]; return current }
             activityMessage = nil; hasLoadedActivity = true
         } catch {
@@ -314,7 +317,7 @@ final class AppModel: ObservableObject {
             merged.chores = (merged.occurrences ?? []).filter { !$0.isSkipped }.map(\.legacy)
         }
         guard let existing = snapshot, existing.date == incoming.date else { return merged }
-        let completions = Dictionary(uniqueKeysWithValues: existing.chores.map { ($0.id, $0.completion) })
+        let completions = Dictionary(existing.chores.map { ($0.id, $0.completion) }, uniquingKeysWith: { first, second in second.version > first.version ? second : first })
         for index in merged.chores.indices {
             if let completion = completions[merged.chores[index].id], completion.version > merged.chores[index].completion.version {
                 merged.chores[index].completion = completion
@@ -541,7 +544,7 @@ final class AppModel: ObservableObject {
             // are accepted exclusively from this account's authenticated inbox.
             let inbox = try await api.notifications()
             guard started == generation else { return }
-            let read = Dictionary(uniqueKeysWithValues: notifications.compactMap { item in item.readAt.map { (item.id, $0) } })
+            let read = Dictionary(notifications.compactMap { item in item.readAt.map { (item.id, $0) } }, uniquingKeysWith: { first, _ in first })
             notifications = inbox.map { item in var current = item; current.readAt = current.readAt ?? read[item.id]; return current }
             hasLoadedActivity = true; activityMessage = nil; persistCache()
             selectedTab = 4

@@ -424,7 +424,7 @@ async function createInternetSession(client, principal, body, { reward = false, 
   if (reward) {
     requireValue(policy.enabled, 409, 'rewards_paused', 'A parent has paused Internet rewards.');
     const from = new Date(Temporal.PlainDate.from(householdDate(principal.household.timezone, now)).toZonedDateTime({ timeZone: principal.household.timezone, plainTime: '00:00' }).epochMilliseconds);
-    const used = await one(client, "SELECT coalesce(sum(allocated_seconds),0)::int AS seconds FROM family_internet_sessions WHERE household_id=$1 AND person_id=$2 AND requested_at>=$3 AND state<>'failed'", [householdId, personId, from]);
+    const used = await one(client, "SELECT coalesce(sum(allocated_seconds),0)::int AS seconds FROM family_internet_sessions WHERE household_id=$1 AND person_id=$2 AND requested_at>=$3 AND state<>'failed' AND (started_at IS NOT NULL OR state<>'ended')", [householdId, personId, from]); // A session that ended without ever starting used no time.
     requireValue(used.seconds + seconds <= policy.dailyLimitMinutes * 60, 409, 'daily_limit', 'This reward exceeds today’s limit. Ask a parent for an adjustment.');
   }
   if (convertToTimed) {
@@ -544,7 +544,8 @@ export async function resolveRewardReview(db, principal, id, body, { now = new D
 export async function requestDeviceAccess(db, principal, body, { now = new Date() } = {}) {
   requireValue(principal.role === 'child' && ['user','mobile'].includes(principal.authType), 403, 'child_required', 'Use your own child account to request time.');
   uuidField(body.deviceId, 'Device');
-  requireValue(Number.isInteger(body.minutes) && body.minutes >= 1 && body.minutes <= 1439, 422, 'invalid_duration', 'Choose 1–1439 minutes.');
+  // Approval starts a timed session, which reserves five extra get-ready minutes within the day.
+  requireValue(Number.isInteger(body.minutes) && body.minutes >= 1 && body.minutes <= 1434, 422, 'invalid_duration', 'Choose 1–1434 minutes.');
   const reason = body.reason == null || body.reason === '' ? null : textField(body.reason, 'Reason', 500);
   return idempotent(db, principal, body, 'request-access', async (client, householdId) => {
     const device = await one(client, 'SELECT * FROM family_managed_devices WHERE household_id=$1 AND id=$2 AND removed_at IS NULL', [householdId, body.deviceId]);

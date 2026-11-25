@@ -11,7 +11,10 @@ export function parentKeypad({ temporary = false, verify, child = null }) {
   return new Promise(resolve => {
     let digits = '', busy = false, finished = false;
     const length = () => temporary ? 6 : 4;
-    const finish = result => { if (finished) return; finished = true; digits = ''; modal.close(); modal.remove(); resolve(result); };
+    // An abandoned keypad would otherwise pin the frame on this screen forever.
+    let idle = null;
+    const touch = () => { clearTimeout(idle); idle = setTimeout(() => { if (!busy) finish(null); else touch(); }, 120000); };
+    const finish = result => { if (finished) return; finished = true; clearTimeout(idle); digits = ''; modal.close(); modal.remove(); resolve(result); };
     function draw() {
       const copy = temporary ? { eyebrow: child ? h(child.name) : 'PARENT ACCESS', title: 'Code from your phone', help: 'Enter the six-digit code from the Family Frame app.', other: child ? `Use ${h(child.name)}’s PIN` : 'Use parent PIN' }
         : child ? { eyebrow: h(child.name), title: 'Enter your PIN', help: 'Your four digits unlock your time for ten minutes.', other: 'Use a code from my phone' }
@@ -31,6 +34,7 @@ export function parentKeypad({ temporary = false, verify, child = null }) {
       modal.querySelectorAll('[data-pin-key],.pin-switch').forEach(button=>button.disabled=busy);
     }
     function key(value) {
+      touch();
       if(busy)return;
       if(value==='back')digits=digits.slice(0,-1);
       else if(value==='clear')digits='';
@@ -58,6 +62,6 @@ export function parentKeypad({ temporary = false, verify, child = null }) {
         if(event.key==='Enter')submit();else key(event.key==='Backspace'?'back':event.key==='Delete'?'clear':event.key);
       }
     });
-    draw();modal.showModal();modal.querySelector('[data-pin-key="1"]').focus();
+    draw();touch();modal.showModal();modal.querySelector('[data-pin-key="1"]').focus();
   });
 }

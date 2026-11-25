@@ -217,6 +217,14 @@ export async function changePerson(db, principal, id, body, remove = false) {
     if (!row) throw notFound();
     requireValue(row.version === body.expectedVersion, 409, 'version_conflict', 'This person changed. Refresh and try again.', { current: personDto(row) });
     if (remove) {
+      // Reward, session and device records keep pointing at the profile. Refuse clearly instead of failing halfway.
+      const history = await one(client, `SELECT (to_regclass('family_reward_credits') IS NOT NULL) AS tracked`);
+      if (history.tracked) requireValue(!await one(client, `SELECT 1 FROM family_reward_credits WHERE household_id=$1 AND person_id=$2
+        UNION ALL SELECT 1 FROM family_internet_sessions WHERE household_id=$1 AND person_id=$2
+        UNION ALL SELECT 1 FROM family_reward_policies WHERE household_id=$1 AND person_id=$2
+        UNION ALL SELECT 1 FROM family_frame_authorizations WHERE household_id=$1 AND person_id=$2
+        UNION ALL SELECT 1 FROM family_managed_devices WHERE household_id=$1 AND $2=ANY(person_ids) AND removed_at IS NULL LIMIT 1`, [principal.household.id, id]),
+      409, 'profile_in_use', 'This profile has earned time, device sessions or assigned devices, so it cannot be deleted. Rename it or reassign its tasks instead.');
       await client.query("UPDATE family_mobile_sessions SET revoked_at=coalesce(revoked_at,now()) WHERE household_id=$1 AND person_id=$2", [principal.household.id, id]);
       await client.query("UPDATE family_members SET revoked_at=coalesce(revoked_at,now()),person_id=NULL WHERE household_id=$1 AND person_id=$2 AND role='child'", [principal.household.id, id]);
       await client.query('UPDATE family_chores SET person_id=NULL,version=version+1 WHERE person_id=$1 AND household_id=$2', [id, principal.household.id]);

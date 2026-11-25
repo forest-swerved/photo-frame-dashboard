@@ -1,6 +1,7 @@
 // Domain reads run independently: slow calendar/household requests must not hold
 // up network confirmation. Tokens and results are isolated to the current login.
-export function createLiveUpdates({ read, loaders, scope, visible, onStatus = () => {}, clock = () => performance.now() }) {
+// `interval` lets the caller slow the heartbeat while nobody is looking (for example in ambient mode).
+export function createLiveUpdates({ read, loaders, scope, visible, onStatus = () => {}, clock = () => performance.now(), interval = () => 2000 }) {
   let identity, busy=false, last=-Infinity, retryMs=2000, domains={};
   function reset() { identity=scope(); domains={};last=-Infinity;retryMs=2000; }
   function enqueue(name, token, expected) {
@@ -18,7 +19,7 @@ export function createLiveUpdates({ read, loaders, scope, visible, onStatus = ()
   async function tick(force=false) {
     if(!visible()||busy) return;
     if(identity!==scope()) reset();
-    if(!force&&clock()-last<retryMs) return;
+    if(!force&&clock()-last<Math.max(retryMs,interval())) return;
     const expected=identity;busy=true;last=clock();
     try {
       const tokens=await read();
