@@ -45,7 +45,7 @@ export async function snoozeTaskAlarm(db, principal, id, { now = new Date() } = 
 export async function requireAlarmConfirmer(client, principal, row) {
   if (!row.alarm || principal.authType !== 'frame' || principal.verifiedFrameGrant || !row.person_id) return;
   const person = await one(client, 'SELECT name,frame_pin_hash IS NOT NULL AS pin FROM family_people WHERE household_id=$1 AND id=$2', [row.household_id, row.person_id]);
-  requireValue(!person?.pin, 403, 'child_pin_required', `${person?.name || 'This child'} confirms this alarm with their own PIN.`, { personId: row.person_id });
+  requireValue(!person?.pin, 409, 'child_pin_required', `${person?.name || 'This child'} confirms this alarm with their own PIN.`, { personId: row.person_id });
 }
 
 // Called by the minute notification scan. One short-lived event per minute

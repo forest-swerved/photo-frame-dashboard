@@ -520,3 +520,19 @@ dialog > form { display:flex; flex-direction:column; max-height:calc(100vh - 32p
 .frame-sound-settings .form-row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
 .frame-sound-settings input[type="range"] { width:100%; min-height:44px; accent-color:var(--primary); }
 .frame-sound-settings output { font-variant-numeric:tabular-nums; }
+
+/* A child's time bank on the frame: the saved balance is the biggest thing in the
+   strip, with one obvious button to spend it. */
+.time-bank { gap:14px; }
+.time-bank-balance { min-width:0; flex:1; display:grid; grid-template-columns:auto 1fr; align-items:baseline; column-gap:8px; row-gap:4px; }
+.time-bank-balance strong { font-family:var(--font-timer, inherit); font-size:30px; line-height:1; font-weight:700; letter-spacing:-.5px; white-space:nowrap; }
+.time-bank-balance > span { font-size:14px; color:var(--muted); }
+.time-bank-meter { grid-column:1 / -1; height:8px; border-radius:4px; background:var(--line); overflow:hidden; }
+.time-bank-meter i { display:block; height:100%; border-radius:4px; background:var(--primary); }
+.time-bank.is-full .time-bank-meter i { background:#d97706; }
+.time-bank-balance .time-bank-today { grid-column:1 / -1; font-weight:650; color:#9a4a00; }
+.time-bank-use { flex-shrink:0; min-height:56px; padding:0 20px; font-size:18px; }
+.time-bank-hint { flex:0 1 46%; font-size:14px; line-height:1.35; color:var(--muted); text-align:right; }
+.reward-celebration.is-use-or-lose > strong { color:#9a4a00; }
+.reward-celebration.is-use-or-lose p { padding:12px 14px; border-left:4px solid #d97706; background:#fff4e0; }
+@media (min-width:1200px) { .frame-display .time-bank-balance strong { font-size:36px; } .frame-display .time-bank-use { min-height:64px; font-size:20px; } }

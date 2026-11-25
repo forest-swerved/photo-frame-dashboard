@@ -24,9 +24,9 @@ export class ApiError extends Error {
 export function setFrameMode(value) { frameMode = value === true; if (!frameMode) frameAccess = null; }
 
 export async function request(path, options = {}) {
-  const { method = 'GET', body, authenticated = true, timeoutMs = 25000 } = options;
+  const { method = 'GET', body, authenticated = true, timeoutMs = 25000, grant = true } = options;
   const headers = { Accept: 'application/json' };
-  if (frameMode && frameAccessStatus()) headers['X-Family-Authorization'] = frameAccess.token;
+  if (grant && frameMode && frameAccessStatus()) headers['X-Family-Authorization'] = frameAccess.token;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Math.min(65000, Math.max(1000, timeoutMs)));

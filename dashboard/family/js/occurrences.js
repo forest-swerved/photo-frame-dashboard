@@ -11,7 +11,9 @@ export function scheduledItems(snapshot, timezone, now = new Date()) {
 
 export function mergeOccurrence(snapshot, incoming) {
   if (!snapshot || !incoming || incoming.date !== snapshot.date || !Number.isInteger(incoming.version)) return snapshot;
-  return { ...snapshot, occurrences: (snapshot.occurrences || []).map(item => item.id === incoming.id && item.version <= incoming.version ? incoming : item) };
+  return { ...snapshot, occurrences: (snapshot.occurrences || []).map(item => item.id !== incoming.id || item.version > incoming.version ? item
+    // An alarm snooze does not change the version, so the later snooze wins on a tie.
+    : item.version === incoming.version && (item.alarmSnoozedUntil || '') > (incoming.alarmSnoozedUntil || '') ? { ...incoming, alarmSnoozedUntil: item.alarmSnoozedUntil } : incoming) };
 }
 
 export function routinePayload(form, routine = null) {
@@ -33,7 +35,7 @@ export function routinePayload(form, routine = null) {
   return { title: String(form.get('title')).trim(), personId: form.get('personId') || null,
     scheduleType, schoolDayFilter, taskSection, scheduledDate: scheduleType === 'one_off' ? form.get('scheduledDate') : null,
     weekdays: weekdays.length ? weekdays : [0, 1, 2, 3, 4, 5, 6], required: form.has('required'), requiresApproval: form.has('requiresApproval'),
-    instructions: String(form.get('instructions') || '').trim(), subtasks, dueTime: form.get('dueTime') || null,
+    instructions: String(form.get('instructions') || '').trim(), subtasks, dueTime: form.get('dueTime') || null, alarm: form.has('alarm'),
     reminderMinutes: Number(form.get('reminderMinutes')), ...(routine ? { expectedVersion: routine.version } : {}) };
 }
 
