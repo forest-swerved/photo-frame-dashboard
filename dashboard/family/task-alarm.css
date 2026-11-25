@@ -1,0 +1,17 @@
+.task-alarm { box-sizing:border-box; width:min(760px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); padding:40px 44px; border:0; border-radius:28px; color:#fff; background:#071725; text-align:center; box-shadow:0 0 0 8px #ff3b30, 0 40px 120px rgba(0,0,0,.66); overflow:auto; animation:task-alarm-pulse 1.2s ease-in-out infinite; }
+.task-alarm::backdrop { background:rgba(7,23,37,.9); }
+.task-alarm-bell { font-size:72px; line-height:1; animation:task-alarm-shake .6s ease-in-out infinite; }
+.task-alarm .eyebrow { margin:16px 0 0; color:#ffd166; font-size:20px; letter-spacing:.08em; }
+.task-alarm h2 { margin:8px 0 0; font-size:64px; line-height:1.05; color:#fff; overflow-wrap:anywhere; }
+.task-alarm-help { margin:16px auto 0; max-width:30em; font-size:20px; line-height:1.4; color:#c9d4dc; }
+.task-alarm-actions { display:grid; gap:16px; margin-top:32px; }
+.task-alarm-actions button { min-height:88px; border:0; border-radius:18px; font:inherit; font-size:32px; font-weight:700; cursor:pointer; touch-action:manipulation; }
+.task-alarm-actions button:disabled { opacity:.55; }
+.task-alarm-done { color:#04210a; background:#39ff14; }
+.task-alarm-snooze { min-height:68px !important; font-size:24px !important; color:#fff; background:#27394a; }
+.task-alarm-actions button:focus-visible { outline:4px solid #fff; outline-offset:3px; }
+@keyframes task-alarm-pulse { 50% { box-shadow:0 0 0 16px #ff3b30, 0 40px 120px rgba(0,0,0,.66); } }
+@keyframes task-alarm-shake { 25% { transform:rotate(-12deg); } 75% { transform:rotate(12deg); } }
+@media (prefers-reduced-motion:reduce) { .task-alarm, .task-alarm-bell { animation:none; } }
+@media (max-width:600px) { .task-alarm { padding:28px 20px; } .task-alarm h2 { font-size:40px; } .task-alarm-actions button { font-size:26px; min-height:76px; } }
+.task-alarm-note { margin:20px 0 0; padding:12px 16px; border-radius:12px; font-size:20px; color:#071725; background:#ffd166; }

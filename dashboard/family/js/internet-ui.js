@@ -1,3 +1,4 @@
+import { durationLabel, savedTime, earnedMessage } from './saved-time.js';
 import { request, frameAccessStatus } from './api.js';
 import { deviceArtworkImage } from './device-art.js';
 import { escapeHtml as h, mutationId, dateFormatter, dateInZone, addDays, dateLabel } from './model.js';
@@ -177,14 +178,18 @@ export function createInternetUI(ctx) {
     return `<div class="session-clock session-countdown" data-session-clock="${h(session.id)}" data-phase="${value.phase}"><svg class="preparation-ring" viewBox="0 0 64 64" aria-hidden="true"><circle class="ring-track" cx="32" cy="32" r="28"/><circle class="ring-progress" cx="32" cy="32" r="28" pathLength="1" style="stroke-dashoffset:${1-value.progress}"/></svg><div><small data-session-phase="${h(session.id)}">${h(value.label)}</small><strong class="session-timer" data-session-remaining="${h(session.id)}">${h(remainingLabel(value.remaining))}</strong><small class="session-rollover-message">Let’s go! Your time starts now.</small></div></div>`;
   }
 
+  // The frame's per-child "time bank": how much is saved, how full the bank is,
+  // and one button to spend it. Shown to everyone; spending asks for the child's PIN.
   function personSummary(personId) {
     const session = state.data?.sessions.find(item => liveSession(item) && item.personId === personId);
-    const credits = state.data?.credits.filter(item=>item.personId===personId && item.status==='available') || [];
-    const saved = credits.reduce((sum,item)=>sum+item.minutes,0);
-    const status = state.error ? 'Last known status · refresh needed' : !state.data ? 'Checking device time…' : 'No device time running';
+    const time = savedTime(state.data, personId), policy = state.data?.policies.find(item => item.personId === personId);
     const device = session && state.data.devices.find(item=>item.id===session.deviceId);
     const confirmed = session?.state==='active' && session.observedState==='allowed' && !!session.verifiedAt && !session.lastError && !state.error;
-    return `<section class="frame-device-time ${session ? 'has-session' : ''}" data-key="frame-device-${h(personId)}" aria-label="${h(personName(personId))}’s device time">${session ? `${device ? deviceArtworkImage(device) : ''}<div class="frame-device-name"><strong>${h(deviceName(session.deviceId))}</strong><span>${h(state.error ? 'Last known status · refresh needed' : states[session.state] || 'Checking session')}</span>${confirmed ? '<span class="access-confirmed">Access on</span>' : ''}${saved ? `<small>${saved} minutes saved</small>` : ''}</div>${clock(session)}` : `<div class="frame-device-name"><strong>Device time</strong><span>${h(status)}</span>${saved ? `<small>${saved} minutes saved</small>` : ''}</div><a href="#devices" class="text-button">${saved ? 'Use saved time' : 'View devices'} ↗</a>`}</section>`;
+    const meter = time.capMinutes ? `<div class="time-bank-meter" role="progressbar" aria-label="Saved time" aria-valuemin="0" aria-valuemax="${time.capMinutes}" aria-valuenow="${Math.min(time.savedMinutes, time.capMinutes)}"><i style="width:${Math.round(time.fraction * 100)}%"></i></div>` : '';
+    const balance = `<div class="time-bank-balance"><strong>${h(durationLabel(time.savedMinutes))}</strong><span>saved${time.capMinutes ? time.atCap ? ` · full (${h(durationLabel(time.capMinutes))} max)` : ` of ${h(durationLabel(time.capMinutes))}` : ''}</span>${meter}${time.todayOnlyMinutes ? `<span class="time-bank-today">+ ${h(durationLabel(time.todayOnlyMinutes))} to use today or lose</span>` : ''}</div>`;
+    if (session) return `<section class="frame-device-time has-session" data-key="frame-device-${h(personId)}" aria-label="${h(personName(personId))}’s device time">${device ? deviceArtworkImage(device) : ''}<div class="frame-device-name"><strong>${h(deviceName(session.deviceId))}</strong><span>${h(state.error ? 'Last known status · refresh needed' : states[session.state] || 'Checking session')}</span>${confirmed ? '<span class="access-confirmed">Access on</span>' : ''}${time.totalMinutes ? `<small>${h(durationLabel(time.totalMinutes))} more saved</small>` : ''}</div>${clock(session)}</section>`;
+    const hint = state.error ? 'Last known · refresh needed' : !state.data ? 'Checking saved time…' : time.totalMinutes ? '' : policy?.enabled === false ? 'Rewards are paused' : `Finish today’s tasks to earn ${durationLabel(policy?.rewardMinutes ?? 60)}`;
+    return `<section class="frame-device-time time-bank ${time.atCap ? 'is-full' : ''}" data-key="frame-device-${h(personId)}" aria-label="${h(personName(personId))}’s saved time">${balance}${time.next ? ctx.button('Use time', 'reward-use-saved', 'button time-bank-use', `data-person-id="${h(personId)}"`) : `<span class="time-bank-hint">${h(hint)}</span>`}</section>`;
   }
 
   function sessionCard(session, compact = false) {
@@ -211,7 +216,7 @@ export function createInternetUI(ctx) {
     if (!sessions.length && !credits.length) return '';
     if (compact) {
       const session = sessions[0];
-      return `<section class="home-internet-strip" data-key="internet-summary" aria-label="Family Internet time">${session ? `<div class="home-session"><div><strong>${h(deviceName(session.deviceId))} · Internet time</strong><p>${h(states[session.state] || 'Checking session')} · ${state.error ? 'Last known status' : session.observedState === 'allowed' ? 'Internet last confirmed allowed' : session.observedState === 'blocked' ? 'Internet last confirmed blocked' : 'Access unconfirmed'}${sessions.length>1 ? ` · ${sessions.length} current sessions` : ''}</p></div>${clock(session)}</div>` : `<div class="home-session"><div><strong>${credits.reduce((sum,c)=>sum+c.minutes,0)} minutes saved</strong><p>Earned rewards · choose a device when you are ready</p></div></div>`}${state.data.role==='child' && credits.length && !session ? rewardAction(credits[0],true) : '<a class="text-button" href="#devices">View devices ↗</a>'}</section>`;
+      return `<section class="home-internet-strip" data-key="internet-summary" aria-label="Family Internet time">${session ? `<div class="home-session"><div><strong>${h(deviceName(session.deviceId))} · Internet time</strong><p>${h(states[session.state] || 'Checking session')} · ${state.error ? 'Last known status' : session.observedState === 'allowed' ? 'Internet last confirmed allowed' : session.observedState === 'blocked' ? 'Internet last confirmed blocked' : 'Access unconfirmed'}${sessions.length>1 ? ` · ${sessions.length} current sessions` : ''}</p></div>${clock(session)}</div>` : `<div class="home-session"><div><strong>${h(durationLabel(credits.reduce((sum,c)=>sum+c.minutes,0)))} saved</strong><p>${credits.some(c=>c.useOrLose) ? 'Includes time to use today or lose' : 'Earned time · choose a device when you are ready'}</p></div></div>`}${state.data.role==='child' && credits.length && !session ? rewardAction([...credits].sort((a,b)=>Date.parse(a.expiresAt)-Date.parse(b.expiresAt))[0],true) : '<a class="text-button" href="#devices">View devices ↗</a>'}</section>`;
     }
     return `<section class="internet-summary" data-key="internet-summary"><div class="section-heading"><h2>Family Internet time</h2><a class="text-button" href="#devices">View devices ↗</a></div><div class="session-grid">${sessions.map(session=>sessionCard(session,true)).join('')}</div>${credits.length ? `<div class="available-rewards">${credits.map(credit=>`<div data-key="summary-credit-${h(credit.id)}"><strong>${h(personName(credit.personId))}: ${credit.minutes} minutes saved</strong>${rewardAction(credit,true)}</div>`).join('')}</div>` : ''}</section>`;
   }
@@ -255,12 +260,22 @@ export function createInternetUI(ctx) {
 
   function celebrate(credit) {
     ctx.sound?.('reward', {key:`reward:${credit.id}`});
-    ctx.openDialog(`Great job, ${personName(credit.personId)}!`, `<div class="reward-celebration"><strong>${credit.minutes} minutes earned</strong><p>Your approved tasks are complete. Use this reward now, or save it until ${h(stamp(credit.expiresAt))}.</p><div class="dialog-actions">${ctx.button('Save for later', 'reward-later', 'button button-secondary')}${ctx.button('Use now', 'reward-use', 'button', `data-id="${h(credit.id)}"`)}</div></div>`, async () => {});
+    const time = savedTime(state.data, credit.personId);
+    ctx.openDialog(`Great job, ${personName(credit.personId)}!`, `<div class="reward-celebration ${credit.useOrLose ? 'is-use-or-lose' : ''}"><strong>${h(durationLabel(credit.minutes))} earned</strong><p>${h(earnedMessage(credit, time))}</p><div class="dialog-actions">${ctx.button(credit.useOrLose ? 'Not now' : 'Save for later', 'reward-later', 'button button-secondary', `data-id="${h(credit.id)}"`)}${ctx.button('Use now', 'reward-use', 'button', `data-id="${h(credit.id)}"`)}</div></div>`, async () => {});
     state.rewardDialog = { id: credit.id, form: ctx.dialog.querySelector('form') };
+  }
+  // On a shared frame the child proves who they are with their own PIN (or a
+  // code from their phone when no PIN is set). Say why first if nothing can start.
+  function unlockToRedeem(credit) {
+    const unavailable = rewardAvailability(credit);
+    if (unavailable) { if (ctx.dialog.open) ctx.dialog.close(); ctx.toast(unavailable); return; }
+    state.pendingCreditId = credit.id; if (ctx.dialog.open) ctx.dialog.close();
+    const child = ctx.person(credit.personId);
+    ctx.unlock(child?.pinConfigured ? { child } : { temporary: true });
   }
   function picker(credit) {
     if (!canRedeem(state.data, credit, ctx.session(), frameAccessStatus())) {
-      if (ctx.frame()) { state.pendingCreditId = credit.id; if (ctx.dialog.open) ctx.dialog.close(); ctx.unlock(); }
+      if (ctx.frame()) unlockToRedeem(credit);
       else ctx.toast('Use the child’s own account to spend their reward. Parents can grant separate time.');
       return;
     }
@@ -268,10 +283,12 @@ export function createInternetUI(ctx) {
     const operationId = mutationId();
     ctx.openDialog(`Choose one device · ${credit.minutes} minutes`, `<p class="supporting">Your ${credit.minutes} minutes stay reserved while access is scheduled. Internet turns on with a free five-minute get-ready countdown, then your full usage time begins. Time continues while the device is asleep.</p>${!ready() ? '<p class="status-note status-warning">Internet controls are not ready. Your reward stays saved until the parent completes setup.</p>' : ''}<div class="device-picker">${devices.map(device => {
       const busy = state.data.sessions.some(session => liveSession(session) && (session.deviceId === device.id || session.personId === credit.personId));
-      return `<label class="device-option"><input type="radio" name="deviceId" value="${h(device.id)}" required ${!ready() || device.controlState !== 'ready' || busy ? 'disabled' : ''}>${deviceArtworkImage(device)}<span><strong>${h(device.name)}</strong><small>${busy ? 'Session already reserved' : device.controlState !== 'ready' ? 'Awaiting enrollment' : device.online === false ? 'Offline · access time still elapses' : 'Available'}</small></span></label>`;
-    }).join('') || '<p>No earned-time devices are currently blocked and available. Your reward stays saved; try again when a device is free.</p>'}</div><div class="dialog-actions">${ctx.button('Save for later', 'reward-later', 'text-button')}<button class="button" type="submit" ${!ready() || !devices.some(device => device.controlState === 'ready' && !state.data.sessions.some(session => liveSession(session) && (session.deviceId === device.id || session.personId === credit.personId))) ? 'disabled' : ''}>Start reward</button></div>`, async (form, element) => {
+      return `<label class="device-option"><input type="radio" name="deviceId" value="${h(device.id)}" required ${!ready() || device.controlState !== 'ready' || busy ? 'disabled' : devices.length === 1 ? 'checked' : ''}>${deviceArtworkImage(device)}<span><strong>${h(device.name)}</strong><small>${busy ? 'Session already reserved' : device.controlState !== 'ready' ? 'Awaiting enrollment' : device.online === false ? 'Offline · access time still elapses' : 'Available'}</small></span></label>`;
+    }).join('') || '<p>No earned-time devices are currently blocked and available. Your reward stays saved; try again when a device is free.</p>'}</div><div class="dialog-actions">${ctx.button(credit.useOrLose ? 'Not now' : 'Save for later', 'reward-later', 'text-button', `data-id="${h(credit.id)}"`)}<button class="button" type="submit" ${!ready() || !devices.some(device => device.controlState === 'ready' && !state.data.sessions.some(session => liveSession(session) && (session.deviceId === device.id || session.personId === credit.personId))) ? 'disabled' : ''}>Start reward</button></div>`, async (form, element) => {
       const result = await write('/api/internet/redeem', { method: 'POST', body: { creditId: credit.id, deviceId: form.get('deviceId'), mutationId: operationId } }, element);
-      if (!result) return; ctx.dialog.close(); ctx.toast(`${credit.minutes} minutes redeemed. Your free get-ready countdown starts when Internet access is confirmed.`); location.hash = ctx.frame() ? 'today' : 'devices'; await load();
+      if (!result) return; ctx.dialog.close(); ctx.toast(`${durationLabel(credit.minutes)} started. Your free get-ready countdown begins when Internet access is confirmed.`); location.hash = ctx.frame() ? 'today' : 'devices';
+      // The PIN was for this one choice: lock again so the frame shows the whole family.
+      if (ctx.frame()) await ctx.lock(); else await load();
     });
   }
   function editDevice(device = null) {
@@ -345,7 +362,14 @@ export function createInternetUI(ctx) {
   }
   async function action(name, element) {
     if (name === 'internet-refresh') { await load(); return true; }
-    if (name === 'reward-later') { ctx.dialog.close(); ctx.toast('Reward saved. Find it in Devices when you’re ready.'); return true; }
+    if (name === 'reward-later') {
+      const credit = state.data?.credits.find(item => item.id === element.dataset.id), time = credit && savedTime(state.data, credit.personId);
+      ctx.dialog.close();
+      if (ctx.frame() && frameAccessStatus()?.scope === 'child') await ctx.lock();
+      ctx.toast(credit?.useOrLose ? `Remember: ${durationLabel(credit.minutes)} is gone at midnight if it is not used today.` : time ? `Saved! ${personName(credit.personId)} has ${durationLabel(time.savedMinutes)} saved.` : 'Saved for later.');
+      return true;
+    }
+    if (name === 'reward-use-saved') { const credit = savedTime(state.data, element.dataset.personId).next; if (credit) picker(credit); return true; }
     if (name === 'reward-use') { const credit = state.data?.credits.find(item => item.id === element.dataset.id); if (credit) picker(credit); return true; }
     if (name === 'device-add') { if (manager()) editDevice(); return true; }
     if (name === 'device-edit') { const device = state.data?.devices.find(item => item.id === element.dataset.id); if (manager() && device?.controlState === 'unenrolled') editDevice(device); return true; }

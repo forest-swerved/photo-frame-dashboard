@@ -17,3 +17,5 @@
 .pin-switch { display:block; margin:12px auto 0; min-height:40px; }
 .pin-error { color:#a42b37; font-size:15px; margin:8px 0; }
 @media(max-height:650px) { .parent-keypad { padding:18px; } .pin-keys button { height:48px; } .pin-dots { padding:6px; } }
+/* Wall frame: larger keys for small hands and a wider pad. */
+@media (min-width:1000px) and (min-height:760px) { .parent-keypad { width:500px; } .pin-keys button { height:76px; font-size:32px; } .pin-dots span { width:20px; height:20px; } }

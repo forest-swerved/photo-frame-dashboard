@@ -8,7 +8,8 @@ import { ensureDailyOccurrences, occurrenceDto, routineDetails, setRoutineComple
 import { schoolDayForDate } from './school-calendar.js';
 
 const notFound = () => new ApiError(404, 'not_found', 'That item does not exist in this household.');
-export const personDto = row => ({ id: row.id, name: row.name, color: row.color, version: row.version });
+// pinConfigured tells the frame to offer this child's own keypad; the PIN itself never leaves the server.
+export const personDto = row => ({ id: row.id, name: row.name, color: row.color, version: row.version, pinConfigured: Boolean(row.frame_pin_hash) });
 export const completionDto = (row, choreId, date) => ({ choreId, date, completed: row?.completed || false, version: row?.version || 0,
   updatedAt: row?.updated_at ? new Date(row.updated_at).toISOString() : null });
 const householdDto = row => ({ id: row.id, title: row.title, timezone: row.timezone });
@@ -189,6 +190,7 @@ export async function householdSnapshot(db, principal, requestedDate, { now = ne
       version: currentVersions.get(row.choreId) || row.routineVersion,
       dueTime: row.dueTime, reminderMinutes: row.reminderMinutes, required: row.required,
       instructions: row.instructions, subtasks: row.subtasks, requiresApproval: row.requiresApproval, taskSection: row.taskSection,
+      alarm: row.alarm, alarmSnoozedUntil: row.alarmSnoozedUntil,
       schoolDayFilter: row.schoolDayFilter, schoolScheduleExempt: row.schoolScheduleExempt,
       status: row.status, completion: row.completion,
     }));
@@ -228,9 +230,16 @@ export async function changePerson(db, principal, id, body, remove = false) {
 
 const choreDto = row => ({ id: row.id, title: row.title, personId: row.person_id, weekdays: row.weekdays, version: row.version, dueTime: row.due_time?.slice(0, 5) || null, reminderMinutes: row.reminder_minutes ?? 15,
   required: row.required ?? true, instructions: row.instructions || '', subtasks: row.subtasks || [],
-  scheduleType: row.schedule_type || 'weekly', schoolDayFilter: row.school_day_filter || 'any', taskSection: row.task_section || 'tasks', scheduledDate: row.scheduled_date ? row.scheduled_date instanceof Date ? row.scheduled_date.toISOString().slice(0, 10) : String(row.scheduled_date).slice(0, 10) : null, requiresApproval: row.requires_approval ?? false });
+  scheduleType: row.schedule_type || 'weekly', schoolDayFilter: row.school_day_filter || 'any', taskSection: row.task_section || 'tasks', alarm: row.alarm === true, scheduledDate: row.scheduled_date ? row.scheduled_date instanceof Date ? row.scheduled_date.toISOString().slice(0, 10) : String(row.scheduled_date).slice(0, 10) : null, requiresApproval: row.requires_approval ?? false });
 export function dueTimeField(value) {
   requireValue(value === null || typeof value === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value), 422, 'invalid_due_time', 'Choose a valid due time.');
+  return value;
+}
+// An alarm rings from the due time until the assigned child confirms the task,
+// so it needs both a time and one child to answer it.
+export function alarmField(value, dueTime, personId) {
+  requireValue(typeof value === 'boolean', 422, 'invalid_alarm', 'Alarm must be on or off.');
+  requireValue(!value || dueTime && personId, 422, 'invalid_alarm', 'An alarm needs a time and one assigned child.');
   return value;
 }
 export function reminderMinutesField(value) {
@@ -246,11 +255,12 @@ async function checkedPerson(client, householdId, personId) {
 }
 
 async function insertChore(client, principal, body, personId) {
-  const details = routineDetails(body);
+  const details = routineDetails(body), dueTime = dueTimeField(body.dueTime ?? null);
   return choreDto(await one(client, `INSERT INTO family_chores(id,household_id,title,person_id,weekdays,due_time,reminder_minutes,
-    required,instructions,subtasks,schedule_type,scheduled_date,requires_approval,school_day_filter,task_section) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12::date,$13,$14,$15) RETURNING *`,
-    [randomUUID(), principal.household.id, textField(body.title, 'Task', 100), personId, weekdaysField(body.weekdays), dueTimeField(body.dueTime ?? null), reminderMinutesField(body.reminderMinutes ?? 15),
-      details.required, details.instructions, JSON.stringify(details.subtasks), details.scheduleType, details.scheduledDate, details.requiresApproval, details.schoolDayFilter, details.taskSection]));
+    required,instructions,subtasks,schedule_type,scheduled_date,requires_approval,school_day_filter,task_section,alarm) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12::date,$13,$14,$15,$16) RETURNING *`,
+    [randomUUID(), principal.household.id, textField(body.title, 'Task', 100), personId, weekdaysField(body.weekdays), dueTime, reminderMinutesField(body.reminderMinutes ?? 15),
+      details.required, details.instructions, JSON.stringify(details.subtasks), details.scheduleType, details.scheduledDate, details.requiresApproval, details.schoolDayFilter, details.taskSection,
+      alarmField(body.alarm ?? false, dueTime, personId)]));
 }
 
 export async function createChore(db, principal, body) {
@@ -301,11 +311,12 @@ export async function changeChore(db, principal, id, body, remove = false) {
       return { deleted: true };
     }
     const personId = body.personId === undefined ? row.person_id : checkedPersonId;
-    const details = routineDetails(body, row);
+    const details = routineDetails(body, row), dueTime = body.dueTime === undefined ? row.due_time : dueTimeField(body.dueTime);
     return choreDto(await one(client, `UPDATE family_chores SET title=$3,person_id=$4,weekdays=$5,due_time=$6,reminder_minutes=$7,
-      required=$8,instructions=$9,subtasks=$10::jsonb,schedule_type=$11,scheduled_date=$12::date,requires_approval=$13,school_day_filter=$14,task_section=$15,version=version+1 WHERE id=$1 AND household_id=$2 RETURNING *`,
-      [id, principal.household.id, body.title === undefined ? row.title : textField(body.title, 'Task', 100), personId, body.weekdays === undefined ? row.weekdays : weekdaysField(body.weekdays), body.dueTime === undefined ? row.due_time : dueTimeField(body.dueTime), body.reminderMinutes === undefined ? row.reminder_minutes : reminderMinutesField(body.reminderMinutes),
-        details.required, details.instructions, JSON.stringify(details.subtasks), details.scheduleType, details.scheduledDate, details.requiresApproval, details.schoolDayFilter, details.taskSection]));
+      required=$8,instructions=$9,subtasks=$10::jsonb,schedule_type=$11,scheduled_date=$12::date,requires_approval=$13,school_day_filter=$14,task_section=$15,alarm=$16,version=version+1 WHERE id=$1 AND household_id=$2 RETURNING *`,
+      [id, principal.household.id, body.title === undefined ? row.title : textField(body.title, 'Task', 100), personId, body.weekdays === undefined ? row.weekdays : weekdaysField(body.weekdays), dueTime, body.reminderMinutes === undefined ? row.reminder_minutes : reminderMinutesField(body.reminderMinutes),
+        details.required, details.instructions, JSON.stringify(details.subtasks), details.scheduleType, details.scheduledDate, details.requiresApproval, details.schoolDayFilter, details.taskSection,
+        alarmField(body.alarm === undefined ? row.alarm === true : body.alarm, dueTime, personId)]));
   });
 }
 

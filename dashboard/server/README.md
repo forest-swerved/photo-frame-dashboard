@@ -222,6 +222,14 @@ Timed sessions count elapsed access, including when a device sleeps. Pause freez
 
 Existing invited adults have no implicit network authority. An administrator explicitly grants `manageChores` and `manageInternet`. A frame cookie permits normal household chores but cannot spend credits or control a network. A signed-in parent or child generates a one-use phone code at `/api/frame-access-codes`; redemption binds a ten-minute authorization to that paired frame. Child scope is limited to its own profile. Tokens remain in memory and expire; the setup claim code is never an administrator unlock.
 
+### Saved time, child PINs and task alarms
+
+Unspent reward time is capped at `SAVED_TIME_CAP_MINUTES` (600). `GET /api/internet` returns `savedCapMinutes`. A reward minted when the child's saved credits plus the new one would exceed the cap is still granted, but its `policy_snapshot` records `useOrLose` and it expires at the end of its own household day instead of after the carryover period. Credits expose `useOrLose`; clients spend the soonest-expiring credit first. A child can only reach the cap when the per-child carryover is long enough (ten one-hour rewards need at least ten days).
+
+A parent with Internet permission sets a child's four-digit frame PIN with `PUT /api/people/:id/pin` `{pin}` (`DELETE` removes it) from their own signed-in account. It is a salted, peppered scrypt hash on the profile; people expose only `pinConfigured`. `POST /api/frame-access/child-pin` `{personId,pin}` on a locked, paired frame creates the same ten-minute child-scoped grant as a phone code, owned by the parent who set the PIN. Child and parent entry share the frame's five-attempt, fifteen-minute lockout. Changing or removing a PIN ends grants it opened.
+
+Routines accept `alarm` (requires `dueTime` and one assigned child). Today's occurrence copies it. From the due time until the occurrence leaves `pending`, the alarm is ringing on that household day; `POST /api/chore-occurrences/:id/alarm-snooze` pauses it for ten minutes on every paired frame without changing the occurrence version. On a paired frame, completing an alarm occurrence whose child has a PIN needs that child's grant or an unlocked parent (`409 child_pin_required` otherwise). The alarm rings only on paired frames: it adds no push notification, and phones never ring. The task's ordinary deadline notifications are unchanged. Excusing the task also stops it.
+
 ## UniFi activation boundary
 
 The server adapter uses the official Cloud Connector and a server-only **Site Manager API key** with the intended console ID. No key belongs in an iOS build, a frame, a browser request or this repository. Remote API access does not require router port forwarding. Home-network control works from outside the home; it does not enforce limits on cellular or another Wi-Fi network.

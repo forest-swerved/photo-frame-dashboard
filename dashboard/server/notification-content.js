@@ -42,7 +42,9 @@ export function notificationContent(event) {
     chore_reopened: [`${person}: task reopened`, task, 'This task needs to be done again. Open Tasks for the latest details.'],
     chore_due_soon: [`${person}: task due soon`, task, due ? `Due at ${due}. Open Tasks to mark it done.` : 'This task is due soon. Open Tasks to mark it done.'],
     chore_overdue: [`${person}: task still waiting`, task, 'Not marked done by its deadline. Open Tasks to review it.'],
-    reward_earned: [`${person} earned ${duration(p.minutes) || 'device time'}`, 'All required tasks are complete', 'Choose a device now, or keep this reward saved for later.'],
+    reward_earned: p.useOrLose
+      ? [`${person} earned ${duration(p.minutes) || 'device time'}`, 'Saved time is maxed out', `${duration(p.savedCapMinutes) || 'The limit'} is already saved, so this reward is use it or lose it. Use it today.`]
+      : [`${person} earned ${duration(p.minutes) || 'device time'}`, 'All required tasks are complete', 'Choose a device now, or keep this reward saved for later.'],
     session_started: [`${person}'s device time started`, [device, granted, p.source==='reward' && 'earned'].filter(Boolean).join(' · '), `${prep ? `${prep} to get ready, then ${duration(p.minutes) || 'your device time'}. ` : ''}${endText}`],
     session_warning: [`${person}: ${remaining || 'a few minutes'} left`, device, `${endText} Finish up and save your progress.`],
     session_expired: [`${person}'s device time is up`, device, `This access window ended${at ? ` at ${at}` : ''}. Open Devices to see available time.`],

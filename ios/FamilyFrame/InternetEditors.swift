@@ -29,6 +29,8 @@ struct RewardDevicePicker: View {
                     Button { Task { await start() } } label: { if starting { ProgressView("Requesting Internet time…") } else { Text("Start my Internet time").font(.headline) } }.frame(minHeight: 44).disabled(!network.canChange || !network.integrationReady || selected.isEmpty || starting || review || !network.availableCredits.contains(where: { $0.id == credit.id }))
                 } footer: { Text("Access is requested first, then confirmed by the home network. Your reward is not available for another device while a session is being checked.") }
             }.navigationTitle("Pick your device").navigationBarTitleDisplayMode(.inline)
+                // With one device there is nothing to choose: start is one tap away.
+                .onAppear { let free = network.rewardDevices(for: credit.personId).filter { network.deviceAvailable($0, for: credit.personId) }; if selected.isEmpty, free.count == 1 { selected = free[0].id } }
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Later") { dismiss() }.disabled(starting) } }
         }.interactiveDismissDisabled(starting)
     }

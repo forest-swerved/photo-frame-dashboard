@@ -15,6 +15,7 @@ import { createFrameAmbient } from './frame-ambient.js';
 import { createFrameIdleReturn } from './frame-idle.js';
 import { createLiveUpdates } from './live-updates.js';
 import { createFrameSounds, taskCompletionCue } from './frame-sounds.js';
+import { createTaskAlarm } from './task-alarm.js';
 
 const app = document.querySelector('#family-app');
 const dialog = document.querySelector('#family-dialog');
@@ -65,7 +66,7 @@ const workbench = createWorkbench({ snapshot: () => S.snapshot, session: () => S
   members: () => S.members, zone, today, frame, field, button, openDialog, dialog, toast, sound, taskApproved, render, refreshTaskDetails,
   reload: async () => { await loadHousehold(); if (internet.loaded() || S.view === 'devices') await internet.load(); }, reloadSetup: loadSetup, reboot: boot });
 const internet = createInternetUI({ snapshot: () => S.snapshot, session: () => S.session, epoch: () => generation,
-  zone, frame, field, button, openDialog, dialog, toast, sound, render, soundTimers: (rows, fresh) => sounds.observeTimers(rows, `${generation}:${S.session?.household?.id}`, fresh), unlock: workbench.unlock });
+  zone, frame, field, button, openDialog, dialog, toast, sound, render, soundTimers: (rows, fresh) => sounds.observeTimers(rows, `${generation}:${S.session?.household?.id}`, fresh), unlock: workbench.unlock, lock: workbench.lock, person });
 const liveUpdates = createLiveUpdates({
   read: () => request('/api/live-status', { timeoutMs: 8000 }),
   loaders: { household:()=>loadHousehold().catch(error=>{dataFailure(error);return false;}), internet:()=>internet.load(), calendar:()=>loadCalendar() },
@@ -91,7 +92,7 @@ const ambient = createFrameAmbient(document.querySelector('#frame-ambient'), {
 });
 const frameIdle = createFrameIdleReturn({
   enabled: () => frame() && !!S.session?.household && !S.booting,
-  blocked: () => !!document.querySelector('.parent-keypad') || S.pending.size > 0 || internet.writing() || !!document.querySelector('form[data-submitting]'),
+  blocked: () => !!document.querySelector('.parent-keypad, .task-alarm') || S.pending.size > 0 || internet.writing() || !!document.querySelector('form[data-submitting]'),
   onIdle: () => {
     if (dialog.open) {
       if (!dialog.dispatchEvent(new Event('request-close', { cancelable: true }))) return;
@@ -597,6 +598,38 @@ function dataFailure(error) {
   } else { S.error = errorMessage(error); render(); }
 }
 
+// A shared frame cannot tell who is tapping. When the child has a PIN, an alarm
+// task is confirmed with it (an unlocked parent also counts); the server enforces the same rule.
+function alarmNeedsPin(chore) {
+  const access = frameAccessStatus();
+  return frame() && chore.alarm && !!person(chore.personId)?.pinConfigured && !done(chore) && chore.status !== 'submitted'
+    && !(access?.scope === 'parent' || access?.scope === 'child' && access.personId === chore.personId);
+}
+async function confirmAlarmTask(chore) {
+  const opened = alarmNeedsPin(chore);
+  if (opened && !await workbench.unlock({ child: person(chore.personId) })) return;
+  const current = scheduledChores().find(item => item.id === chore.id);
+  if (current && !done(current) && current.status !== 'submitted') await saveCompletion(current, true);
+  const key = `${chore.id}:${S.snapshot?.date}`, failed = S.failures.get(key) || (S.conflicts.has(key) ? 'This task changed on another screen. Tap Done again.' : '');
+  // The PIN was only for this confirmation; give the whole family their screen back.
+  if (opened) await workbench.lock();
+  return failed;
+}
+async function snoozeAlarm(chore) {
+  try {
+    S.snapshot = mergeOccurrence(S.snapshot, await request(`/api/chore-occurrences/${idPath(chore.id)}/alarm-snooze`, { method: 'POST', body: {} }));
+    toast('Snoozed for 10 minutes. It will ring again until it is done.'); render();
+  } catch (error) { if (error.status === 401) dataFailure(error); else return errorMessage(error); }
+}
+const taskAlarm = createTaskAlarm({
+  // The alarm belongs to the wall frame; phones and signed-in browsers never ring.
+  enabled: () => frame() && !!S.session?.household && !S.booting && !!S.snapshot,
+  tasks: () => S.snapshot?.occurrences || [], date: () => S.snapshot?.date, timezone: zone,
+  personName: id => person(id)?.name || '', timeLabel,
+  busy: () => !!document.querySelector('.parent-keypad') || S.pending.size > 0,
+  onDone: confirmAlarmTask, onSnooze: snoozeAlarm,
+});
+
 function taskApproved(item, result) {
   const confirmed = result?.occurrence || result, current = S.snapshot?.occurrences?.find(task => task.id === item.id);
   if (!current || confirmed?.status !== 'completed' || confirmed.date !== S.snapshot.date || current.status === 'completed' || current.version > confirmed.version) return;
@@ -686,9 +719,18 @@ function openDialog(titleText, contents, onSubmit) {
 }
 
 function editPerson(profile) {
-  openDialog(profile ? 'Edit family profile' : 'Add family profile', `<div class="form-stack">${field('Name', 'name', profile?.name || '', { max: 80, autocomplete: 'name' })}${field('Profile color', 'color', color(profile?.color), { type: 'color' })}<div class="dialog-actions">${profile ? button('Delete profile', 'delete-person', 'text-button danger-text', `data-id="${h(profile.id)}"`) : ''}<button type="submit" class="button">${profile ? 'Save profile' : 'Add profile'}</button></div></div>`, async form => {
+  openDialog(profile ? 'Edit family profile' : 'Add family profile', `<div class="form-stack">${field('Name', 'name', profile?.name || '', { max: 80, autocomplete: 'name' })}${field('Profile color', 'color', color(profile?.color), { type: 'color' })}${profile ? `<div class="profile-pin"><p class="field-help">${profile.pinConfigured ? 'Frame PIN is set.' : 'No frame PIN yet.'} A child enters their own four-digit PIN on the frame to use saved time and to confirm alarm tasks.</p>${button(profile.pinConfigured ? 'Change frame PIN' : 'Set frame PIN', 'child-pin', 'button button-secondary', `data-id="${h(profile.id)}"`)}</div>` : ''}<div class="dialog-actions">${profile ? button('Delete profile', 'delete-person', 'text-button danger-text', `data-id="${h(profile.id)}"`) : ''}<button type="submit" class="button">${profile ? 'Save profile' : 'Add profile'}</button></div></div>`, async form => {
     await request(`/api/people${profile ? `/${idPath(profile.id)}` : ''}`, { method: profile ? 'PATCH' : 'POST', body: { name: form.get('name').trim(), color: form.get('color'), ...(profile ? { expectedVersion: profile.version } : {}) } });
     dialog.close(); toast('Family profile saved.');
+    try { await loadHousehold(); } catch (error) { dataFailure(error); }
+  });
+}
+
+function editChildPin(profile) {
+  openDialog(`${profile.name}’s frame PIN`, `<p class="supporting">${h(profile.name)} types these four digits on the frame to use saved time and to confirm alarm tasks. It is stored as a one-way hash and never shown again.</p><div class="form-stack">${field('New four-digit PIN', 'pin', '', { type: 'password', max: 4, extra: 'inputmode="numeric" pattern="[0-9]{4}" autocomplete="off"' })}<div class="dialog-actions">${profile.pinConfigured ? button('Remove PIN', 'remove-child-pin', 'text-button danger-text', `data-id="${h(profile.id)}"`) : ''}<button type="submit" class="button">Save PIN</button></div></div>`, async (form, element) => {
+    try { await request(`/api/people/${idPath(profile.id)}/pin`, { method: 'PUT', body: { pin: form.get('pin') } }); }
+    finally { const input = element.querySelector('[name="pin"]'); if (input) input.value = ''; }
+    dialog.close(); toast(`${profile.name}’s frame PIN was saved.`);
     try { await loadHousehold(); } catch (error) { dataFailure(error); }
   });
 }
@@ -894,7 +936,15 @@ async function runAction(name, element, activation) {
       sound('error'); toast('This task changed. Check its latest status before changing it.'); render(); refreshTaskDetails(); return;
     }
     const desired = intent ? intent.completed : (S.conflicts.has(key) ? S.conflicts.get(key) : S.attempts.get(key)?.completed);
+    if (desired && alarmNeedsPin(chore)) return confirmAlarmTask(chore);
     return saveCompletion(chore, desired);
+  }
+  if (name === 'child-pin') { const profile = person(id); if (profile && admin()) editChildPin(profile); return; }
+  if (name === 'remove-child-pin') {
+    const profile = person(id); if (!profile || !admin()) return;
+    await request(`/api/people/${idPath(id)}/pin`, { method: 'DELETE' }); dialog.close(); toast(`${profile.name}’s frame PIN was removed.`);
+    try { await loadHousehold(); } catch (error) { dataFailure(error); }
+    return;
   }
   if (name === 'delete-person') {
     const profile = person(id);
@@ -1015,6 +1065,8 @@ setInterval(() => {
   internet.tick();
   liveUpdates.tick();
   tickFrameEvents();
+  taskAlarm.tick();
+  if (taskAlarm.showing()) ambient.stop();
   if (frame() && workbench.accessExpired() && !document.querySelector('.parent-keypad') && !dialog.open) { workbench.reset(); boot(); return; }
   if (S.session?.household && S.snapshot && S.snapshot.date !== today() && !pollBusy) { pollBusy = true; refresh().finally(() => { pollBusy = false; }); }
 }, 1000);

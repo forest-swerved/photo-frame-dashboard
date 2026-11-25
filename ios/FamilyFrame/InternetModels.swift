@@ -61,6 +61,9 @@ struct RewardCredit: Decodable, Identifiable, Equatable {
     var status: String
     let expiresAt: String
     let policyVersion: Int
+    /// Earned while the saved-time bank was full: it cannot be saved and expires at the end of its day.
+    var useOrLose: Bool? = nil
+    var isUseOrLose: Bool { useOrLose == true }
     var statusLabel: String {
         switch status { case "available": return "Ready to use"; case "held": return "Required work needs review"; case "reserved": return "Reserved for a session"; case "spent": return "Used"; case "expired": return "Expired"; case "review": return "Parent review required"; default: return "Status unavailable" }
     }
@@ -218,6 +221,8 @@ struct InternetSnapshot: Decodable {
     var sessions: [InternetSession]
     let progress: [RequiredChoreProgress]
     var requests: [DeviceAccessRequest]? = nil
+    /// The most unspent reward time a child can bank, in minutes.
+    var savedCapMinutes: Int? = nil
 }
 struct InternetHistoryItem: Decodable, Identifiable {
     let id: String

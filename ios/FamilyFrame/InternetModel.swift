@@ -58,6 +58,12 @@ final class InternetModel: ObservableObject {
     var availableCredits: [RewardCredit] {
         (snapshot?.credits ?? []).filter { $0.status == "available" && (!isChild || $0.personId == personID) && (Dates.instant($0.expiresAt) ?? .distantPast) > serverNow }
     }
+    /// A child's spendable time, as that child sees it.
+    func savedTime(for person: String) -> SavedTime {
+        SavedTime(credits: snapshot?.credits ?? [], personID: person, capMinutes: snapshot?.savedCapMinutes, now: serverNow)
+    }
+    func rewardMinutes(for person: String) -> Int { snapshot?.policies.first { $0.personId == person }?.rewardMinutes ?? 60 }
+    func rewardsPaused(for person: String) -> Bool { snapshot?.policies.first { $0.personId == person }?.enabled == false }
     func bind(_ session: MobileSession?) {
         if session?.cacheIdentity == principal?.cacheIdentity && session?.role == principal?.role { principal = session; return }
         generation += 1; task?.cancel(); task = nil; requested = false; principal = session
@@ -98,7 +104,7 @@ final class InternetModel: ObservableObject {
                 let eligibleCredits = completedToday ? result.credits.filter { $0.personId == personID && $0.earnedDate == date && $0.status == "available" && (Dates.instant($0.expiresAt) ?? .distantPast) > serverNow } : []
                 if isChild, let reward = candidates.first(where: { candidate in eligibleCredits.contains { $0.id == candidate.id } && !presentedCredits.contains(candidate.id) }) {
                     presentedCredits.insert(reward.id); earnedReward = reward
-                    UIAccessibility.post(notification: .announcement, argument: "Great job! You earned \(reward.minutes) minutes of Internet time. Use your reward now or save it for later.")
+                    UIAccessibility.post(notification: .announcement, argument: "Great job! You earned \(SavedTime.label(reward.minutes)). " + savedTime(for: reward.personId).earnedMessage(for: reward))
                 }
                 if let shown = earnedReward, !eligibleCredits.contains(where: { $0.id == shown.id }) { earnedReward = nil }
             } catch {

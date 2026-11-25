@@ -395,6 +395,13 @@ final class AppModel: ObservableObject {
             try await self.api.setOccurrenceCompletion(occurrence, completed: !occurrence.completion.completed, mutationID: UUID().uuidString.lowercased())
         }
     }
+    func childPin(person: Person, pin: String?) async throws -> ChildPinStatus {
+        guard session != nil, session?.isChild != true, !isStale, canManageInternet else { throw APIError(status: 403, code: "parent_required", message: "A parent with Internet permission sets a child's PIN.") }
+        let started = generation
+        let result = try await api.childPin(personID: person.id, pin: pin)
+        guard started == generation else { throw CancellationError() }
+        await refresh(); return result
+    }
     func actOnOccurrence(_ occurrence: ChoreOccurrence, action: String, reason: String? = nil, toDate: String? = nil, dueTime: String? = nil, steps: [String]? = nil) async -> Bool {
         guard canChangeOccurrence(occurrence), !changingChores.contains(occurrence.id), action == "subtasks" || canManageChores else { return false }
         let request = OccurrenceAction(action: action, expectedVersion: occurrence.version, mutationId: UUID().uuidString.lowercased(), reason: reason, toDate: toDate, dueTime: dueTime, completedSubtaskIds: steps)

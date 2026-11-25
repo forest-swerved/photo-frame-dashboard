@@ -15,7 +15,8 @@ import { createMobileSession, createMobilePair, redeemMobilePair, mobileSessionD
 import { registerPush, sendTestNotification, notificationPreferences, notificationInbox, markNotificationRead, markAllNotificationsRead, processNotifications } from './notifications.js';
 import { preflightApns } from './apns.js';
 import { setOccurrenceCompletion, changeChoreOccurrence, choreHistory, choreExceptions, createChoreException, revokeChoreException } from './chore-occurrences.js';
-import { parentCapabilities, changeMemberCapabilities, createFrameAccessCode, redeemFrameAccess, frameAuthorization, transferOwnership, parentPinSettings, redeemParentPin } from './capabilities.js';
+import { parentCapabilities, changeMemberCapabilities, createFrameAccessCode, redeemFrameAccess, frameAuthorization, transferOwnership, parentPinSettings, redeemParentPin, childPinSettings, redeemChildPin } from './capabilities.js';
+import { snoozeTaskAlarm, requireAlarmConfirmer } from './task-alarms.js';
 import { deleteAccount } from './account-deletion.js';
 import { internetSnapshot, saveRewardPolicy, saveManagedDevice, changeDeviceAccess, startInternetSession, changeInternetSession, internetHistory, syncChoreReward, resolveRewardReview, requestDeviceAccess, decideDeviceAccess } from './internet.js';
 import { drainInternetQueue, reconcileInternetQueue, startsInternetWork } from './internet-queue.js';
@@ -72,13 +73,19 @@ export async function dispatch(request, db, principal, route, options = {}) {
   if (route === 'live-status' && method === 'GET') return json(await liveStatus(db, principal, options));
   if (route === 'account/transfer-ownership' && method === 'POST') return json(await transferOwnership(db, principal, await readJson(request)));
   if (principal.role === 'member' && /^(household|chores|chore-occurrences|chore-exceptions|chore-history|school-calendar)(\/|$)/.test(route)) principal = { ...principal, verifiedCapabilities: await parentCapabilities(db, principal) };
-  options = { ...options, choreOptions: { ...options.choreOptions, onChange: options.choreOptions?.onChange || ((client, change) => syncChoreReward(client, change)) } };
+  options = { ...options, choreOptions: { ...options.choreOptions, onChange: options.choreOptions?.onChange || ((client, change) => syncChoreReward(client, change)), alarmGuard: requireAlarmConfirmer } };
   if (route === 'frame-access-codes' && method === 'POST') return json(await createFrameAccessCode(db, principal, await readJson(request), options), 201);
   if (route === 'parent-pin' && ['GET','PUT','DELETE'].includes(method)) return json(await parentPinSettings(db,principal,method==='GET'?undefined:method==='DELETE'?{remove:true}:await readJson(request),options));
   if (route === 'frame-access/pin' && method==='POST') {
     await enforcePairRateLimit(db,request,options.env);
     return json(await redeemParentPin(db,principal,await readJson(request),options));
   }
+  if (route === 'frame-access/child-pin' && method === 'POST') {
+    await enforcePairRateLimit(db, request, options.env);
+    return json(await redeemChildPin(db, principal, await readJson(request), options));
+  }
+  const childPin = /^people\/([^/]+)\/pin$/.exec(route);
+  if (childPin && ['PUT', 'DELETE'].includes(method)) return json(await childPinSettings(db, principal, childPin[1], method === 'DELETE' ? { remove: true } : await readJson(request), options));
   if (route === 'frame-access/redeem' && method === 'POST') {
     await enforcePairRateLimit(db, request, options.env);
     return json(await redeemFrameAccess(db, principal, await readJson(request), options));
@@ -141,6 +148,8 @@ export async function dispatch(request, db, principal, route, options = {}) {
   if (exception && method === 'POST') return json(await revokeChoreException(db, principal, exception[1], await readJson(request)));
   const occurrenceCompletion = /^chore-occurrences\/([^/]+)\/completion$/.exec(route);
   if (occurrenceCompletion && method === 'PUT') return json(await setOccurrenceCompletion(db, principal, occurrenceCompletion[1], await readJson(request), options.choreOptions));
+  const alarmSnooze = /^chore-occurrences\/([^/]+)\/alarm-snooze$/.exec(route);
+  if (alarmSnooze && method === 'POST') return json(await snoozeTaskAlarm(db, principal, alarmSnooze[1], options.choreOptions));
   const occurrenceAction = /^chore-occurrences\/([^/]+)\/actions$/.exec(route);
   if (occurrenceAction && method === 'POST') return json(await changeChoreOccurrence(db, principal, occurrenceAction[1], await readJson(request), options.choreOptions));
   if (route === 'invites' && method === 'POST') return json(await createInvite(db, principal, await readJson(request)), 201);

@@ -163,6 +163,64 @@ export async function redeemParentPin(db,principal,body,{env=process.env,now=new
   return result;
 }
 
+// A child's own four-digit PIN. It is checked against one named profile, so
+// two children (or a child and a parent) may choose the same digits.
+async function childPinHash(householdId, personId, pin, { env = process.env, salt = randomBytes(16).toString('hex') } = {}) {
+  requireValue(typeof pin === 'string' && /^\d{4}$/.test(pin), 422, 'invalid_child_pin', 'Use a four-digit PIN.');
+  const value = await derivePin(keyedDigest('frame-child-pin', `${householdId}:${personId}:${pin}`, env), salt, 32, { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
+  return { salt, hash: value.toString('hex') };
+}
+// Set or remove from a parent's own signed-in account. That parent owns the
+// short frame grants the PIN creates, exactly as if they had issued a child code.
+export async function childPinSettings(db, principal, personId, body, options = {}) {
+  requireHousehold(principal); uuidField(personId, 'Child profile');
+  requireValue(['user', 'mobile'].includes(principal.authType) && principal.role !== 'child', 403, 'parent_required', 'Use your own signed-in parent account.');
+  const prepared = body.remove === true ? null : await childPinHash(principal.household.id, personId, body.pin, options);
+  return transaction(db, async client => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`membership:${principal.user.id}`]);
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`frame-unlock:${principal.household.id}:${principal.user.id}`]);
+    await frameCodeIssuer(client, principal, 'child', personId);
+    const row = await one(client, `UPDATE family_people SET frame_pin_hash=$3,frame_pin_salt=$4,frame_pin_set_by=$5,frame_pin_updated_at=now()
+      WHERE household_id=$1 AND id=$2 RETURNING id,frame_pin_hash IS NOT NULL AS configured,frame_pin_updated_at`,
+    [principal.household.id, personId, prepared?.hash || null, prepared?.salt || null, prepared ? principal.user.id : null]);
+    // A changed or removed PIN ends any unlock the old one opened.
+    await client.query("UPDATE family_frame_authorizations SET revoked_at=coalesce(revoked_at,now()) WHERE household_id=$1 AND scope='child' AND person_id=$2 AND code_hash IS NULL", [principal.household.id, personId]);
+    return { personId: row.id, configured: row.configured, updatedAt: row.frame_pin_updated_at?.toISOString() || null };
+  });
+}
+export async function redeemChildPin(db, principal, body, { env = process.env, now = new Date() } = {}) {
+  requireValue(principal.authType === 'frame' && !principal.verifiedFrameGrant, 403, 'frame_required', 'Enter this PIN on the locked, paired frame.');
+  const personId = uuidField(body.personId, 'Child profile');
+  requireValue(typeof body.pin === 'string' && /^\d{4}$/.test(body.pin), 403, 'invalid_child_pin', 'That PIN is not right. Try again.');
+  const result = await transaction(db, async client => {
+    const frame = await one(client, 'SELECT * FROM family_devices WHERE household_id=$1 AND id=$2 AND revoked_at IS NULL AND expires_at>$3 FOR UPDATE', [principal.household.id, principal.user.id, now]);
+    requireValue(frame, 403, 'frame_required', 'Pair this frame again.');
+    // Child and parent PIN entry share one lockout so neither can be guessed around the other.
+    if (frame.parent_pin_locked_until && new Date(frame.parent_pin_locked_until) > now) return { error: 'pin_locked' };
+    const person = await one(client, `SELECT p.*,(m.role='admin' OR m.role='member' AND m.manage_internet) AS owner_valid FROM family_people p
+      LEFT JOIN family_members m ON m.household_id=p.household_id AND m.user_id=p.frame_pin_set_by AND m.revoked_at IS NULL
+        AND NOT EXISTS(SELECT 1 FROM family_account_deletion_jobs d WHERE d.user_id=m.user_id::uuid)
+      WHERE p.household_id=$1 AND p.id=$2 FOR SHARE OF p`, [principal.household.id, personId]);
+    const candidate = person?.frame_pin_hash && await childPinHash(principal.household.id, personId, body.pin, { env, salt: person.frame_pin_salt });
+    const valid = candidate && /^[a-f0-9]{64}$/.test(person.frame_pin_hash) && timingSafeEqual(Buffer.from(candidate.hash, 'hex'), Buffer.from(person.frame_pin_hash, 'hex'));
+    if (!valid) {
+      const failures = frame.parent_pin_locked_until ? 1 : frame.parent_pin_failures + 1;
+      await client.query('UPDATE family_devices SET parent_pin_failures=$3,parent_pin_locked_until=$4 WHERE household_id=$1 AND id=$2', [principal.household.id, principal.user.id, failures, failures >= 5 ? new Date(+now + 15 * 60_000) : null]);
+      return { error: failures >= 5 ? 'pin_locked' : 'invalid_child_pin' };
+    }
+    await client.query('UPDATE family_devices SET parent_pin_failures=0,parent_pin_locked_until=NULL WHERE household_id=$1 AND id=$2', [principal.household.id, principal.user.id]);
+    if (!person.owner_valid) return { error: 'child_pin_stale' };
+    const token = randomToken(), expiresAt = new Date(+now + 10 * 60_000);
+    await client.query('UPDATE family_frame_authorizations SET revoked_at=$3 WHERE household_id=$1 AND frame_id=$2 AND revoked_at IS NULL', [principal.household.id, principal.user.id, now]);
+    await client.query(`INSERT INTO family_frame_authorizations(id,household_id,created_by,scope,person_id,frame_id,token_hash,redeemed_at,expires_at)
+      VALUES($1,$2,$3,'child',$4,$5,$6,$7,$8)`, [randomUUID(), principal.household.id, person.frame_pin_set_by, personId, principal.user.id, digest(token), now, expiresAt]);
+    return { token, scope: 'child', personId, expiresAt: expiresAt.toISOString() };
+  });
+  const messages = { pin_locked: [429, 'Too many wrong PINs. PIN entry on this frame is locked for 15 minutes.'], child_pin_stale: [403, 'Ask a parent to set your PIN again.'], invalid_child_pin: [403, 'That PIN is not right. Try again.'] };
+  requireValue(!result.error, messages[result.error]?.[0] || 403, result.error || 'invalid_child_pin', messages[result.error]?.[1] || 'That PIN is not right. Try again.');
+  return result;
+}
+
 export async function createFrameAccessCode(db, principal, body, { env = process.env, now = new Date() } = {}) {
   requireHousehold(principal);
   requireValue(['user', 'mobile'].includes(principal.authType), 403, 'account_required', 'Create an unlock code from your signed-in phone.');

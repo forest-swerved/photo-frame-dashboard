@@ -170,6 +170,8 @@ export function createFrameAmbient(root, { state, media, readMediaURL, onWake, o
     index += hasMedia ? 1 : 2; started = now(); if (index % 2) mediaStarted = started; painted = ''; paint(); }
   return {
     active: () => active, sync,
+    // Something urgent (a task alarm) needs the screen: leave ambient without waiting for a touch.
+    stop() { if (active) hide(); },
     status: () => ({ cached: mediaCache.count(), total: bank.length }),
     start() {
       const s = sync(); if (!s.enabled || active || document.hidden) return;

@@ -65,6 +65,19 @@ CREATE TABLE IF NOT EXISTS family_chore_occurrences (
   FOREIGN KEY(household_id,chore_id) REFERENCES family_chores(household_id,id),
   FOREIGN KEY(household_id,exception_id) REFERENCES family_chore_exceptions(household_id,id)
 );
+-- A parent-set alarm rings on the paired family frame from the task's due time
+-- until the child confirms it. A snooze silences every frame at once and is not
+-- part of the immutable daily definition.
+ALTER TABLE family_chores ADD COLUMN IF NOT EXISTS alarm boolean NOT NULL DEFAULT false;
+ALTER TABLE family_chore_occurrences ADD COLUMN IF NOT EXISTS alarm boolean NOT NULL DEFAULT false;
+ALTER TABLE family_chore_occurrences ADD COLUMN IF NOT EXISTS alarm_snoozed_until timestamptz;
+DO $task_alarm$
+BEGIN
+  IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='family_chores'::regclass AND conname='family_chore_alarm_time') THEN
+    ALTER TABLE family_chores ADD CONSTRAINT family_chore_alarm_time CHECK (NOT alarm OR due_time IS NOT NULL);
+  END IF;
+END
+$task_alarm$;
 CREATE UNIQUE INDEX IF NOT EXISTS family_chore_occurrence_active_date ON family_chore_occurrences(household_id,chore_id,date) WHERE status<>'skipped';
 CREATE INDEX IF NOT EXISTS family_chore_occurrence_person_day ON family_chore_occurrences(household_id,person_id,date);
 CREATE INDEX IF NOT EXISTS family_chore_occurrence_exception ON family_chore_occurrences(household_id,exception_id);

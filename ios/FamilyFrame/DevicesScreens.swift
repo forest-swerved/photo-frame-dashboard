@@ -50,6 +50,7 @@ private struct DevicesContent: View {
                 NetworkStatusCard(network: network)
                 if !network.accessRequests.isEmpty { accessRequests }
                 RewardHomeCard(network: network)
+                SavedTimeCard(network: network)
                 VStack(alignment: .leading, spacing: 14) {
                     HStack { Text("Devices").font(.title2.bold()).accessibilityAddTraits(.isHeader); Spacer(); if network.canManage { Button { adding = true } label: { Label("Add device", systemImage: "plus").frame(minHeight: 44) }.disabled(!network.canChange) } }
                     if network.devices.isEmpty && network.snapshot != nil {
@@ -132,13 +133,13 @@ private struct DevicesContent: View {
     }
     private var rewards: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Your saved rewards").font(.title2.bold()).accessibilityAddTraits(.isHeader)
+            Text("Each reward").font(.title2.bold()).accessibilityAddTraits(.isHeader)
             if network.availableCredits.isEmpty && network.snapshot != nil { Text("Finish your required tasks to earn Internet time. Tasks needing approval count after a parent approves them.").font(.subheadline).foregroundStyle(Brand.muted) }
-            ForEach((network.snapshot?.credits ?? []).filter { $0.personId == network.personID && !["spent", "expired"].contains($0.status) }) { credit in
+            ForEach((network.snapshot?.credits ?? []).filter { $0.personId == network.personID && !["spent", "expired"].contains($0.status) }.sorted { $0.expiresAt < $1.expiresAt }) { credit in
                 FrameCard(accent: Brand.lime) {
                     Text("\(credit.minutes) minutes").font(.title2.bold())
                     Text(credit.statusLabel).font(.headline).foregroundStyle(Brand.cyanInk)
-                    Text("Earned \(Dates.dayLabel(credit.earnedDate)) · expires \(Dates.relative(credit.expiresAt))").font(.caption).foregroundStyle(Brand.muted)
+                    Text(credit.isUseOrLose ? "Earned \(Dates.dayLabel(credit.earnedDate)) · use it today or lose it" : "Earned \(Dates.dayLabel(credit.earnedDate)) · expires \(Dates.relative(credit.expiresAt))").font(.caption).foregroundStyle(credit.isUseOrLose ? Brand.attentionInk : Brand.muted)
                     if credit.status == "available" {
                         Button("Use now") { pickedCredit = credit }.font(.headline).frame(minHeight: 44).disabled(!network.canChange || !network.integrationReady || !network.availableCredits.contains(where: { $0.id == credit.id }) || !network.rewardDevices(for: credit.personId).contains { network.deviceAvailable($0, for: credit.personId) })
                         RewardAvailabilityNote(network: network, credit: credit)
@@ -155,6 +156,7 @@ private struct DevicesContent: View {
                 NavigationLink { RewardPolicyEditor(network: network, policy: policy) } label: {
                     FrameCard(accent: Brand.lime) {
                         HStack { Text(personName(policy.personId)).font(.headline); Spacer(); Image(systemName: "chevron.right").font(.caption) }
+                        SavedTimeSummaryLine(network: network, personID: policy.personId)
                         Text(policy.enabled ? "\(policy.rewardMinutes) minutes per task day · \(policy.dailyLimitMinutes) minute daily reward limit" : "Earning rewards is paused").font(.subheadline)
                         if let bedtime = policy.bedtime { Text("Bedtime cutoff \(Dates.wallTime(bedtime, on: model.today, in: model.zone).map { Dates.time($0, in: model.zone) } ?? bedtime)").font(.caption) }
                     }.foregroundStyle(Brand.ink)
@@ -199,11 +201,11 @@ struct RewardHomeCard: View {
         if network.isChild, let reward = network.earnedReward, network.availableCredits.contains(where: { $0.id == reward.id }) {
             FrameCard(accent: Brand.lime) {
                 Label("Great job!", systemImage: "star.circle.fill").font(.title2.bold()).foregroundStyle(Brand.ink)
-                Text("Your required tasks earned \(reward.minutes) minutes of Internet time.").font(.headline)
-                Text("Choose one of your devices now, or save this reward for later.").font(.subheadline).foregroundStyle(Brand.muted)
+                Text("Your required tasks earned \(SavedTime.label(reward.minutes)) of Internet time.").font(.headline)
+                Text(network.savedTime(for: reward.personId).earnedMessage(for: reward)).font(.subheadline).foregroundStyle(reward.isUseOrLose ? Brand.attentionInk : Brand.muted)
                 Button("Use now") { selected = reward }.buttonStyle(PrimaryButton()).disabled(!network.canChange || !network.integrationReady || !network.rewardDevices(for: reward.personId).contains { network.deviceAvailable($0, for: reward.personId) })
                 RewardAvailabilityNote(network: network, credit: reward)
-                Button("Save for later") { network.earnedReward = nil }.font(.headline).frame(maxWidth: .infinity, minHeight: 44)
+                Button(reward.isUseOrLose ? "Not now" : "Save for later") { network.earnedReward = nil }.font(.headline).frame(maxWidth: .infinity, minHeight: 44)
                 if !network.integrationReady { Text("A parent needs to finish network setup before you can use this reward.").font(.caption).foregroundStyle(Brand.muted) }
             }.sheet(item: $selected) { RewardDevicePicker(network: network, credit: $0) }
         }
@@ -486,18 +488,6 @@ struct HomeInternetSession: View {
         if item.state=="paused" {Button("Resume") {Task {_ = await network.act(item,action:"resume")}}.frame(minHeight:44).disabled(!network.canChange || item.remaining(at:network.serverNow)<=0)}
         if item.isStable {Button("+15 min") {Task {_ = await network.act(item,action:"adjust",deltaMinutes:15)}}.frame(minHeight:44).disabled(!network.canChange)}
         Button("More controls") {details=true}.frame(minHeight:44)
-    }
-}
-struct HomeRewardBalance: View {
-    @EnvironmentObject var model: AppModel
-    @ObservedObject var network: InternetModel
-    var body: some View {
-        if network.isChild && network.earnedReward == nil && !network.availableCredits.isEmpty {
-            Button { model.selectedTab = 3 } label: {
-                HStack { Label("\(network.availableCredits.reduce(0) { $0 + $1.minutes }) minutes saved", systemImage: "star.circle").font(.subheadline.weight(.semibold)); Spacer(); Text("Rewards").font(.subheadline) }
-                    .foregroundStyle(Brand.primary).frame(minHeight: 44).padding(.horizontal, 16).padding(.vertical, 8).background(Brand.primaryTint, in: RoundedRectangle(cornerRadius: 12))
-            }.buttonStyle(.plain)
-        }
     }
 }
 struct RewardAvailabilityNote: View {

@@ -65,6 +65,7 @@ protocol FamilyAPI: AnyObject {
     func revokeChoreBreak(_ item: ChoreBreak, reason: String, mutationID: String) async throws -> ChoreBreak
     func createFrameAccessCode(scope: String, personID: String?) async throws -> FrameAccessCode
     func parentPin(pin: String?) async throws -> ParentPinStatus
+    func childPin(personID: String, pin: String?) async throws -> ChildPinStatus
     func members() async throws -> [FamilyMember]
     func changeMemberCapabilities(_ id: String, capabilities: ParentCapabilities) async throws -> MemberCapabilitiesResult
     func internet() async throws -> InternetSnapshot
@@ -298,6 +299,10 @@ final class APIClient: FamilyAPI {
     func parentPin(pin: String?) async throws -> ParentPinStatus {
         struct Body: Encodable { let pin: String }
         return try await send("/api/parent-pin", method: pin == nil ? "GET" : "PUT", body: try pin.map { try encoded(Body(pin: $0)) })
+    }
+    func childPin(personID: String, pin: String?) async throws -> ChildPinStatus {
+        struct Body: Encodable { let pin: String }
+        return try await send("/api/people/\(personID)/pin", method: pin == nil ? "DELETE" : "PUT", body: try pin.map { try encoded(Body(pin: $0)) })
     }
     func members() async throws -> [FamilyMember] { let list: FamilyMemberList = try await send("/api/members"); return list.members }
     func changeMemberCapabilities(_ id: String, capabilities: ParentCapabilities) async throws -> MemberCapabilitiesResult {

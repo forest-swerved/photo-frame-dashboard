@@ -25,8 +25,9 @@ struct ChoreRoutine: Codable, Identifiable, Equatable {
     var requiresApproval: Bool
     var schoolDayFilter = "any"
     var taskSection = "tasks"
+    var alarm = false
     private enum CodingKeys: String, CodingKey {
-        case id, title, personId, weekdays, version, dueTime, reminderMinutes, required, instructions, subtasks, scheduleType, scheduledDate, requiresApproval, schoolDayFilter, taskSection
+        case id, title, personId, weekdays, version, dueTime, reminderMinutes, required, instructions, subtasks, scheduleType, scheduledDate, requiresApproval, schoolDayFilter, taskSection, alarm
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -39,6 +40,7 @@ struct ChoreRoutine: Codable, Identifiable, Equatable {
         requiresApproval = try c.decode(Bool.self, forKey: .requiresApproval)
         schoolDayFilter = try c.decodeIfPresent(String.self, forKey: .schoolDayFilter) ?? "any"
         taskSection = try c.decodeIfPresent(String.self, forKey: .taskSection) ?? "tasks"
+        alarm = try c.decodeIfPresent(Bool.self, forKey: .alarm) ?? false
     }
     init(legacy chore: Chore) {
         id = chore.id; title = chore.title; personId = chore.personId; weekdays = chore.weekdays; version = chore.version
