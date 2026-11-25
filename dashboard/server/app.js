@@ -301,8 +301,10 @@ export async function handleRequest(request, options = {}) {
     const known = error instanceof ApiError;
     const status = known ? error.status : 500;
     const code = known ? error.code : 'internal_error';
-    // Log only a stable code and correlation ID, never error objects, bodies or query strings.
-    if (status >= 500) console.error(JSON.stringify({ requestId, code, route, method: request.method }));
+    // Log a stable code, correlation ID and the error's type. For database errors add the
+    // SQLSTATE and the object it names. Never log messages, bodies or query strings.
+    if (status >= 500) console.error(JSON.stringify({ requestId, code, route, method: request.method, ...(known ? {} : { error: error?.name,
+      ...(typeof error?.code === 'string' && /^[0-9A-Z]{5}$/.test(error.code) ? { sqlstate: error.code, table: error.table, constraint: error.constraint, routine: error.routine } : {}) }) }));
     const response = Response.json({ error: { code, message: known ? error.message : 'Something went wrong. Please try again.', ...(known && error.details ? { details: error.details } : {}) }, requestId }, { status, headers: { 'Cache-Control': 'no-store' } });
     return authContext ? authContext.finish(response) : response;
   }

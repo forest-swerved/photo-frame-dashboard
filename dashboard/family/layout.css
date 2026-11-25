@@ -307,7 +307,7 @@ dialog > form { display:flex; flex-direction:column; max-height:calc(100vh - 32p
 .frame-person-count strong { display:block; font-size:27px; line-height:1.15; }
 .frame-person-count strong span { font-size:22px; color:var(--muted); }
 .frame-person-count small { display:block; color:var(--muted); font-size:12px; line-height:1; margin-top:2px; }
-.frame-person-progress { height:5px; background:var(--surface-soft); margin:6px 0 2px; flex-shrink:0; }
+.frame-person-progress { height:8px; background:var(--surface-soft); margin:6px 0 2px; flex-shrink:0; }
 .frame-person-progress i { background:var(--person); }
 .frame-person-tasks { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; scrollbar-width:thin; }
 .frame-person-tasks:focus-visible { outline:2px solid var(--primary); outline-offset:3px; }

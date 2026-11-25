@@ -72,6 +72,8 @@ const liveUpdates = createLiveUpdates({
   loaders: { household:()=>loadHousehold().catch(error=>{dataFailure(error);return false;}), internet:()=>internet.load(), calendar:()=>loadCalendar() },
   scope: () => JSON.stringify([generation,S.session?.authType,S.session?.role,S.session?.personId,frameAccessStatus()]),
   visible: () => !document.hidden && !!S.session?.household && !S.booting,
+  // An always-on frame showing photos does not need two-second confirmations.
+  interval: () => ambient.active() ? 10000 : 2000,
   onStatus: error => {
     if(error?.status===401||error?.status===403) { dataFailure(error);return; }
     const message=error ? 'Live updates interrupted. Reconnecting…' : '';
@@ -1056,6 +1058,7 @@ window.addEventListener('hashchange', () => {
 });
 window.addEventListener('online', () => { liveUpdates.tick(true);refresh(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { sounds.stop(); sounds.resetTimers(); } tickFrameEvents(); if (!document.hidden && S.session?.household) { liveUpdates.tick(true);refresh(); } });
+let rolloverTried = -Infinity, soundsArmed = false;
 setInterval(() => {
   parentLocations.tick();
   parentMap.refresh();
@@ -1066,9 +1069,13 @@ setInterval(() => {
   liveUpdates.tick();
   tickFrameEvents();
   taskAlarm.tick();
+  // The kiosk allows audio without a touch. Arm once after a restart so timer and reward cues are not
+  // silent until someone taps; other browsers still wait for a real gesture, and nothing plays by arming.
+  if (frame() && S.session?.household && !soundsArmed) { soundsArmed = true; sounds.unlock(); }
   if (taskAlarm.showing()) ambient.stop();
   if (frame() && workbench.accessExpired() && !document.querySelector('.parent-keypad') && !dialog.open) { workbench.reset(); boot(); return; }
-  if (S.session?.household && S.snapshot && S.snapshot.date !== today() && !pollBusy) { pollBusy = true; refresh().finally(() => { pollBusy = false; }); }
+  // After midnight, fetch the new day; while offline retry every fifteen seconds rather than every second.
+  if (S.session?.household && S.snapshot && S.snapshot.date !== today() && !pollBusy && performance.now() - rolloverTried >= 15000) { pollBusy = true; rolloverTried = performance.now(); refresh().finally(() => { pollBusy = false; }); }
 }, 1000);
 setInterval(async () => {
   if (document.hidden || !S.session?.household || pollBusy || dialog.open) return;

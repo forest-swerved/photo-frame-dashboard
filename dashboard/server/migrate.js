@@ -23,5 +23,10 @@ export async function migrate(env = process.env) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  migrate().catch(() => { console.error('Family schema migration failed; no credentials were logged.'); process.exitCode = 1; });
+  // A database error names the failing statement's object; connection errors print only their type.
+  migrate().catch(error => {
+    const sql = typeof error?.code === 'string' && /^[0-9A-Z]{5}$/.test(error.code);
+    console.error(`Family schema migration failed (${sql ? `${error.code}: ${error.message}${error.table ? `, table ${error.table}` : ''}${error.constraint ? `, constraint ${error.constraint}` : ''}` : error?.name || 'error'}); no credentials were logged.`);
+    process.exitCode = 1;
+  });
 }
