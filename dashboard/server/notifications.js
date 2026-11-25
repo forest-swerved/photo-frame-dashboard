@@ -7,6 +7,7 @@ import { classifyApnsResult, preflightApns, sendApns } from './apns.js';
 import { activeMobileSessionSql as activeSession } from './mobile.js';
 import { ensureDailyOccurrences } from './chore-occurrences.js';
 import { schoolDayForDate } from './school-calendar.js';
+import { alarmState, ringingAlarmEvents } from './task-alarms.js';
 import { notificationContent, notificationCategory, notificationThread, notificationArtwork, notificationPreviewPayload } from './notification-content.js';
 
 const preferenceColumns = Object.freeze({ pushEnabled: 'push_enabled', choreCompleted: 'chore_completed', choreReopened: 'chore_reopened',
@@ -16,7 +17,7 @@ const preferenceForKind = { chore_completed: 'choreCompleted', chore_reopened: '
   chore_overdue: 'choreOverdue', chore_submitted: 'choreCompleted', calendar_upcoming: 'calendarEvents', calendar_unavailable: 'calendarEvents', calendar_restored: 'calendarEvents', frame_offline: 'frameStatus', frame_online: 'frameStatus',
   reward_earned: 'rewards', session_started: 'internetSessions', session_warning: 'internetSessions', session_expired: 'internetSessions', session_paused: 'internetSessions',
   session_ended: 'internetSessions', session_adjusted: 'internetSessions', enforcement_failed: 'internetSessions', daily_tasks_reminder: 'taskReminders', daily_tasks_completed: 'dailyCompleted', access_requested: 'accessRequests', access_approved: 'accessRequests', access_declined: 'accessRequests', access_granted: 'internetSessions' };
-const childChoreKinds = ['chore_completed', 'chore_reopened', 'chore_due_soon', 'chore_overdue'];
+const childChoreKinds = ['chore_completed', 'chore_reopened', 'chore_due_soon', 'chore_overdue', 'chore_alarm'];
 const childNetworkKinds = ['reward_earned', 'session_started', 'session_warning', 'session_expired', 'session_paused', 'session_ended', 'session_adjusted', 'access_approved', 'access_declined', 'access_granted'];
 const childDailyKinds = ['daily_tasks_reminder'];
 const uuidPattern = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$';
@@ -172,7 +173,7 @@ export async function notificationInbox(db, principal) {
   const account = await checkedAccount(db, principal);
   const rows = (await db.query(`SELECT i.id,i.created_at,i.read_at,e.type,e.chore_id,e.date::text,e.occurred_at,e.payload || jsonb_build_object('personName',coalesce(e.payload->>'personName',(SELECT name FROM family_people WHERE household_id=e.household_id AND id=e.person_id))) AS payload FROM family_account_notification_inbox i
     JOIN family_notification_events e ON e.id=i.event_id
-    WHERE i.household_id=$1 AND i.user_id=$2 AND ($3::uuid IS NULL OR ${childEventScope('e', '$3')})
+    WHERE i.household_id=$1 AND i.user_id=$2 AND e.type<>'chore_alarm' AND ($3::uuid IS NULL OR ${childEventScope('e', '$3')})
     ORDER BY i.created_at DESC,i.id DESC LIMIT 100`, [account.householdId, account.userId, account.personId])).rows;
   return { notifications: rows.map(row => { const [title, body] = notificationText({...row,timezone:principal.household.timezone}); return { id: row.id, kind: row.type, title, body,
     choreId: row.chore_id || null, date: row.date || null, occurrenceId: uuidJson(row.payload?.occurrenceId),
@@ -319,6 +320,7 @@ async function scanHousehold(db, household, now) {
           payload: { title: chore.title, choreVersion: chore.routine_version, occurrenceId: chore.id, occurrenceVersion: chore.version, occurrenceStatus: 'pending', dueTime: chore.due_time } });
       }
     }
+    for (const alarm of await ringingAlarmEvents(client, household, now)) events += await insertEvent(client, alarm);
     const connection = await one(client, "SELECT updated_at,version,selected_ids FROM family_calendar_connections WHERE household_id=$1 AND jsonb_array_length(selected_ids)>0", [household.id]);
     const cache = connection ? await one(client, `SELECT snapshot,successful_at FROM family_calendar_cache WHERE household_id=$1
       AND connection_version=$2 AND timezone=$3 AND start_date<=$4::date AND end_date>$4::date ORDER BY successful_at DESC LIMIT 1`,
@@ -391,6 +393,10 @@ export function lockScreenPayload(notificationId, event) {
   if (!event) return { aps: { alert: { title:'Family Frame', body:'Your family has an update. Open Family Frame to see it.' },
     sound:'default', category:'FAMILY_UPDATE', 'thread-id':'family-frame' }, notificationId };
   const category = notificationCategory(event.type), rich = category==='FAMILY_INTERNET' || category==='FAMILY_ACCESS_REQUEST';
+  // The bundled alarm tone runs close to the 30-second limit; a new push each
+  // minute keeps the phone ringing until the task is confirmed or snoozed.
+  if (category === 'FAMILY_ALARM') return { aps: { alert:notificationContent(event), sound:'task-alarm.caf', category, 'thread-id':notificationThread(event),
+    'interruption-level':'time-sensitive' }, notificationId, occurrenceId: event.payload?.occurrenceId };
   return { aps: { alert:notificationContent(event), sound:'default', category, 'thread-id':notificationThread(event),
     ...(rich && event.payload?.deviceName ? {'mutable-content':1} : {}) }, notificationId,
     ...(rich && event.payload?.deviceName ? {artwork:notificationArtwork(event.payload.deviceKind,event.payload.deviceName)} : {}) };
@@ -442,7 +448,10 @@ async function deliver(db, lease, env, now, send) {
       // Today's immutable definition, not the editable recurring routine, owns
       // identity and recipients. A queued reminder survives step progress, but
       // rescheduling or submission/completion always invalidates it.
-      if (['chore_due_soon', 'chore_overdue'].includes(delivery.type)) {
+      if (delivery.type === 'chore_alarm') {
+        // Confirming or snoozing on any screen stops queued rings at once.
+        if (!alarmState(occurrence, delivery.timezone, now).ringing) return suppress('alarm_stopped');
+      } else if (['chore_due_soon', 'chore_overdue'].includes(delivery.type)) {
         if (occurrence.status !== 'pending' || occurrence.routine_version !== delivery.payload.choreVersion
           || delivery.payload.dueTime && occurrence.due_time !== delivery.payload.dueTime) return suppress('completion_changed');
       } else if (occurrence.completion_version !== delivery.payload.completionVersion
@@ -452,8 +461,10 @@ async function deliver(db, lease, env, now, send) {
     } else if (session.kind === 'child' && ![...childNetworkKinds, ...childDailyKinds].includes(delivery.type)) return suppress('recipient_scope');
     const row = await one(client, 'SELECT * FROM family_account_notification_preferences WHERE household_id=$1 AND user_id=$2', [session.household_id, session.user_id]);
     const preferences = preferencesDto(row, delivery.timezone);
-    if (!preferences.pushEnabled || !preferences[preferenceForKind[delivery.type]]) return suppress('preference_disabled');
-    const resume = quietUntil(now, delivery.timezone, preferences.quietStart, preferences.quietEnd);
+    // A parent-set alarm is not a preference: it ignores category switches and quiet hours.
+    const alarm = delivery.type === 'chore_alarm';
+    if (!alarm && (!preferences.pushEnabled || !preferences[preferenceForKind[delivery.type]])) return suppress('preference_disabled');
+    const resume = alarm ? null : quietUntil(now, delivery.timezone, preferences.quietStart, preferences.quietEnd);
     if (resume) {
       if (resume >= new Date(delivery.expires_at)) return suppress('quiet_hours_expired');
       await client.query("UPDATE family_notification_deliveries SET state='pending',available_at=$2,lease_id=NULL,lease_until=NULL,last_error='quiet_hours' WHERE id=$1", [delivery.id, resume]);
@@ -466,7 +477,7 @@ async function deliver(db, lease, env, now, send) {
       token = credentials.token;
     } catch { return suppress('installation_unavailable'); }
     let result;
-    try { result = await send({ token, environment: delivery.environment, notificationId: delivery.id, expiresAt: delivery.expires_at, payload: lockScreenPayload(delivery.account_notification_id || delivery.inbox_id, preferences.showDetails ? delivery : undefined) }, env); }
+    try { result = await send({ token, environment: delivery.environment, notificationId: delivery.id, expiresAt: delivery.expires_at, payload: lockScreenPayload(delivery.account_notification_id || delivery.inbox_id, preferences.showDetails || alarm ? delivery : undefined) }, env); }
     catch { result = { accepted: false, status: 0, reason: 'transport_error' }; }
     const decision = classifyApnsResult(result, delivery.attempts + 1);
     if (decision.disable) await client.query('UPDATE family_push_installations SET disabled_at=$2 WHERE id=$1 AND registered_at=$3::timestamptz', [delivery.installation_id, now, delivery.registered_version]);

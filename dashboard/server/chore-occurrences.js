@@ -52,7 +52,7 @@ export function occurrenceDto(row) {
     skipReason: row.skip_reason || null, rescheduledFrom: date === originalDate ? null : originalDate,
     completedAt: instant(row.completed_at), approvedAt: instant(row.approved_at),
     schoolDayFilter: row.school_day_filter || 'any', schoolExcused: row.school_excused || false, schoolScheduleExempt: row.school_schedule_exempt || false,
-    taskSection: row.task_section || 'tasks',
+    taskSection: row.task_section || 'tasks', alarm: row.alarm === true, alarmSnoozedUntil: instant(row.alarm_snoozed_until),
     definitionSource: row.definition_source, routineVersion: row.routine_version, createdAt: instant(row.created_at), updatedAt: instant(row.updated_at) };
 }
 
@@ -127,14 +127,14 @@ export async function ensureDailyOccurrences(client, household, date, { now = ne
         person_name: routine.person_name, required: routine.required, instructions: routine.instructions,
         subtask_definitions: routine.subtasks, requires_approval: routine.requires_approval, due_time: routine.due_time,
         reminder_minutes: routine.reminder_minutes, school_day_filter: routine.school_day_filter, task_section: routine.task_section,
-        status: exception ? 'skipped' : 'pending', skip_reason: exception?.reason || null, exception_id: exception?.id || null };
+        alarm: routine.alarm === true && !!routine.due_time && !!routine.person_id, status: exception ? 'skipped' : 'pending', skip_reason: exception?.reason || null, exception_id: exception?.id || null };
     });
     const inserted = (await client.query(`INSERT INTO family_chore_occurrences(household_id,chore_id,original_date,date,routine_version,definition_source,title,person_id,person_name,required,instructions,
-      subtask_definitions,requires_approval,original_due_time,due_time,reminder_minutes,school_day_filter,task_section,status,skip_reason,exception_id,created_at,updated_at)
+      subtask_definitions,requires_approval,original_due_time,due_time,reminder_minutes,school_day_filter,task_section,alarm,status,skip_reason,exception_id,created_at,updated_at)
       SELECT $1,x.chore_id,$2::date,$2::date,x.routine_version,$3,x.title,x.person_id,x.person_name,x.required,x.instructions,
-        x.subtask_definitions,x.requires_approval,x.due_time,x.due_time,x.reminder_minutes,x.school_day_filter,x.task_section,x.status,x.skip_reason,x.exception_id,$5,$5
+        x.subtask_definitions,x.requires_approval,x.due_time,x.due_time,x.reminder_minutes,x.school_day_filter,x.task_section,x.alarm,x.status,x.skip_reason,x.exception_id,$5,$5
       FROM jsonb_to_recordset($4::jsonb) AS x(chore_id uuid,routine_version integer,title text,person_id uuid,person_name text,required boolean,instructions text,
-        subtask_definitions jsonb,requires_approval boolean,due_time time,reminder_minutes smallint,school_day_filter text,task_section text,status text,skip_reason text,exception_id uuid)
+        subtask_definitions jsonb,requires_approval boolean,due_time time,reminder_minutes smallint,school_day_filter text,task_section text,alarm boolean,status text,skip_reason text,exception_id uuid)
       ON CONFLICT(household_id,chore_id,original_date) DO NOTHING RETURNING *,date::text,original_date::text`,
     [household.id, date, date === today ? 'routine' : 'parent_correction', JSON.stringify(definitions), now])).rows;
     if (inserted.length) await client.query(`INSERT INTO family_chore_events(id,household_id,occurrence_id,type,actor,actor_name,reason,after_state,created_at)
@@ -191,12 +191,13 @@ async function writeLegacyCompletion(client, row, principal, now) {
   [row.household_id, row.chore_id, plainDate(row), completed(row), row.completion_version, principal.actor, now]);
 }
 
-async function applyCompletion(client, principal, row, body, expectedKind, now, onChange) {
+async function applyCompletion(client, principal, row, body, expectedKind, now, onChange, alarmGuard) {
   if (principal.role === 'child' && row.person_id !== principal.personId) throw notFound();
   const current = occurrenceDto(row);
   requireValue((expectedKind === 'occurrence' ? row.version : row.completion_version) === body.expectedVersion,
     409, 'version_conflict', 'This task was changed on another screen.', { current: expectedKind === 'occurrence' ? current : { choreId: row.chore_id, ...current.completion } });
   requireValue(row.status !== 'skipped', 409, 'chore_skipped', 'A parent has excused this task for this day.');
+  if (body.completed && !completed(row) && alarmGuard) await alarmGuard(client, principal, row);
   if (body.completed && row.status === 'pending' && row.school_day_filter !== 'any' && !row.school_schedule_exempt && plainDate(row) === dateOf(row.original_date) && row.definition_source === 'routine')
     requireValue(routineSchoolMatches(row.school_day_filter, await schoolDayForDate(client, row.household_id, plainDate(row))),
       409, 'school_schedule_changed', 'The school schedule changed. Refresh to see the tasks for this day.');
@@ -216,7 +217,7 @@ async function applyCompletion(client, principal, row, body, expectedKind, now, 
 
 // Compatible completion endpoint: expectedVersion is the legacy completion CAS
 // version. Occurrence endpoints below use the full occurrence version instead.
-export async function setRoutineCompletion(db, principal, choreId, date, body, { now = new Date(), onChange } = {}) {
+export async function setRoutineCompletion(db, principal, choreId, date, body, { now = new Date(), onChange, alarmGuard } = {}) {
   const householdId = requireHousehold(principal);
   uuidField(choreId); dateField(date); uuidField(body.mutationId, 'Mutation ID'); versionField(body.expectedVersion);
   requireValue(typeof body.completed === 'boolean', 422, 'invalid_completion', 'Send the desired completed state.');
@@ -235,13 +236,13 @@ export async function setRoutineCompletion(db, principal, choreId, date, body, {
     await lockChoreDay(client, householdId, date);
     const row = await one(client, `SELECT *,date::text,original_date::text FROM family_chore_occurrences WHERE household_id=$1 AND chore_id=$2 AND date=$3::date AND status<>'skipped' FOR UPDATE`, [householdId, choreId, date]);
     if (!row) throw notFound();
-    const updated = await applyCompletion(client, principal, row, { ...body, reason }, 'completion', now, onChange);
+    const updated = await applyCompletion(client, principal, row, { ...body, reason }, 'completion', now, onChange, alarmGuard);
     const dto = occurrenceDto(updated);
     return rememberMutation(client, householdId, principal, body.mutationId, hash, { choreId, ...dto.completion, mutationId: body.mutationId, occurrence: dto });
   });
 }
 
-export async function setOccurrenceCompletion(db, principal, id, body, { now = new Date(), onChange } = {}) {
+export async function setOccurrenceCompletion(db, principal, id, body, { now = new Date(), onChange, alarmGuard } = {}) {
   const householdId = requireHousehold(principal);
   uuidField(id); uuidField(body.mutationId, 'Mutation ID'); versionField(body.expectedVersion);
   requireValue(typeof body.completed === 'boolean', 422, 'invalid_completion', 'Send the desired completed state.');
@@ -255,7 +256,7 @@ export async function setOccurrenceCompletion(db, principal, id, body, { now = n
     await lockChoreDay(client, householdId, candidate.date);
     const row = await one(client, 'SELECT *,date::text,original_date::text FROM family_chore_occurrences WHERE household_id=$1 AND id=$2 FOR UPDATE', [householdId, id]);
     requireValue(row.date === candidate.date, 409, 'version_conflict', 'This task moved. Refresh the day.');
-    const updated = await applyCompletion(client, principal, row, { ...body, reason }, 'occurrence', now, onChange);
+    const updated = await applyCompletion(client, principal, row, { ...body, reason }, 'occurrence', now, onChange, alarmGuard);
     return rememberMutation(client, householdId, principal, body.mutationId, hash, { ...occurrenceDto(updated), mutationId: body.mutationId });
   });
 }

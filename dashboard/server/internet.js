@@ -24,11 +24,14 @@ export function preparationRemaining(row, now = new Date()) {
   const end = Date.parse(prep.endsAt);
   return Number.isFinite(end) ? Math.max(0, Math.ceil((end - now) / 1000)) : 0;
 }
+// Saved (unspent) reward time tops out here. A reward earned at the cap cannot
+// be banked: it expires at the end of its own household day.
+export const SAVED_TIME_CAP_MINUTES = 600;
 export const defaultRewardPolicy = personId => ({ personId, version: 0, enabled: true, rewardMinutes: 60, carryoverDays: 7, dailyLimitMinutes: 180, bedtime: null, warningMinutes: 5 });
 export const policyDto = row => row ? ({ personId: row.person_id, version: row.version, enabled: row.enabled, rewardMinutes: row.reward_minutes,
   carryoverDays: row.carryover_days, dailyLimitMinutes: row.daily_limit_minutes, bedtime: row.bedtime?.slice(0, 5) || null, warningMinutes: row.warning_minutes }) : null;
 export const creditDto = row => ({ id: row.id, personId: row.person_id, earnedDate: day(row.earned_date), minutes: row.minutes,
-  status: row.status, expiresAt: iso(row.expires_at), policyVersion: row.policy_version });
+  status: row.status, expiresAt: iso(row.expires_at), policyVersion: row.policy_version, useOrLose: row.policy_snapshot?.useOrLose === true });
 export const sessionDto = row => ({ id: row.id, personId: row.person_id, deviceId: row.device_id, creditId: row.credit_id, source: row.source,
   state: row.state, version: row.version, desiredState: row.desired_state, observedState: row.observed_state, requestedAt: iso(row.requested_at),
   startedAt: iso(row.started_at), endsAt: iso(row.ends_at), remainingSeconds: row.remaining_seconds, verifiedAt: iso(row.verified_at),
@@ -170,11 +173,16 @@ export async function syncChoreReward(client, change, { now = new Date() } = {})
   const policy = policyDto(await one(client, 'SELECT * FROM family_reward_policies WHERE household_id=$1 AND person_id=$2', [household.id, change.personId]));
   if (!policy.enabled) return;
   const id = randomUUID();
+  const saved = (await one(client, `SELECT coalesce(sum(minutes),0)::int AS minutes FROM family_reward_credits
+    WHERE household_id=$1 AND person_id=$2 AND status IN ('available','held') AND expires_at>$3`, [household.id, change.personId, now])).minutes;
+  const useOrLose = saved + policy.rewardMinutes > SAVED_TIME_CAP_MINUTES;
   await client.query(`INSERT INTO family_reward_credits(id,household_id,person_id,earned_date,minutes,policy_version,policy_snapshot,occurrence_ids,status,expires_at)
     VALUES($1,$2,$3,$4::date,$5,$6,$7::jsonb,$8,'available',$9)`,
-  [id, household.id, change.personId, today, policy.rewardMinutes, policy.version, JSON.stringify(policy), progress.occurrenceIds, nextDayStart(today, household.timezone, policy.carryoverDays + 1)]);
-  await internetEvent(client, { householdId: household.id, personId: change.personId, type: 'reward_earned', actor: change.actor || 'system:chores', details: { creditId: id, minutes: policy.rewardMinutes, date: today }, now });
-  await internetNotification(client, { householdId: household.id, personId: change.personId, type: 'reward_earned', key: `reward:${change.personId}:${today}`, creditId: id, payload: { minutes: policy.rewardMinutes }, now });
+  [id, household.id, change.personId, today, policy.rewardMinutes, policy.version, JSON.stringify({ ...policy, ...(useOrLose ? { useOrLose: true } : {}) }), progress.occurrenceIds,
+    nextDayStart(today, household.timezone, useOrLose ? 1 : policy.carryoverDays + 1)]);
+  await internetEvent(client, { householdId: household.id, personId: change.personId, type: 'reward_earned', actor: change.actor || 'system:chores', details: { creditId: id, minutes: policy.rewardMinutes, date: today, useOrLose }, now });
+  await internetNotification(client, { householdId: household.id, personId: change.personId, type: 'reward_earned', key: `reward:${change.personId}:${today}`, creditId: id,
+    payload: { minutes: policy.rewardMinutes, ...(useOrLose ? { useOrLose: true, savedCapMinutes: SAVED_TIME_CAP_MINUTES } : {}) }, now });
 }
 
 export async function notifyDailyCompletion(client, household, personId, date, now) {
@@ -225,7 +233,7 @@ export async function internetSnapshot(db, principal, { env = process.env, now =
     try { unifiConfiguration(env); managementHost = configuredManagementHost(env); configured = true; } catch { /* Inactive state is explicit. */ }
     const progress = [];
     for (const person of people) progress.push(await getRequiredProgress(client, householdId, person.id, date));
-    return { serverTime: now.toISOString(), timezone: principal.household.timezone, role: principal.role, capabilities,
+    return { serverTime: now.toISOString(), timezone: principal.household.timezone, role: principal.role, capabilities, savedCapMinutes: SAVED_TIME_CAP_MINUTES,
       integration: { state: !configured ? 'unconfigured' : integration?.state || 'pilot_required', managementHost,
         enrollmentBasis: parentAcceptedSetup(integration) ? 'parent_accepted' : 'pilot',
         scheduleSupport: scheduleSupport(integration, principal.household.timezone, now),

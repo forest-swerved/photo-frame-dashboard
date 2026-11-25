@@ -65,6 +65,19 @@ CREATE TABLE IF NOT EXISTS family_chore_occurrences (
   FOREIGN KEY(household_id,chore_id) REFERENCES family_chores(household_id,id),
   FOREIGN KEY(household_id,exception_id) REFERENCES family_chore_exceptions(household_id,id)
 );
+-- A parent-set alarm rings on the frame and the child's phone from the task's
+-- due time until the child confirms it. A snooze silences every screen at once
+-- and is not part of the immutable daily definition.
+ALTER TABLE family_chores ADD COLUMN IF NOT EXISTS alarm boolean NOT NULL DEFAULT false;
+ALTER TABLE family_chore_occurrences ADD COLUMN IF NOT EXISTS alarm boolean NOT NULL DEFAULT false;
+ALTER TABLE family_chore_occurrences ADD COLUMN IF NOT EXISTS alarm_snoozed_until timestamptz;
+DO $task_alarm$
+BEGIN
+  IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='family_chores'::regclass AND conname='family_chore_alarm_time') THEN
+    ALTER TABLE family_chores ADD CONSTRAINT family_chore_alarm_time CHECK (NOT alarm OR due_time IS NOT NULL);
+  END IF;
+END
+$task_alarm$;
 CREATE UNIQUE INDEX IF NOT EXISTS family_chore_occurrence_active_date ON family_chore_occurrences(household_id,chore_id,date) WHERE status<>'skipped';
 CREATE INDEX IF NOT EXISTS family_chore_occurrence_person_day ON family_chore_occurrences(household_id,person_id,date);
 CREATE INDEX IF NOT EXISTS family_chore_occurrence_exception ON family_chore_occurrences(household_id,exception_id);
@@ -120,7 +133,7 @@ BEGIN
     FOR constraint_name IN SELECT conname FROM pg_constraint WHERE conrelid='family_notification_events'::regclass AND contype='c' AND pg_get_constraintdef(oid) LIKE '%type%chore_completed%' LOOP
       EXECUTE format('ALTER TABLE family_notification_events DROP CONSTRAINT %I',constraint_name);
     END LOOP;
-    ALTER TABLE family_notification_events ADD CONSTRAINT family_notification_event_type CHECK(type IN ('chore_submitted','chore_completed','chore_reopened','chore_due_soon','chore_overdue','calendar_upcoming','calendar_unavailable','calendar_restored','frame_offline','frame_online','reward_earned','session_started','session_warning','session_expired','session_paused','session_ended','session_adjusted','enforcement_failed','daily_tasks_reminder','daily_tasks_completed','access_requested','access_approved','access_declined','access_granted'));
+    ALTER TABLE family_notification_events ADD CONSTRAINT family_notification_event_type CHECK(type IN ('chore_submitted','chore_completed','chore_reopened','chore_due_soon','chore_overdue','chore_alarm','calendar_upcoming','calendar_unavailable','calendar_restored','frame_offline','frame_online','reward_earned','session_started','session_warning','session_expired','session_paused','session_ended','session_adjusted','enforcement_failed','daily_tasks_reminder','daily_tasks_completed','access_requested','access_approved','access_declined','access_granted'));
   END IF;
 END
 $notification_schema$;
