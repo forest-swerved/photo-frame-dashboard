@@ -1,0 +1,31 @@
+# Unit tests and production build for the family dashboard (web client and API).
+# Database and browser suites need a local Postgres and Playwright and still run by hand.
+name: Family dashboard
+on:
+  pull_request:
+    paths: ['dashboard/**', '.github/workflows/family-dashboard.yml']
+  push:
+    branches: [main]
+    paths: ['dashboard/**', '.github/workflows/family-dashboard.yml']
+permissions:
+  contents: read
+concurrency:
+  group: family-dashboard-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build

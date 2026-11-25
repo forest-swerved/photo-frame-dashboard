@@ -94,8 +94,9 @@ private struct DevicesContent: View {
                 NavigationLink { InternetHistoryScreen(network: network) } label: { Label("Internet activity and history", systemImage: "clock.arrow.circlepath").font(.headline).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading) }
             }.padding(20).frame(maxWidth: 1000).frame(maxWidth: .infinity)
         }.background(Brand.background).navigationTitle("Devices").refreshable { await network.refresh() }
-            .task(id: phase) {
-                guard phase == .active else { return }
+            // Every tab stays mounted, so poll only while Devices is on screen or a change is awaiting confirmation.
+            .task(id: "\(phase)|\(model.selectedTab == 3 || network.hasPendingNetworkWork)") {
+                guard phase == .active, model.selectedTab == 3 || network.hasPendingNetworkWork else { return }
                 while !Task.isCancelled {
                     await network.refresh()
                     do { try await Task.sleep(for: .seconds(network.hasPendingNetworkWork ? 3 : 15)) } catch { break }
@@ -437,7 +438,7 @@ struct DeviceAccessRequestEditor: View {
         NavigationStack {
             Form {
                 Section("Request time on \(device.name)") {
-                    Stepper("\(minutes) minutes", value: $minutes, in: 1...1439, step: 1)
+                    Stepper("\(minutes) minutes", value: $minutes, in: 5...1430, step: 5)
                     TextField("Reason (optional)", text: $reason, axis: .vertical).lineLimit(3...6)
                     if reason.count > 500 { Text("Keep your reason under 500 characters.").foregroundStyle(Brand.red) }
                 }

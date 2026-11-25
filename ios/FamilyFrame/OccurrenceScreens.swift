@@ -67,8 +67,10 @@ struct OccurrenceRow: View {
                 Group {
                     if pending { ProgressView() }
                     else { Image(systemName: current.isSubmitted ? "clock.fill" : current.isSkipped ? "minus.circle" : current.isDone ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 28)).foregroundStyle(current.isSubmitted ? Brand.magentaInk : current.isDone ? Brand.successInk : Brand.muted) }
-                }.frame(width: 44, height: 44)
+                        .font(.system(size: 28)).foregroundStyle(current.isSubmitted ? Brand.magentaInk : current.isDone ? Brand.successInk : Brand.muted)
+                        // A finished task should feel finished: a small bounce and a success tap.
+                        .symbolEffect(.bounce, value: current.isDone) }
+                }.frame(width: 44, height: 44).sensoryFeedback(trigger: current.status) { _, status in status == "completed" ? .success : status == "submitted" ? .impact(weight: .light) : nil }
             }.buttonStyle(.plain).disabled(!model.canChangeOccurrence(current) || pending || !current.canComplete || (current.isSubmitted && model.canManageChores))
                 .accessibilityLabel(current.isSubmitted ? "Withdraw submission for \(current.title)" : current.isDone ? "Reopen \(current.title)" : "Mark \(current.title) done")
                 .accessibilityValue(current.statusLabel)
