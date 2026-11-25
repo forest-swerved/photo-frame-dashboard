@@ -66,6 +66,15 @@ struct FrameAccessScreen: View {
             if model.canManageChores || model.canManageInternet {
                 Section("Parent PIN") {NavigationLink("Set or change your four-digit PIN") {ParentPinScreen()}}
             }
+            if model.canManageInternet, !(model.snapshot?.people ?? []).isEmpty {
+                Section {
+                    ForEach(model.snapshot?.people ?? []) { person in
+                        NavigationLink { ChildPinScreen(person: person) } label: {
+                            HStack { Text(person.name); Spacer(); Text(person.pinConfigured == true ? "PIN set" : "No PIN").foregroundStyle(Brand.muted) }
+                        }
+                    }
+                } header: { Text("Children's frame PINs") } footer: { Text("A child enters their own PIN on the frame to use saved time and to confirm alarm tasks.") }
+            }
             Section {
                 Text("Unlock protected controls on the shared frame using a short code from your own account.").font(.subheadline)
                 if model.canManageInternet {

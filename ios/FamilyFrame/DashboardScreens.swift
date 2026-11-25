@@ -17,7 +17,7 @@ struct TodayScreen: View {
                 SchoolDayCard()
                 ApprovalQueue()
                 RewardHomeCard(network: model.internet).id("earned-reward")
-                if model.session?.isChild == true { HomeRewardBalance(network: model.internet) }
+                SavedTimeCard(network: model.internet)
                 if model.session?.isChild != true { InternetHomeSessions(network: model.internet) }
                 if let snapshot = model.snapshot, snapshot.occurrences != nil {
                     ForEach(model.chorePeople.filter { model.session?.isChild != true || $0.id == model.session?.personId }) { person in

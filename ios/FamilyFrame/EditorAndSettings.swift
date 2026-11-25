@@ -14,6 +14,7 @@ struct TaskCreationWizard: View {
     @State private var days = Set(0...6)
     @State private var scheduledDate = Date()
     @State private var hasDeadline = false
+    @State private var alarm = false
     @State private var dueDate = Date()
     @State private var reminder = 15
     @State private var required = true
@@ -31,7 +32,7 @@ struct TaskCreationWizard: View {
         _taskSection = State(initialValue: initialTaskSection)
     }
     private var people: [Person] { model.snapshot?.people ?? [] }
-    private var draftSignature: String { draftFingerprint([title, personIDs.sorted().joined(separator: ","), scheduleType, schoolDayFilter, taskSection, days.sorted().description, Dates.day(scheduledDate, in: model.zone), String(hasDeadline), Dates.wallTimeString(dueDate, in: model.zone), String(reminder), String(required), String(requiresApproval), instructions, checklist]) }
+    private var draftSignature: String { draftFingerprint([title, personIDs.sorted().joined(separator: ","), scheduleType, schoolDayFilter, taskSection, days.sorted().description, Dates.day(scheduledDate, in: model.zone), String(hasDeadline), Dates.wallTimeString(dueDate, in: model.zone), String(reminder), String(required), String(requiresApproval), instructions, checklist, String(alarm)]) }
     private var dirty: Bool { originalDraft.map { $0 != draftSignature } ?? false }
     private var lines: [String] { checklist.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty } }
     private var validTask: Bool { !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && title.count <= 100 && !personIDs.isEmpty }
@@ -133,7 +134,7 @@ struct TaskCreationWizard: View {
                 }
                 DisclosureGroup("Deadline & reminders") {
                     Toggle("Set a deadline", isOn: $hasDeadline)
-                    if hasDeadline { DatePicker("Due by", selection: $dueDate, displayedComponents: .hourAndMinute).environment(\.timeZone, model.zone); Stepper("Remind \(reminder) minutes before", value: $reminder, in: 0...1440, step: 5) }
+                    if hasDeadline { DatePicker("Due by", selection: $dueDate, displayedComponents: .hourAndMinute).environment(\.timeZone, model.zone); Stepper("Remind \(reminder) minutes before", value: $reminder, in: 0...1440, step: 5); TaskAlarmToggle(isOn: $alarm) }
                     Text("Dates and deadlines follow \(model.session?.household.timezone ?? "your home timezone").").font(.caption).foregroundStyle(Brand.muted)
                 }
             }
@@ -145,7 +146,7 @@ struct TaskCreationWizard: View {
         var draft = ChoreDraft(title: title.trimmingCharacters(in: .whitespacesAndNewlines), personId: nil, weekdays: scheduleType == "one_off" ? Array(0...6) : days.sorted(), dueTime: hasDeadline ? Dates.wallTimeString(dueDate, in: model.zone) : nil, reminderMinutes: reminder)
         draft.scheduleType = scheduleType; draft.scheduledDate = scheduleType == "one_off" ? Dates.day(scheduledDate, in: model.zone) : nil
         draft.schoolDayFilter = schoolDayFilter; draft.taskSection = taskSection; draft.required = required; draft.requiresApproval = requiresApproval
-        draft.instructions = instructions; draft.subtasks = lines.map { ChoreStep(title: $0) }
+        draft.instructions = instructions; draft.subtasks = lines.map { ChoreStep(title: $0) }; draft.alarm = alarm && hasDeadline
         if await model.createTasks(draft, personIDs: personIDs.sorted(), mutationID: operationID) { dismiss() }
         else { saveBlocked = model.lastMutationNeedsReview; message = model.message }
     }
@@ -159,6 +160,7 @@ struct ChoreEditor: View {
     @State private var personID: String
     @State private var days: Set<Int>
     @State private var hasDeadline: Bool
+    @State private var alarm: Bool
     @State private var dueDate = Date()
     @State private var reminder: Int
     @State private var required: Bool
@@ -176,7 +178,7 @@ struct ChoreEditor: View {
     init(routine: ChoreRoutine?, assignedPersonID: String? = nil, initialSchoolDayFilter: String? = nil, initialTaskSection: String? = nil) {
         self.routine = routine
         _title = State(initialValue: routine?.title ?? ""); _personID = State(initialValue: routine?.personId ?? assignedPersonID ?? "")
-        _days = State(initialValue: Set(routine?.weekdays ?? Array(0...6))); _hasDeadline = State(initialValue: routine?.dueTime != nil)
+        _days = State(initialValue: Set(routine?.weekdays ?? Array(0...6))); _hasDeadline = State(initialValue: routine?.dueTime != nil); _alarm = State(initialValue: routine?.alarm ?? false)
         _reminder = State(initialValue: routine?.reminderMinutes ?? 15); _required = State(initialValue: routine?.required ?? true)
         _requiresApproval = State(initialValue: routine?.requiresApproval ?? false); _instructions = State(initialValue: routine?.instructions ?? "")
         _subtasks = State(initialValue: routine?.subtasks ?? []); _scheduleType = State(initialValue: routine?.scheduleType ?? "weekly")
@@ -184,7 +186,7 @@ struct ChoreEditor: View {
         _taskSection = State(initialValue: routine?.taskSection ?? initialTaskSection ?? "tasks")
     }
     @State private var originalDraft: String?
-    private var draftSignature: String { draftFingerprint([title, personID, String(describing: days.sorted()), String(hasDeadline), Dates.wallTimeString(dueDate, in: model.zone), String(reminder), String(required), String(requiresApproval), instructions, draftFingerprint(subtasks), scheduleType, schoolDayFilter, taskSection, Dates.day(scheduledDate, in: model.zone)]) }
+    private var draftSignature: String { draftFingerprint([title, personID, String(describing: days.sorted()), String(hasDeadline), Dates.wallTimeString(dueDate, in: model.zone), String(reminder), String(required), String(requiresApproval), instructions, draftFingerprint(subtasks), scheduleType, schoolDayFilter, taskSection, Dates.day(scheduledDate, in: model.zone), String(alarm)]) }
     private var hasUnsavedChanges: Bool { originalDraft.map { $0 != draftSignature } ?? false }
     var body: some View {
         if routine == nil {
@@ -236,6 +238,7 @@ struct ChoreEditor: View {
                     if hasDeadline {
                         DatePicker("Due by", selection: $dueDate, displayedComponents: .hourAndMinute).environment(\.timeZone, model.zone)
                         Stepper("Remind \(reminder) minutes before", value: $reminder, in: 0...1440, step: 5)
+                        if !personID.isEmpty { TaskAlarmToggle(isOn: $alarm) }
                     }
                 } header: { Text("Timing") } footer: { Text("Dates and deadlines follow \(model.session?.household.timezone ?? "the household timezone"), even when a phone travels.") }
                 Section {
@@ -280,7 +283,7 @@ struct ChoreEditor: View {
     private func save() async {
         saving = true; defer { saving = false }
         var draft = ChoreDraft(title: title.trimmingCharacters(in: .whitespacesAndNewlines), personId: personID.isEmpty ? nil : personID, weekdays: scheduleType == "one_off" ? Array(0...6) : days.sorted(), dueTime: hasDeadline ? Dates.wallTimeString(dueDate, in: model.zone) : nil, reminderMinutes: reminder, expectedVersion: routine?.version)
-        draft.required = required; draft.requiresApproval = requiresApproval; draft.instructions = instructions
+        draft.required = required; draft.requiresApproval = requiresApproval; draft.instructions = instructions; draft.alarm = alarm && hasDeadline && !personID.isEmpty
         draft.subtasks = subtasks; draft.scheduleType = scheduleType; draft.scheduledDate = scheduleType == "one_off" ? Dates.day(scheduledDate, in: model.zone) : nil
         draft.schoolDayFilter = scheduleType == "one_off" ? "any" : schoolDayFilter
         draft.taskSection = draft.scheduleType == "weekly" && draft.schoolDayFilter != "non_school_day" ? taskSection : "tasks"

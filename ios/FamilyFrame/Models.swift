@@ -43,6 +43,8 @@ struct Person: Codable, Identifiable, Equatable {
     let name: String
     let color: String
     let version: Int
+    /// Whether a parent has set this child's own four-digit frame PIN. The PIN itself never leaves the server.
+    var pinConfigured: Bool? = nil
 }
 
 struct ChoreCompletion: Codable, Equatable {
@@ -114,6 +116,8 @@ struct ChoreDraft: Encodable {
     var requiresApproval = false
     var schoolDayFilter = "any"
     var taskSection = "tasks"
+    /// Ring on the frame and the child's phone from the due time until the child confirms the task.
+    var alarm = false
     // Explicit nulls clear assignment/deadline when editing.
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -128,8 +132,9 @@ struct ChoreDraft: Encodable {
         try c.encode(scheduledDate, forKey: .scheduledDate); try c.encode(requiresApproval, forKey: .requiresApproval)
         try c.encode(scheduleType == "one_off" ? "any" : schoolDayFilter, forKey: .schoolDayFilter)
         try c.encode(scheduleType == "weekly" && schoolDayFilter != "non_school_day" ? taskSection : "tasks", forKey: .taskSection)
+        try c.encode(alarm && dueTime != nil, forKey: .alarm)
     }
-    enum CodingKeys: String, CodingKey { case title, personId, weekdays, dueTime, reminderMinutes, expectedVersion, required, instructions, subtasks, scheduleType, scheduledDate, requiresApproval, schoolDayFilter, taskSection }
+    enum CodingKeys: String, CodingKey { case title, personId, weekdays, dueTime, reminderMinutes, expectedVersion, required, instructions, subtasks, scheduleType, scheduledDate, requiresApproval, schoolDayFilter, taskSection, alarm }
 }
 
 struct TaskCreationRequest: Encodable {

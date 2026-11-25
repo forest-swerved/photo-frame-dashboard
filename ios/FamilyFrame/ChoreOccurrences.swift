@@ -25,8 +25,9 @@ struct ChoreRoutine: Codable, Identifiable, Equatable {
     var requiresApproval: Bool
     var schoolDayFilter = "any"
     var taskSection = "tasks"
+    var alarm = false
     private enum CodingKeys: String, CodingKey {
-        case id, title, personId, weekdays, version, dueTime, reminderMinutes, required, instructions, subtasks, scheduleType, scheduledDate, requiresApproval, schoolDayFilter, taskSection
+        case id, title, personId, weekdays, version, dueTime, reminderMinutes, required, instructions, subtasks, scheduleType, scheduledDate, requiresApproval, schoolDayFilter, taskSection, alarm
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -39,6 +40,7 @@ struct ChoreRoutine: Codable, Identifiable, Equatable {
         requiresApproval = try c.decode(Bool.self, forKey: .requiresApproval)
         schoolDayFilter = try c.decodeIfPresent(String.self, forKey: .schoolDayFilter) ?? "any"
         taskSection = try c.decodeIfPresent(String.self, forKey: .taskSection) ?? "tasks"
+        alarm = try c.decodeIfPresent(Bool.self, forKey: .alarm) ?? false
     }
     init(legacy chore: Chore) {
         id = chore.id; title = chore.title; personId = chore.personId; weekdays = chore.weekdays; version = chore.version
@@ -156,8 +158,12 @@ struct ChoreOccurrence: Codable, Identifiable, Equatable {
     var taskSection = "tasks"
     var schoolDayFilter = "any"
     var schoolScheduleExempt = false
+    /// A parent-set alarm: rings from the due time until this task is confirmed.
+    var alarm = false
+    /// Shared snooze deadline. It changes without a new version, so merges keep the later value.
+    var alarmSnoozedUntil: String? = nil
     private enum CodingKeys: String, CodingKey {
-        case id, choreId, date, originalDate, title, personId, personName, required, instructions, subtasks, requiresApproval, status, version, completion, dueTime, reminderMinutes, skipReason, rescheduledFrom, completedAt, approvedAt, definitionSource, routineVersion, createdAt, updatedAt, taskSection, schoolDayFilter, schoolScheduleExempt
+        case id, choreId, date, originalDate, title, personId, personName, required, instructions, subtasks, requiresApproval, status, version, completion, dueTime, reminderMinutes, skipReason, rescheduledFrom, completedAt, approvedAt, definitionSource, routineVersion, createdAt, updatedAt, taskSection, schoolDayFilter, schoolScheduleExempt, alarm, alarmSnoozedUntil
     }
     var isDone: Bool { status == "completed" }
     var isSubmitted: Bool { status == "submitted" }
@@ -192,7 +198,9 @@ extension ChoreOccurrence {
                   createdAt: try c.decodeIfPresent(String.self, forKey: .createdAt), updatedAt: try c.decodeIfPresent(String.self, forKey: .updatedAt),
                   taskSection: try c.decodeIfPresent(String.self, forKey: .taskSection) ?? "tasks",
                   schoolDayFilter: try c.decodeIfPresent(String.self, forKey: .schoolDayFilter) ?? "any",
-                  schoolScheduleExempt: try c.decodeIfPresent(Bool.self, forKey: .schoolScheduleExempt) ?? false)
+                  schoolScheduleExempt: try c.decodeIfPresent(Bool.self, forKey: .schoolScheduleExempt) ?? false,
+                  alarm: try c.decodeIfPresent(Bool.self, forKey: .alarm) ?? false,
+                  alarmSnoozedUntil: try c.decodeIfPresent(String.self, forKey: .alarmSnoozedUntil))
     }
 }
 

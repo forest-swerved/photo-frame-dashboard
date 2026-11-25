@@ -4,13 +4,21 @@ import UserNotifications
 
 final class NotificationPresentationTests: XCTestCase {
     func testNotificationActionsOpenTheAppAndRequireUnlocking() {
-        XCTAssertEqual(Set(FamilyNotificationCategories.all.map(\.identifier)), ["FAMILY_TASK", "FAMILY_INTERNET", "FAMILY_ACCESS_REQUEST", "FAMILY_REWARD", "FAMILY_UPDATE", "FAMILY_PREVIEW"])
+        XCTAssertEqual(Set(FamilyNotificationCategories.all.map(\.identifier)), ["FAMILY_TASK", "FAMILY_INTERNET", "FAMILY_ACCESS_REQUEST", "FAMILY_REWARD", "FAMILY_UPDATE", "FAMILY_PREVIEW", "FAMILY_ALARM"])
         for category in FamilyNotificationCategories.all {
-            XCTAssertEqual(category.actions.count, 1)
+            // Every category opens the app behind the device lock. Only the alarm adds a second action.
             XCTAssertTrue(category.actions[0].options.contains(.foreground))
             XCTAssertTrue(category.actions[0].options.contains(.authenticationRequired))
             XCTAssertEqual(category.actions[0].identifier, "FAMILY_OPEN")
+            XCTAssertEqual(category.actions.count, category.identifier == FamilyNotificationCategories.alarm ? 2 : 1)
         }
+    }
+    func testAlarmSnoozeIsTheOnlyBackgroundActionAndCannotCompleteATask() throws {
+        let alarm = try XCTUnwrap(FamilyNotificationCategories.all.first { $0.identifier == FamilyNotificationCategories.alarm })
+        let snooze = alarm.actions[1]
+        XCTAssertEqual(snooze.identifier, FamilyNotificationCategories.alarmSnooze)
+        XCTAssertFalse(snooze.options.contains(.foreground)); XCTAssertTrue(snooze.options.contains(.authenticationRequired))
+        XCTAssertFalse(alarm.actions.contains { $0.identifier.contains("DONE") || $0.identifier.contains("COMPLETE") }, "Confirming the task always happens in the app.")
     }
     func testBundledArtworkDoesNotChangeNotificationTextOrOpaqueNavigation() {
         let content = UNMutableNotificationContent()

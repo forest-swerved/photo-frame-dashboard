@@ -25,6 +25,14 @@ struct FamilyFrameApp: App {
                     do { try await Task.sleep(for: .seconds(25)) } catch { break }
                 }
             }
+            .task(id: phase) {
+                // Re-check once a second so the alarm starts on time and stops the moment the task is confirmed anywhere.
+                while !Task.isCancelled {
+                    TaskAlarmPresenter.shared.sync(model, active: phase == .active)
+                    do { try await Task.sleep(for: .seconds(1)) } catch { break }
+                }
+                TaskAlarmPresenter.shared.hide()
+            }
             .onReceive(NotificationCenter.default.publisher(for: .familyNotificationReceived)) { _ in Task { await model.refresh() } }
             .task(id: (notifications.openedNotificationID ?? "") + "|" + (model.session?.cacheIdentity ?? "")) {
                 if let id = notifications.openedNotificationID, model.session != nil {
