@@ -17,16 +17,7 @@ enum FamilyNotificationCategories {
             // Every action opens the authenticated inbox. No lock-screen action can change a task or network rule.
             UNNotificationAction(identifier: "FAMILY_OPEN", title: title, options: [.foreground, .authenticationRequired])
         ], intentIdentifiers: [], options: [])
-    }).union([
-        // The alarm's Done opens the app to confirm the task. Snooze is the one
-        // background action: it only pauses ringing and never completes anything.
-        UNNotificationCategory(identifier: alarm, actions: [
-            UNNotificationAction(identifier: "FAMILY_OPEN", title: "Mark done", options: [.foreground, .authenticationRequired]),
-            UNNotificationAction(identifier: alarmSnooze, title: "Snooze 10 minutes", options: [.authenticationRequired])
-        ], intentIdentifiers: [], options: [])
-    ])
-    static let alarm = "FAMILY_ALARM"
-    static let alarmSnooze = "FAMILY_ALARM_SNOOZE"
+    })
 }
 
 @MainActor
@@ -38,7 +29,6 @@ final class NotificationController: NSObject, ObservableObject, UNUserNotificati
     @Published var currentToken: String?
     @Published private(set) var openedNotificationID: String?
     var onToken: ((String) async -> Void)?
-    var onAlarmSnooze: ((String) async -> Void)?
     var environment: String {
         (Bundle.main.object(forInfoDictionaryKey: "FamilyAPNSEnvironment") as? String) == "production" ? "production" : "sandbox"
     }
@@ -76,11 +66,9 @@ final class NotificationController: NSObject, ObservableObject, UNUserNotificati
     func consumeOpenedNotification(_ id: String) { if openedNotificationID == id { openedNotificationID = nil } }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        // In the foreground the alarm screen rings by itself; a second banner and tone would only add noise.
-        let alarm = notification.request.content.categoryIdentifier == FamilyNotificationCategories.alarm
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: .familyNotificationReceived, object: nil)
-            completionHandler(alarm ? [] : [.banner, .sound, .badge])
+            completionHandler([.banner, .sound, .badge])
         }
     }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
@@ -88,17 +76,6 @@ final class NotificationController: NSObject, ObservableObject, UNUserNotificati
         // Notification content is never trusted as a command; fetch the authoritative inbox.
         let raw = response.notification.request.content.userInfo["notificationId"] as? String
         let id = raw.flatMap { (1...128).contains($0.utf8.count) ? $0 : nil }
-        let content = response.notification.request.content
-        if content.categoryIdentifier == FamilyNotificationCategories.alarm {
-            let occurrence = content.userInfo["occurrenceId"] as? String
-            DispatchQueue.main.async {
-                // An alarm has no inbox entry to open. Snooze pauses it; anything else brings up the alarm screen.
-                if response.actionIdentifier == FamilyNotificationCategories.alarmSnooze, let occurrence {
-                    Task { await self.onAlarmSnooze?(occurrence); completionHandler() }
-                } else { NotificationCenter.default.post(name: .familyNotificationReceived, object: nil); completionHandler() }
-            }
-            return
-        }
         DispatchQueue.main.async {
             self.openedNotificationID = id
             NotificationCenter.default.post(name: .familyNotificationOpened, object: nil)

@@ -66,7 +66,6 @@ protocol FamilyAPI: AnyObject {
     func createFrameAccessCode(scope: String, personID: String?) async throws -> FrameAccessCode
     func parentPin(pin: String?) async throws -> ParentPinStatus
     func childPin(personID: String, pin: String?) async throws -> ChildPinStatus
-    func snoozeTaskAlarm(occurrenceID: String) async throws -> ChoreOccurrence
     func members() async throws -> [FamilyMember]
     func changeMemberCapabilities(_ id: String, capabilities: ParentCapabilities) async throws -> MemberCapabilitiesResult
     func internet() async throws -> InternetSnapshot
@@ -304,9 +303,6 @@ final class APIClient: FamilyAPI {
     func childPin(personID: String, pin: String?) async throws -> ChildPinStatus {
         struct Body: Encodable { let pin: String }
         return try await send("/api/people/\(personID)/pin", method: pin == nil ? "DELETE" : "PUT", body: try pin.map { try encoded(Body(pin: $0)) })
-    }
-    func snoozeTaskAlarm(occurrenceID: String) async throws -> ChoreOccurrence {
-        try await send("/api/chore-occurrences/\(occurrenceID)/alarm-snooze", method: "POST", body: Data("{}".utf8))
     }
     func members() async throws -> [FamilyMember] { let list: FamilyMemberList = try await send("/api/members"); return list.members }
     func changeMemberCapabilities(_ id: String, capabilities: ParentCapabilities) async throws -> MemberCapabilitiesResult {

@@ -7,6 +7,7 @@ import { occurrenceDto } from './chore-occurrences.js';
 export const ALARM_SNOOZE_MINUTES = 10;
 const plainDate = value => value instanceof Date ? value.toISOString().slice(0, 10) : String(value || '').slice(0, 10);
 
+// Task alarms ring on the paired family frame only; phones are never alerted.
 // The household-local instant a task's alarm starts. A due time skipped by a
 // clock change rings at the next valid wall-clock time instead of never.
 export function alarmDueAt(row, timezone) {
@@ -26,7 +27,7 @@ export function alarmState(row, timezone, now = new Date()) {
   return { dueAt, active, snoozedUntil, ringing: active && !snoozedUntil };
 }
 
-// Snoozing is shared state: silencing the frame also silences the phone. It
+// Snoozing is stored on the task so every paired frame goes quiet together. It
 // deliberately leaves the task version alone so a "done" tap never conflicts.
 export async function snoozeTaskAlarm(db, principal, id, { now = new Date() } = {}) {
   const householdId = requireHousehold(principal); uuidField(id);
@@ -46,16 +47,4 @@ export async function requireAlarmConfirmer(client, principal, row) {
   if (!row.alarm || principal.authType !== 'frame' || principal.verifiedFrameGrant || !row.person_id) return;
   const person = await one(client, 'SELECT name,frame_pin_hash IS NOT NULL AS pin FROM family_people WHERE household_id=$1 AND id=$2', [row.household_id, row.person_id]);
   requireValue(!person?.pin, 409, 'child_pin_required', `${person?.name || 'This child'} confirms this alarm with their own PIN.`, { personId: row.person_id });
-}
-
-// Called by the minute notification scan. One short-lived event per minute
-// re-alerts the child's phone for as long as the alarm keeps ringing.
-export async function ringingAlarmEvents(client, household, now) {
-  const date = householdDate(household.timezone, now);
-  const rows = (await client.query(`SELECT *,date::text FROM family_chore_occurrences WHERE household_id=$1 AND date=$2::date
-    AND alarm AND status='pending' AND due_time IS NOT NULL AND person_id IS NOT NULL`, [household.id, date])).rows;
-  return rows.filter(row => alarmState(row, household.timezone, now).ringing).map(row => ({
-    householdId: household.id, key: `chore_alarm:${row.id}:${Math.floor(now.getTime() / 60_000)}`, type: 'chore_alarm',
-    personId: row.person_id, choreId: row.chore_id, date, at: now, expiresAt: new Date(now.getTime() + 90_000),
-    payload: { title: row.title, occurrenceId: row.id, choreVersion: row.routine_version, dueTime: row.due_time, audience: 'children' } }));
 }

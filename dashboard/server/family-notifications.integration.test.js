@@ -153,30 +153,6 @@ test('family reminder, approval and recipient workflows against isolated Postgre
       const state=await internetSnapshot(db,accounts.child,{env,now:morning});
       assert.equal(state.devices[0].defaultAccess,'allowed'); assert.equal(state.devices[0].rewardAvailable,false);
     });
-    await t.test('a task alarm re-alerts only the assigned child every minute until it is snoozed or confirmed', async () => {
-      await clear();
-      const alarmChore = randomUUID(), ring = Date.parse('2026-10-26T22:31:00Z'); // 4:31 PM household time; the alarm was due at 4:30.
-      await db.query("INSERT INTO family_chores(id,household_id,title,person_id,due_time,reminder_minutes,required,alarm,created_at) VALUES($1,$2,'Synthetic alarm',$3,'16:30',0,false,true,'2026-01-01')",[alarmChore,household.id,accounts.child.personId]);
-      // The child's own switches and quiet hours cannot silence a parent-set alarm.
-      await notificationPreferences(db,accounts.child,{pushEnabled:false,quietStart:'16:00',quietEnd:'17:00'});
-      await run(ring);
-      const alarms = () => send.filter(msg => msg.payload.aps.category === 'FAMILY_ALARM');
-      assert.equal(alarms().length,1); assert.equal(alarms()[0].token[0],'3');
-      const occurrence = (await db.query('SELECT id FROM family_chore_occurrences WHERE chore_id=$1',[alarmChore])).rows[0].id;
-      assert.equal(alarms()[0].payload.aps.sound,'task-alarm.caf'); assert.equal(alarms()[0].payload.aps['interruption-level'],'time-sensitive');
-      assert.equal(alarms()[0].payload.occurrenceId,occurrence); assert.match(alarms()[0].payload.aps.alert.title,/Synthetic alarm/);
-      await run(ring); assert.equal(alarms().length,1,'One ring per minute.');
-      await run(ring+60_000); assert.equal(alarms().length,2);
-      // Rings never pile up in Activity, and no other account hears them.
-      for (const who of ['child','dad','mom','sibling']) assert.equal((await inbox(who)).filter(x=>x.kind==='chore_alarm').length,0);
-      assert.ok(send.every(msg => msg.payload.aps.category !== 'FAMILY_ALARM' || msg.token[0]==='3'));
-      await db.query('UPDATE family_chore_occurrences SET alarm_snoozed_until=$2 WHERE id=$1',[occurrence,new Date(ring+11*60_000)]);
-      await run(ring+2*60_000); await run(ring+10*60_000); assert.equal(alarms().length,2,'Snoozed.');
-      await run(ring+11*60_000); assert.equal(alarms().length,3,'It rings again after the snooze.');
-      await db.query("UPDATE family_chore_occurrences SET status='completed',version=version+1,completion_version=completion_version+1 WHERE id=$1",[occurrence]);
-      await run(ring+12*60_000); assert.equal(alarms().length,3,'Confirmed: silent.');
-      await db.query('DELETE FROM family_chore_occurrences WHERE chore_id=$1',[alarmChore]).catch(()=>{});
-    });
     await t.test('the additive schema can replay with every new event kind already present', async () => {
       for (const file of ['chore-schema.sql','account-notifications-schema.sql','family-notifications-schema.sql']) await db.query(await readFile(new URL(file,import.meta.url),'utf8'));
       const boundary=(await db.query("SELECT relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid='family_access_requests'::regclass")).rows[0];

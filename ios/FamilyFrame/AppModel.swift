@@ -93,10 +93,7 @@ final class AppModel: ObservableObject {
         self.locations = ParentLocationModel(api: client); self.media = MediaLibraryModel(api: client); self.api = client; self.internet = InternetModel(api: client); self.keychain = keychain; self.cache = cache; self.now = now
         self.media.authenticationFailed = { [weak self] reason in await self?.forgetSession(reason: reason) }
         self.internet.authenticationFailed = { [weak self] reason in await self?.forgetSession(reason: reason) }
-        if observesPush {
-            NotificationController.shared.onToken = { [weak self] token in await self?.registerPush(token) }
-            NotificationController.shared.onAlarmSnooze = { [weak self] id in await self?.snoozeAlarm(occurrenceID: id) }
-        }
+        if observesPush { NotificationController.shared.onToken = { [weak self] token in await self?.registerPush(token) } }
     }
     func start() async {
         guard !hasStarted else { return }; hasStarted = true
@@ -308,7 +305,7 @@ final class AppModel: ObservableObject {
         if let occurrences = incoming.occurrences {
             merged.occurrences = occurrences.compactMap { occurrence in
                 let known = confirmedOccurrences[occurrence.id]
-                let current = (known.map { $0.version > occurrence.version ? $0 : occurrence } ?? occurrence).keepingLaterSnooze(from: known)
+                let current = known.map { $0.version > occurrence.version ? $0 : occurrence } ?? occurrence
                 return current.date == incoming.date ? current : nil
             }
             for occurrence in merged.occurrences ?? [] {
@@ -397,34 +394,6 @@ final class AppModel: ObservableObject {
         return await mutateOccurrence(occurrence) {
             try await self.api.setOccurrenceCompletion(occurrence, completed: !occurrence.completion.completed, mutationID: UUID().uuidString.lowercased())
         }
-    }
-    /// The alarm task ringing right now for this signed-in child. Parents' phones do not ring.
-    func ringingAlarm() -> ChoreOccurrence? {
-        guard session?.isChild == true, let day = snapshot?.date, day == today else { return nil }
-        return visibleOccurrences.first { TaskAlarm.state(of: $0, today: day, zone: zone, now: now()).ringing }
-    }
-    /// Snoozing is shared with the frame and never changes the task version, so it cannot conflict with Done.
-    func snoozeAlarm(_ occurrence: ChoreOccurrence) async -> Bool {
-        guard session != nil, !changingChores.contains(occurrence.id) else { return false }
-        changingChores.insert(occurrence.id); defer { changingChores.remove(occurrence.id) }
-        let started = generation
-        do {
-            let result = try await api.snoozeTaskAlarm(occurrenceID: occurrence.id)
-            guard started == generation, result.id == occurrence.id else { return false }
-            if result.version >= (confirmedOccurrences[result.id]?.version ?? 0) { confirmedOccurrences[result.id] = result.keepingLaterSnooze(from: confirmedOccurrences[result.id]) }
-            if let current = snapshot { snapshot = mergeHousehold(current) }
-            persistCache(); return true
-        } catch {
-            if started == generation, (error as? APIError)?.isAuthenticationFailure == true { await forgetSession(reason: error.localizedDescription) }
-            return false
-        }
-    }
-    /// From the notification's Snooze button, where only the task ID is known.
-    func snoozeAlarm(occurrenceID: String) async {
-        if session == nil { await start() }
-        guard session?.isChild == true, UUID(uuidString: occurrenceID) != nil else { return }
-        _ = try? await api.snoozeTaskAlarm(occurrenceID: occurrenceID.lowercased())
-        await refresh()
     }
     func childPin(person: Person, pin: String?) async throws -> ChildPinStatus {
         guard session != nil, session?.isChild != true, !isStale, canManageInternet else { throw APIError(status: 403, code: "parent_required", message: "A parent with Internet permission sets a child's PIN.") }

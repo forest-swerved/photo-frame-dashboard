@@ -3,7 +3,6 @@ import SwiftUI
 struct ChildPinStatus: Decodable { let personId: String; let configured: Bool; let updatedAt: String? }
 extension FamilyAPI {
     func childPin(personID: String, pin: String?) async throws -> ChildPinStatus { throw APIError(status: 503, code: "unsupported", message: "Child PIN settings are unavailable.") }
-    func snoozeTaskAlarm(occurrenceID: String) async throws -> ChoreOccurrence { throw APIError(status: 503, code: "unsupported", message: "Alarm snooze is unavailable.") }
 }
 
 /// A parent sets each child's own four-digit PIN. The child types it on the

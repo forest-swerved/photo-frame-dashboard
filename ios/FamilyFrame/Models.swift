@@ -116,7 +116,7 @@ struct ChoreDraft: Encodable {
     var requiresApproval = false
     var schoolDayFilter = "any"
     var taskSection = "tasks"
-    /// Ring on the frame and the child's phone from the due time until the child confirms the task.
+    /// Ring on the family frame from the due time until the child confirms the task there.
     var alarm = false
     // Explicit nulls clear assignment/deadline when editing.
     func encode(to encoder: Encoder) throws {

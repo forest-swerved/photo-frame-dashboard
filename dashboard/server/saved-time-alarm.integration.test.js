@@ -7,7 +7,7 @@ import {childPinSettings,redeemChildPin,redeemParentPin,parentPinSettings,frameA
 import {createChore,householdSnapshot} from './household.js';
 import {setOccurrenceCompletion} from './chore-occurrences.js';
 import {syncChoreReward,internetSnapshot,SAVED_TIME_CAP_MINUTES} from './internet.js';
-import {snoozeTaskAlarm,requireAlarmConfirmer,ringingAlarmEvents} from './task-alarms.js';
+import {snoozeTaskAlarm,requireAlarmConfirmer,alarmState} from './task-alarms.js';
 
 test('child PINs, the saved-time cap and task alarms',{skip:process.env.FAMILY_RUN_DB_TESTS!=='1',timeout:60000},async()=>{
   const pool=createPool(process.env,{migration:true,max:5}),schema=`family_test_${randomUUID().replaceAll('-','')}`;
@@ -76,19 +76,16 @@ test('child PINs, the saved-time cap and task alarms',{skip:process.env.FAMILY_R
     assert.equal(snapshot.chores.find(c=>c.occurrenceId===alarmTask.id).alarm,true);
 
     // Before 4:30 PM nothing rings and there is nothing to snooze.
-    assert.deepEqual(await ringingAlarmEvents(db,household,now),[]);
+    const ringing=async at=>(await db.query('SELECT *,date::text FROM family_chore_occurrences WHERE household_id=$1 AND alarm',[household.id])).rows.filter(row=>alarmState(row,household.timezone,at).ringing).map(row=>row.id);
+    assert.deepEqual(await ringing(now),[]);
     await assert.rejects(snoozeTaskAlarm(db,frame,alarmTask.id,{now}),e=>e.code==='alarm_not_ringing');
     const ringAt=new Date('2026-12-02T23:31:00Z'); // 4:31 PM household time.
-    const ringing=await ringingAlarmEvents(db,household,ringAt);
-    assert.equal(ringing.length,1);assert.equal(ringing[0].type,'chore_alarm');assert.equal(ringing[0].personId,kid);assert.equal(ringing[0].payload.occurrenceId,alarmTask.id);
-    // A minute later is a new ring; the same minute is the same event key.
-    assert.notEqual((await ringingAlarmEvents(db,household,new Date(+ringAt+60_000)))[0].key,ringing[0].key);
-    assert.equal((await ringingAlarmEvents(db,household,new Date(+ringAt+5_000)))[0].key,ringing[0].key);
+    assert.deepEqual(await ringing(ringAt),[alarmTask.id]);
     // Snooze silences for ten minutes without touching the task version, then it rings again.
     const snoozed=await snoozeTaskAlarm(db,frame,alarmTask.id,{now:ringAt});
     assert.equal(snoozed.alarmSnoozedUntil,new Date(+ringAt+10*60_000).toISOString());assert.equal(snoozed.version,alarmTask.version);
-    assert.deepEqual(await ringingAlarmEvents(db,household,new Date(+ringAt+9*60_000)),[]);
-    assert.equal((await ringingAlarmEvents(db,household,new Date(+ringAt+10*60_000))).length,1);
+    assert.deepEqual(await ringing(new Date(+ringAt+9*60_000)),[]);
+    assert.deepEqual(await ringing(new Date(+ringAt+10*60_000)),[alarmTask.id]);
     await assert.rejects(snoozeTaskAlarm(db,{...asKid,personId:sibling},alarmTask.id,{now:ringAt}),e=>e.status===404);
 
     // On the shared frame only the child (their PIN) or an unlocked parent can confirm it.
@@ -99,7 +96,7 @@ test('child PINs, the saved-time cap and task alarms',{skip:process.env.FAMILY_R
     const kidGrant=await redeemChildPin(db,frame,{personId:kid,pin:'9173'},{env,now:ringAt});
     const confirmed=await setOccurrenceCompletion(db,await frameAuthorization(db,frame,kidGrant.token,ringAt),alarmTask.id,done(alarmTask.version),{...options,now:ringAt});
     assert.equal(confirmed.status,'completed');
-    assert.deepEqual(await ringingAlarmEvents(db,household,new Date(+ringAt+11*60_000)),[]);
+    assert.deepEqual(await ringing(new Date(+ringAt+11*60_000)),[]);
     await assert.rejects(snoozeTaskAlarm(db,frame,alarmTask.id,{now:new Date(+ringAt+11*60_000)}),e=>e.code==='alarm_not_ringing');
     // Ordinary tasks stay one tap on the frame.
     // With nine hours saved, today's hour still fits under the ten-hour cap.
@@ -117,6 +114,7 @@ test('child PINs, the saved-time cap and task alarms',{skip:process.env.FAMILY_R
     // At the cap, the next reward is use it or lose it: it expires at household midnight.
     await db.query('DELETE FROM family_reward_credits WHERE id=$1',[earned.id]);
     await credit(60,9);
+    assert.equal((await db.query("SELECT count(*)::int AS n FROM family_notification_events WHERE type NOT IN ('reward_earned','daily_tasks_completed','chore_completed')")).rows[0].n,0,'An alarm never creates a phone notification.');
     await db.query('DELETE FROM family_notification_events');
     const client=await db.connect();
     try { await client.query('BEGIN'); await syncChoreReward(client,{householdId:household.id,personId:kid,date:today},{now}); await client.query('COMMIT'); } finally { client.release(); }

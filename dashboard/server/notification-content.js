@@ -45,7 +45,6 @@ export function notificationContent(event) {
     reward_earned: p.useOrLose
       ? [`${person} earned ${duration(p.minutes) || 'device time'}`, 'Saved time is maxed out', `${duration(p.savedCapMinutes) || 'The limit'} is already saved, so this reward is use it or lose it. Use it today.`]
       : [`${person} earned ${duration(p.minutes) || 'device time'}`, 'All required tasks are complete', 'Choose a device now, or keep this reward saved for later.'],
-    chore_alarm: [`${person}: ${task}`, 'Alarm', 'Open Family Frame and mark it done to stop this alarm, or snooze for 10 minutes.'],
     session_started: [`${person}'s device time started`, [device, granted, p.source==='reward' && 'earned'].filter(Boolean).join(' · '), `${prep ? `${prep} to get ready, then ${duration(p.minutes) || 'your device time'}. ` : ''}${endText}`],
     session_warning: [`${person}: ${remaining || 'a few minutes'} left`, device, `${endText} Finish up and save your progress.`],
     session_expired: [`${person}'s device time is up`, device, `This access window ended${at ? ` at ${at}` : ''}. Open Devices to see available time.`],
@@ -70,7 +69,6 @@ export function notificationContent(event) {
 }
 
 export function notificationCategory(type) {
-  if (type === 'chore_alarm') return 'FAMILY_ALARM';
   if (type?.startsWith('chore_') || type?.startsWith('daily_tasks_')) return 'FAMILY_TASK';
   if (type === 'access_requested') return 'FAMILY_ACCESS_REQUEST';
   if (type === 'reward_earned') return 'FAMILY_REWARD';

@@ -133,7 +133,7 @@ Each child's card on the frame ends with their time bank: how much Internet time
 
 Saved time stops at ten hours. A reward earned with the bank full is **use it or lose it**: it must be used that day and is gone at midnight. Rewards only build up to ten hours if **Days to save a reward** for that child is at least ten.
 
-To make a task an alarm, give it a **Due by** time, one child, and tick **Sound an alarm until it is done**. At that time the frame shows a full-screen alarm and rings, ignoring the frame's mute, volume and quiet hours, until the child taps **Done** (and enters their PIN when one is set) or **Snooze 10 minutes**. A parent can also stop it by excusing the task for the day. It ends at midnight if nobody confirms it.
+To make a task an alarm, give it a **Due by** time, one child, and tick **Sound an alarm until it is done**. At that time the frame, and only the frame, shows a full-screen alarm and rings, ignoring the frame's mute, volume and quiet hours, until the child taps **Done** (and enters their PIN when one is set) or **Snooze 10 minutes**. A parent can also stop it by excusing the task for the day. It ends at midnight if nobody confirms it.
 
 ## What has and has not been proved
 

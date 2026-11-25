@@ -692,7 +692,7 @@ final class AppModelTests: XCTestCase {
         await model.internet.refresh()
         await attachLayout(NavigationStack { InternetSessionDetail(network: model.internet, original: paused) }.environmentObject(model).environment(\.dynamicTypeSize, .accessibility1), name: "Session detail - paused large text")
     }
-    func testChildSavedTimeCappedRewardAndAlarmLayouts() async throws {
+    func testChildSavedTimeAndCappedRewardLayout() async {
         let (model, api, _, _) = fixture(role: "child", personID: InternetFixtures.child)
         var snapshot = InternetFixtures.snapshot(credits: (0..<10).map { InternetFixtures.credit(id: "saved-\($0)", earnedDate: "2026-10-0\($0)") })
         snapshot.savedCapMinutes = 600
@@ -708,9 +708,6 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.internet.earnedReward?.id, "today-only", "A reward earned at the cap is announced as soon as it appears.")
         XCTAssertEqual(model.internet.savedTime(for: InternetFixtures.child).next?.id, "today-only")
         await attachLayout(ScrollView { VStack(spacing: 16) { RewardHomeCard(network: model.internet); SavedTimeCard(network: model.internet) }.padding() }.background(Brand.background).environmentObject(model), name: "Child saved time - full bank and use-or-lose reward")
-        let alarm = try JSONDecoder().decode(ChoreOccurrence.self, from: Data(#"{"id":"alarm","choreId":"alarm-routine","date":"2026-10-17","originalDate":"2026-10-17","title":"Synthetic alarm task","personId":"synthetic-child","required":false,"instructions":"","subtasks":[],"requiresApproval":false,"status":"pending","version":1,"completion":{"date":"2026-10-17","completed":false,"version":0},"dueTime":"11:30","definitionSource":"routine","routineVersion":1,"alarm":true}"#.utf8))
-        XCTAssertTrue(TaskAlarm.state(of: alarm, today: "2026-10-17", zone: model.zone, now: instant).ringing)
-        await attachLayout(TaskAlarmScreen(occurrence: alarm).environmentObject(model), name: "Task alarm")
     }
     private func attachLayout<Content: View>(_ content: Content, name: String) async {
         guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else { return XCTFail("Simulator window scene is required") }

@@ -57,7 +57,7 @@ export function createAlarmRinger({ contextFactory = () => new (globalThis.Audio
   };
 }
 
-// Full-screen alarm for the frame (and a child's own browser). It stays up and
+// Full-screen alarm for the paired family frame. It stays up and
 // keeps ringing until the task is confirmed; the only other control is Snooze.
 export function createTaskAlarm({ enabled, tasks, date, timezone, now = () => Date.now(), personName, timeLabel, onDone, onSnooze, busy = () => false, ringer = createAlarmRinger() }) {
   let modal = null, shownId = null, working = false;

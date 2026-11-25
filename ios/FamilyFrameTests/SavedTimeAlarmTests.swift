@@ -2,54 +2,15 @@ import XCTest
 @testable import FamilyFrame
 
 final class SavedTimeAlarmTests: XCTestCase {
-    private let zone = TimeZone(identifier: "America/Denver")!
-    private func occurrence(_ extra: String = "") throws -> ChoreOccurrence {
-        let json = """
-        {"id":"occurrence","choreId":"routine","date":"2026-12-02","originalDate":"2026-12-02","title":"Test-only alarm","personId":"kid","personName":"Kid",
-         "required":false,"instructions":"","subtasks":[],"requiresApproval":false,"status":"pending","version":3,
-         "completion":{"date":"2026-12-02","completed":false,"version":0},"dueTime":"16:30","reminderMinutes":0,
-         "definitionSource":"routine","routineVersion":1\(extra)}
-        """
-        return try JSONDecoder().decode(ChoreOccurrence.self, from: Data(json.utf8))
-    }
     private func credit(_ id: String, expires: String, useOrLose: Bool = false, status: String = "available", person: String = "kid") -> RewardCredit {
         RewardCredit(id: id, personId: person, earnedDate: "2026-12-01", minutes: 60, status: status, expiresAt: expires, policyVersion: 1, useOrLose: useOrLose)
     }
 
-    func testOlderServerResponsesWithoutAlarmFieldsStillDecode() throws {
-        let plain = try occurrence()
-        XCTAssertFalse(plain.alarm); XCTAssertNil(plain.alarmSnoozedUntil)
-        let alarm = try occurrence(#","alarm":true,"alarmSnoozedUntil":"2026-12-02T23:45:00.000Z""#)
-        XCTAssertTrue(alarm.alarm); XCTAssertEqual(alarm.alarmSnoozedUntil, "2026-12-02T23:45:00.000Z")
+    func testOlderServerResponsesWithoutNewFieldsStillDecode() throws {
         let person = try JSONDecoder().decode(Person.self, from: Data(##"{"id":"kid","name":"Kid","color":"#112233","version":1}"##.utf8))
         XCTAssertNil(person.pinConfigured)
-    }
-    func testAlarmRingsFromHouseholdDueTimeUntilTheTaskLeavesPending() throws {
-        let task = try occurrence(#","alarm":true"#)
-        func state(_ now: String, _ item: ChoreOccurrence? = nil, today: String = "2026-12-02") -> TaskAlarm.State {
-            TaskAlarm.state(of: item ?? task, today: today, zone: zone, now: Dates.instant(now)!)
-        }
-        XCTAssertFalse(state("2026-12-02T23:29:59.000Z").ringing)
-        XCTAssertTrue(state("2026-12-02T23:30:00.000Z").ringing)
-        XCTAssertTrue(state("2026-12-03T06:59:00.000Z").ringing)
-        XCTAssertFalse(state("2026-12-03T07:01:00.000Z", today: "2026-12-03").active, "The alarm ends with its household day.")
-        var done = task; done.status = "completed"
-        XCTAssertFalse(state("2026-12-02T23:45:00.000Z", done).active)
-        XCTAssertFalse(state("2026-12-02T23:45:00.000Z", try occurrence()).active, "Ordinary tasks never ring.")
-    }
-    func testSnoozePausesRingingAndResumesByItself() throws {
-        let task = try occurrence(#","alarm":true,"alarmSnoozedUntil":"2026-12-02T23:45:00.000Z""#)
-        let during = TaskAlarm.state(of: task, today: "2026-12-02", zone: zone, now: Dates.instant("2026-12-02T23:40:00.000Z")!)
-        XCTAssertTrue(during.active); XCTAssertFalse(during.ringing)
-        XCTAssertTrue(TaskAlarm.state(of: task, today: "2026-12-02", zone: zone, now: Dates.instant("2026-12-02T23:45:00.000Z")!).ringing)
-    }
-    func testEqualVersionMergeKeepsTheLaterSnooze() throws {
-        let stale = try occurrence(#","alarm":true"#)
-        let snoozed = try occurrence(#","alarm":true,"alarmSnoozedUntil":"2026-12-02T23:45:00.000Z""#)
-        XCTAssertEqual(stale.keepingLaterSnooze(from: snoozed).alarmSnoozedUntil, "2026-12-02T23:45:00.000Z")
-        XCTAssertEqual(snoozed.keepingLaterSnooze(from: stale).alarmSnoozedUntil, "2026-12-02T23:45:00.000Z")
-        var newer = stale; newer.version = 4
-        XCTAssertNil(newer.keepingLaterSnooze(from: snoozed).alarmSnoozedUntil, "A newer task version replaces an old snooze.")
+        let credit = try JSONDecoder().decode(RewardCredit.self, from: Data(#"{"id":"c","personId":"kid","earnedDate":"2026-12-01","minutes":60,"status":"available","expiresAt":"2026-12-09T07:00:00.000Z","policyVersion":1}"#.utf8))
+        XCTAssertFalse(credit.isUseOrLose)
     }
     func testAlarmDraftNeedsADeadline() throws {
         var draft = ChoreDraft(title: "Test-only chore", personId: "kid", weekdays: [1], dueTime: nil, reminderMinutes: 0)

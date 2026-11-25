@@ -622,7 +622,8 @@ async function snoozeAlarm(chore) {
   } catch (error) { if (error.status === 401) dataFailure(error); else return errorMessage(error); }
 }
 const taskAlarm = createTaskAlarm({
-  enabled: () => (frame() || S.session?.role === 'child') && !!S.session?.household && !S.booting && !!S.snapshot,
+  // The alarm belongs to the wall frame; phones and signed-in browsers never ring.
+  enabled: () => frame() && !!S.session?.household && !S.booting && !!S.snapshot,
   tasks: () => S.snapshot?.occurrences || [], date: () => S.snapshot?.date, timezone: zone,
   personName: id => person(id)?.name || '', timeLabel,
   busy: () => !!document.querySelector('.parent-keypad') || S.pending.size > 0,
